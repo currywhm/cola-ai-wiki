@@ -1,0 +1,10 @@
+# cola 知识库定制：快速通道（纯问答，无需本地执行工具）
+# 1) 关闭 persistent-bash 工具——大 tools schema 会让网关在流式下变慢且易断流
+#    （terminal-bash/pwsh 是底层终端服务，session-projection 硬依赖，不能动）
+# 2) 流空闲超时 48h -> 180s：deepseek-flash/v4-pro 是推理模型，
+#    思考阶段长时间无可见 token，30s 超时会把正常推理误判为断流
+- id: persistent-bash
+  disabled: true
+- id: llm-deepseek
+  config:
+    streamIdleTimeoutMs: 180000

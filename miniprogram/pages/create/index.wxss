@@ -1,0 +1,14 @@
+.create-intro { text-align:center; margin:20rpx 0 36rpx; }
+.create-intro .state-icon { background:#eaf9f1; color:#078b50; }
+.create-intro .headline { font-size:40rpx; margin:22rpx 0 12rpx; }
+.create-intro .muted { font-size:25rpx; }
+.form-card { margin-bottom:28rpx; padding:30rpx; }
+.field-label { display:block; font-size:28rpx; font-weight:600; margin-bottom:16rpx; }
+.required,.optional { font-size:22rpx; color:#8a8e9f; font-weight:400; margin-left:8rpx; }
+.form-input,.form-textarea { box-sizing:border-box; width:100%; background:#fff; padding:20rpx; border:1rpx solid #dedbd4; border-radius:16rpx; font-size:27rpx; line-height:1.55; }
+.form-input { height:88rpx; }
+.form-textarea { height:220rpx; }
+.counter { display:block; text-align:right; color:#8a8e9f; font-size:22rpx; margin:8rpx 0 28rpx; }
+.counter:last-child { margin-bottom:0; }
+.form-note { display:block; text-align:center; font-size:23rpx; color:#8a8e9f; margin:24rpx 0; }
+.form-error { display:block; color:#b23939; background:#fff0f0; border-radius:16rpx; padding:20rpx; margin-bottom:20rpx; font-size:25rpx; }

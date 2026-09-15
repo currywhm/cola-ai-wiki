@@ -1,0 +1,30 @@
+.DS_Store
+node_modules/
+miniprogram_npm/
+dist/
+*.log
+
+# WeChat local/editor state
+project.private.config.json
+.workbuddy/
+
+# Runtime data
+data/
+uploads/
+
+# Backend runtime and secrets
+server/.env
+server/.venv/
+server/.venv-x86/
+server/.run/
+server/logs/
+server/data/
+server/uploads/
+server/cert/
+server/dist/
+server/harness-workspaces/
+server/harness-home/**/.anonymous-user-id
+server/harness-home/**/node_modules/
+server/harness-home/**/sessions/
+server/**/__pycache__/
+server/**/*.pyc

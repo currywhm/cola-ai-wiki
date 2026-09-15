@@ -1,0 +1,13 @@
+.env
+.venv
+.run
+logs
+data
+uploads
+cert
+dist
+__pycache__
+**/__pycache__
+*.pyc
+.git
+.DS_Store

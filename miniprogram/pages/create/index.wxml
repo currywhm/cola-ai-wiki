@@ -1,0 +1,8 @@
+<view class="page create-page"><app-nav title="创建资料库" back />
+  <view class="create-intro"><view class="state-icon"><ui-icon name="folder" size="{{32}}" /></view><text class="headline">为知识建一个家</text><text class="muted block">一个主题，一个空间。随时添加新的资料。</text></view>
+  <view class="card form-card"><label class="field-label" for="kb-name">资料库名称 <text class="required">必填</text></label><input id="kb-name" class="form-input" value="{{name}}" maxlength="80" placeholder="例如：工作资料、读书笔记" bindinput="nameInput" /><text class="counter">{{name.length}} / 80</text>
+  <label class="field-label" for="kb-description">简介 <text class="optional">选填</text></label><textarea id="kb-description" class="form-textarea" value="{{description}}" maxlength="300" placeholder="描述这个资料库的用途，方便日后查找" bindinput="descriptionInput" /><text class="counter">{{description.length}} / 300</text></view>
+  <text wx:if="{{error}}" class="form-error">{{error}}</text>
+  <button class="primary-btn" bindtap="save" loading="{{saving}}" disabled="{{!name || saving}}">{{saving ? '正在创建' : '创建资料库'}}</button>
+  <text class="form-note">创建后即可上传文档，开始检索和问答。</text>
+</view>

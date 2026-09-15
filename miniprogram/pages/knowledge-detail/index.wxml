@@ -1,0 +1,61 @@
+<view class="page detail-page">
+  <app-nav title="cola知识库" menu showContext="{{false}}" bind:menutap="showActions" />
+  <view wx:if="{{activationVisible}}" class="activation-banner"><view class="activation-copy"><ui-icon name="info" size="{{22}}" /><text>已激活 300M 免费空间，</text><button class="activation-link" bindtap="activate">会员扩容</button></view><button class="activation-close" bindtap="dismissActivation" aria-label="关闭提示"><ui-icon name="close" size="{{21}}" /></button></view>
+  <view wx:if="{{loadState === 'loading'}}" class="card state-card"><view class="skeleton"></view><view class="skeleton short"></view><text class="state-desc">正在加载资料库…</text></view>
+  <view wx:elif="{{loadState === 'error'}}" class="card state-card"><text class="state-title">资料库加载失败</text><text class="state-desc">请检查网络后重试。</text><button class="ghost-btn" bindtap="load">重新加载</button></view>
+  <block wx:else>
+    <view class="library-toolbar"><view class="library-title-wrap"><text class="library-title">{{knowledge.name || '微信用户的知识库'}}</text><button class="library-switch" bindtap="switchKnowledge" aria-label="选择知识库"><ui-icon name="chevron-down" size="{{15}}" /></button></view><view class="toolbar-actions"><button class="toolbar-button" bindtap="goSearch" aria-label="搜索文档"><ui-icon name="search" size="{{23}}" /></button><button class="toolbar-button add-button" bindtap="upload" aria-label="添加文档"><ui-icon name="upload" size="{{22}}" /></button><button class="toolbar-button" bindtap="showActions" aria-label="更多功能"><ui-icon name="menu" size="{{23}}" /></button></view></view>
+    <view class="document-list">
+      <view wx:for="{{documents}}" wx:key="id" class="doc-swipe-row" data-index="{{index}}" bindtouchstart="onDocTouchStart" bindtouchmove="onDocTouchMove" bindtouchend="onDocTouchEnd">
+        <view class="doc-actions">
+          <button class="doc-action tag-action" catchtap="tagDocument" data-id="{{item.id}}"><ui-icon name="tag" size="{{28}}" /><text>标签</text></button>
+          <button class="doc-action delete-action" catchtap="confirmDeleteDocument" data-id="{{item.id}}"><ui-icon name="trash" size="{{29}}" /><text>删除</text></button>
+        </view>
+        <view class="doc-card" style="transform:translateX({{item.swipeX || 0}}rpx);" bindtap="viewDoc" data-id="{{item.id}}">
+          <view wx:if="{{item.preview_url}}" class="doc-thumb"><image src="{{item.preview_url}}" mode="aspectFill" /></view>
+          <view wx:else class="doc-thumb doc-thumb-fallback"><ui-icon name="file" size="{{28}}" /></view>
+          <view class="doc-copy"><text class="doc-title">{{item.filename}}</text><view class="doc-meta-line"><ui-icon wx:if="{{item.typeKind === 'image'}}" name="image-blue" size="{{24}}" /><view class="pdf-mark {{item.typeKind === 'image' ? 'mark-plain' : ''}}">{{item.typeLabel}}</view><text class="doc-meta-divider">|</text><text class="doc-meta">{{item.status === 'completed' ? item.displayTime : (item.status === 'failed' ? '解析失败' : '解析中')}}</text></view></view>
+          <button class="more-btn" aria-label="文档更多操作" catchtap="showDocumentActions" data-id="{{item.id}}"><ui-icon name="more" size="{{20}}" /></button>
+        </view>
+      </view>
+    </view>
+    <view wx:if="{{!documents.length}}" class="empty-upload" bindtap="upload">
+      <image class="empty-upload-illustration" src="/assets/brand/cola-empty-knowledge.png" mode="aspectFit" />
+      <text class="empty-upload-title">构建你的专属知识库</text>
+      <view class="empty-upload-button"><ui-icon name="upload" size="{{25}}" /><text>导入文件</text></view>
+    </view>
+  </block>
+  <view wx:if="{{uploadSheetVisible}}" class="upload-layer" catchtouchmove="stopSheetBubble">
+    <view class="upload-mask" bindtap="closeUploadSheet"></view>
+    <view class="upload-sheet">
+      <view class="upload-usage">
+        <text class="upload-usage-text">已使用{{uploadUsedLabel}}/{{uploadLimitLabel}}</text>
+        <button class="upload-upgrade" bindtap="activate">会员扩容<text class="upload-dot"></text></button>
+      </view>
+      <view class="upload-divider"></view>
+      <view class="upload-grid">
+        <button class="upload-option" bindtap="chooseUploadSource" data-source="knowledge">
+          <view class="upload-option-icon upload-knowledge-icon"><ui-icon name="knowledge" size="{{33}}" /></view>
+          <text>个人知识库</text>
+        </button>
+        <button class="upload-option" bindtap="chooseUploadSource" data-source="file">
+          <view class="upload-option-icon"><ui-icon name="wechat-file" size="{{33}}" /></view>
+          <text>微信文件</text>
+        </button>
+        <button class="upload-option" bindtap="chooseUploadSource" data-source="album">
+          <view class="upload-option-icon"><ui-icon name="image" size="{{33}}" /></view>
+          <text>本地相册</text>
+        </button>
+        <button class="upload-option" bindtap="chooseUploadSource" data-source="camera">
+          <view class="upload-option-icon"><ui-icon name="camera" size="{{33}}" /></view>
+          <text>拍照</text>
+        </button>
+        <button class="upload-option" bindtap="chooseUploadSource" data-source="folder">
+          <view class="upload-option-icon"><ui-icon name="folder-add" size="{{33}}" /></view>
+          <text>创建文件夹</text>
+        </button>
+      </view>
+      <button class="upload-cancel" bindtap="closeUploadSheet">取消</button>
+    </view>
+  </view>
+</view>

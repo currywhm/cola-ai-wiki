@@ -1,0 +1,149 @@
+<view class="page mine-page">
+  <app-nav id="pageNav" title="" back />
+  <view class="mine-content">
+    <view class="profile-card">
+      <view class="profile-main">
+        <view class="profile-avatar">
+          <image class="profile-avatar-image" src="/assets/brand/cola-avatar.png" mode="aspectFit" />
+        </view>
+        <view class="profile-copy">
+          <view class="profile-name-row">
+            <text class="profile-name">{{user.nickname || '微信用户'}}</text>
+            <text class="plan-badge">{{user.membership_label || '基础版'}}</text>
+          </view>
+          <text class="profile-id">{{user.id ? '微信授权账号' : '登录后同步你的个人资料'}}</text>
+        </view>
+        <button class="profile-edit" bindtap="syncWechatProfile">
+          <text>账号设置</text>
+          <ui-icon name="chevron-right" size="{{17}}" />
+        </button>
+      </view>
+
+      <view wx:if="{{loadState === 'error'}}" class="account-status">
+        <text>微信登录暂不可用，请稍后重试</text>
+        <button class="outline-button" bindtap="load">重新连接</button>
+      </view>
+      <text wx:elif="{{loadState === 'loading'}}" class="account-loading">正在连接微信账号…</text>
+      <view wx:else class="storage-block">
+        <view class="storage-line">
+          <text class="storage-count">{{storageUsedLabel}} / {{storageLimitLabel}}</text>
+          <text class="storage-label">已激活 300M 免费空间</text>
+        </view>
+        <view class="storage-track"><view class="storage-fill" style="{{storageFillStyle}}"></view></view>
+      </view>
+    </view>
+
+    <view wx:if="{{loadState === 'ready'}}" class="usage-card">
+      <view class="section-heading">
+        <text class="section-title">使用情况</text>
+        <text class="section-hint">实时同步</text>
+      </view>
+      <view class="usage-grid">
+        <view class="usage-item">
+          <text class="usage-num">{{stats.knowledge}}</text>
+          <text class="usage-label">资料库</text>
+        </view>
+        <view class="usage-item">
+          <text class="usage-num">{{stats.documents}}</text>
+          <text class="usage-label">文档</text>
+        </view>
+        <view class="usage-item usage-item-wide">
+          <text class="usage-num">{{user.limits ? user.limits.knowledge_bases : 1}}</text>
+          <text class="usage-label">可建资料库</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="membership-card">
+      <view class="membership-main">
+        <view class="membership-icon"><ui-icon name="vip" size="{{21}}" /></view>
+        <view class="grow">
+          <text class="membership-title">升级会员服务</text>
+          <text class="membership-desc">超过 300M 后，通过会员扩容继续使用</text>
+        </view>
+      </view>
+      <view class="membership-actions">
+        <text class="membership-copy">Plus / Pro · 月付、季付、年付</text>
+        <button class="membership-button" bindtap="payPro">查看方案</button>
+      </view>
+    </view>
+
+    <view wx:if="{{planPickerVisible}}" class="plan-layer">
+      <view class="plan-mask" bindtap="closePlanPicker"></view>
+      <view class="plan-picker" catchtap="stopPickerBubble">
+        <view class="plan-picker-head">
+          <view class="plan-heading-copy">
+            <text class="plan-picker-title">选择会员方案</text>
+            <text class="plan-picker-desc">按次购买，到期后手动续费</text>
+          </view>
+          <button class="close-picker" bindtap="closePlanPicker" disabled="{{paying}}" aria-label="关闭会员方案">
+            <ui-icon name="close" size="{{18}}" />
+          </button>
+        </view>
+        <view class="tier-tabs">
+          <button class="tier-tab {{selectedTier === 'plus' ? 'active' : ''}}" data-tier="plus" bindtap="chooseTier" disabled="{{paying}}">
+            <text class="tier-tab-title">Plus</text>
+            <text class="tier-tab-desc">5 个资料库 · 3GB</text>
+          </button>
+          <button class="tier-tab {{selectedTier === 'pro' ? 'active' : ''}}" data-tier="pro" bindtap="chooseTier" disabled="{{paying}}">
+            <text class="tier-tab-title">Pro</text>
+            <text class="tier-tab-desc">20 个资料库 · 10GB</text>
+          </button>
+        </view>
+        <view class="plan-options">
+          <button wx:for="{{visiblePlans}}" wx:key="id" class="plan-option {{selectedPlan === item.id ? 'selected' : ''}}" data-plan="{{item.id}}" bindtap="choosePlan" disabled="{{paying}}">
+            <text class="plan-option-label">{{item.label}}</text>
+            <text class="plan-option-price">¥{{item.price}}</text>
+            <text class="plan-option-note">{{item.period}} · {{item.note}}</text>
+          </button>
+        </view>
+        <button class="confirm-pay" bindtap="confirmPay" loading="{{paying}}" disabled="{{paying}}">
+          <text>{{paying ? '支付处理中' : '微信支付'}}</text>
+          <text wx:if="{{!paying}}" class="confirm-pay-price">¥{{selectedPlanPrice}}</text>
+        </button>
+        <button class="terms-link" bindtap="openLegal" data-type="plan">会员服务条款与权益说明</button>
+      </view>
+    </view>
+
+    <view class="service-section">
+      <view class="shortcut-grid">
+      <button class="shortcut" bindtap="openLegal" data-type="about">
+        <view class="shortcut-icon green"><ui-icon name="guanyu" size="{{25}}" /></view>
+        <text>关于 Cola</text>
+      </button>
+      <button class="shortcut" bindtap="openLegal" data-type="data">
+        <view class="shortcut-icon blue"><ui-icon name="shuju" size="{{25}}" /></view>
+        <text>数据管理</text>
+      </button>
+      <button class="shortcut" bindtap="openLegal" data-type="privacy">
+        <view class="shortcut-icon purple"><ui-icon name="anquanbaozhang" size="{{25}}" /></view>
+        <text>隐私安全</text>
+      </button>
+      <button class="shortcut" bindtap="openLegal" data-type="agreement">
+        <view class="shortcut-icon orange"><ui-icon name="jieshao" size="{{25}}" /></view>
+        <text>服务协议</text>
+      </button>
+      </view>
+    </view>
+
+    <view wx:if="{{loadState === 'ready'}}" class="section-block">
+      <view class="section-heading"><text class="section-title">使用技巧</text><text class="section-hint">持续更新</text></view>
+      <view class="card tips-card">
+        <view class="tip-row {{index === tips.length - 1 ? 'last' : ''}}" wx:for="{{tips}}" wx:key="title">
+          <view class="grow">
+            <text class="tip-title">{{item.title}}</text>
+          </view>
+          <view class="tip-cover cover-{{index}}"><ui-icon name="{{item.icon}}" size="{{34}}" /></view>
+        </view>
+      </view>
+    </view>
+
+    <view class="legal-footer">
+      <view>
+        <button bindtap="openLegal" data-type="agreement">软件许可及服务协议</button>
+        <text class="legal-separator">|</text>
+        <button bindtap="openLegal" data-type="privacy">小程序隐私保护指引</button>
+      </view>
+    </view>
+  </view>
+</view>

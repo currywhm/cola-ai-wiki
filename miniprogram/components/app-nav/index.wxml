@@ -1,0 +1,20 @@
+<view class="nav-root nav-space" style="{{navStyle}}">
+  <view class="nav-bar" style="{{barStyle}}">
+    <view class="nav-inner" style="{{innerStyle}}">
+      <block wx:if="{{back}}">
+        <button class="nav-button nav-back" aria-label="返回上一页" bindtap="goBack"><ui-icon name="chevron-left" size="{{22}}" /></button>
+        <text class="nav-page-title {{conversation ? 'nav-conversation-title' : ''}}">{{title}}</text>
+        <button wx:if="{{action}}" class="nav-button nav-action" bindtap="openAction" aria-label="当前会话操作"><ui-icon name="{{action}}" size="{{21}}" /></button>
+      </block>
+      <block wx:else>
+        <view class="nav-brand">
+          <button class="nav-button nav-avatar" aria-label="打开个人中心" bindtap="openProfile"><image class="nav-avatar-image" src="/assets/brand/cola-avatar.png" mode="aspectFit" /></button>
+          <button class="nav-button nav-brand-name" bindtap="openProfile">{{title}}</button>
+          <button wx:if="{{showContext}}" class="nav-button nav-context" bindtap="openContext"><text class="nav-context-label">{{context || '微信用户的知识库'}}</text><ui-icon name="chevron-down" size="{{13}}" /></button>
+          <button wx:if="{{menu}}" class="nav-button nav-menu" bindtap="openMenu" aria-label="打开页面菜单"><ui-icon name="menu" size="{{20}}" /></button>
+        </view>
+        <button wx:if="{{discover}}" class="nav-button nav-discover" style="{{discoverStyle}}" bindtap="openDiscover" aria-label="发现知识库"><ui-icon name="compass" size="{{18}}" /></button>
+      </block>
+    </view>
+  </view>
+</view>

@@ -1,0 +1,26 @@
+{
+  "pages": [
+    "pages/chat/index",
+    "pages/folder-chat/index",
+    "pages/market/index",
+    "pages/mine/index",
+    "pages/knowledge-detail/index",
+    "pages/document/index",
+    "pages/search/index",
+    "pages/legal/index",
+    "pages/create/index"
+  ],
+  "window": {
+    "navigationStyle": "custom",
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "cola 知识库",
+    "navigationBarBackgroundColor": "#f6f6f4",
+    "backgroundColor": "#f6f6f4",
+    "backgroundTextStyle": "light"
+  },
+  "style": "v2",
+  "componentFramework": "glass-easel",
+  "__usePrivacyCheck__": true,
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents"
+}

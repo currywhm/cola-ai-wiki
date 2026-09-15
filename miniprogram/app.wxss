@@ -1,0 +1,49 @@
+page { background:#f6f7f9; color:#202a38; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Helvetica Neue","Microsoft YaHei",Arial,sans-serif; font-size:30rpx; font-weight:500; line-height:1.58; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+view,text,button,input,textarea,scroll-view { box-sizing:border-box; }
+/* Override WeChat v2 button:not([size=mini]); page controls use button.class. */
+button[class] { display:flex; align-items:center; justify-content:center; width:auto; min-width:0; margin:0; padding:0; border:0; background:transparent; color:inherit; font-family:inherit; font-size:29rpx; font-weight:500; line-height:1.4; letter-spacing:0; text-align:center; }
+button::after { border:0; }
+button[class][disabled] { opacity:.5; }
+button.button-hover { opacity:.75; }
+ui-icon { display:inline-flex; flex-shrink:0; align-items:center; justify-content:center; vertical-align:middle; }
+input,textarea { min-width:0; color:#202a38; font-family:inherit; font-size:30rpx; line-height:1.55; }
+.page { width:100%; max-width:750rpx; min-height:100vh; margin:0 auto; padding:0 28rpx calc(32rpx + env(safe-area-inset-bottom)); overflow-x:hidden; }
+.eyebrow { color:#697184; font-size:24rpx; line-height:1.5; }
+.headline { display:block; font-size:42rpx; line-height:1.3; font-weight:700; }
+.section-title { display:block; font-size:32rpx; line-height:1.4; font-weight:600; margin:32rpx 0 20rpx; }
+.muted { color:#737b8c; }
+.small { display:block; margin-top:6rpx; font-size:22rpx; line-height:1.5; }
+.block { display:block; }
+.bold { font-weight:600; }
+.grow { flex:1; min-width:0; }
+.row { display:flex; align-items:center; min-width:0; }
+.row > view,.row > text,.row > button { min-width:0; }
+.between { justify-content:space-between; }
+.gap-sm { gap:14rpx; }
+.gap-md { gap:20rpx; }
+.card { background:#fff; border:1rpx solid #e6e2da; border-radius:20rpx; padding:24rpx; box-shadow:0 4rpx 16rpx rgba(31,38,55,.035); }
+.soft-card { background:#f2f0eb; border-radius:16rpx; padding:22rpx; }
+.card-title { display:block; overflow:hidden; font-size:28rpx; font-weight:600; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
+.card-subtitle { display:block; overflow:hidden; font-size:22rpx; line-height:1.5; text-overflow:ellipsis; white-space:nowrap; }
+.section-head { gap:20rpx; margin-bottom:20rpx; }
+.section-head .section-title { margin:0; }
+button.primary-btn,button.ghost-btn { min-height:84rpx; padding:18rpx 28rpx; border-radius:18rpx; font-size:28rpx; line-height:1.5; font-weight:600; gap:12rpx; }
+button.primary-btn { width:100%; background:#242b3d; color:#fff; }
+button.ghost-btn { background:#eaf9f1; color:#078b50; }
+.link,button.link { display:inline-flex; align-items:center; gap:4rpx; min-height:64rpx; color:#078b50; font-size:24rpx; line-height:1.4; white-space:nowrap; flex-shrink:0; }
+.search-bar { display:flex; align-items:center; gap:14rpx; min-height:84rpx; padding:0 22rpx; border:1rpx solid #e5e1d9; border-radius:18rpx; background:#fff; color:#737b8c; }
+.search-bar input { flex:1; width:0; min-width:0; height:80rpx; font-size:26rpx; }
+.tag { display:inline-flex; align-items:center; min-height:40rpx; padding:4rpx 12rpx; border-radius:12rpx; background:#eaf9f1; color:#078b50; font-size:21rpx; line-height:1.4; white-space:nowrap; }
+.file-icon { display:flex; align-items:center; justify-content:center; flex:0 0 68rpx; width:68rpx; height:68rpx; border-radius:16rpx; background:#eaf9f1; color:#078b50; font-size:21rpx; font-weight:700; }
+.flow-action { width:100%; margin:28rpx 0 12rpx; }
+.empty { padding:48rpx 28rpx; text-align:center; color:#737b8c; line-height:1.7; }
+.empty-title { display:block; color:#343d52; font-weight:600; margin-bottom:8rpx; }
+.loading { padding:30rpx; color:#078b50; text-align:center; }
+.state-card { padding:42rpx 28rpx; text-align:center; }
+.state-card .state-title { display:block; margin:18rpx 0 10rpx; font-size:30rpx; line-height:1.4; font-weight:600; }
+.state-card .state-desc { display:block; color:#737b8c; font-size:25rpx; line-height:1.7; }
+.state-card button.ghost-btn { display:inline-flex; min-width:200rpx; margin-top:26rpx; }
+.state-icon { display:flex; align-items:center; justify-content:center; width:84rpx; height:84rpx; margin:0 auto; border-radius:22rpx; background:#eaf9f1; }
+.skeleton { width:80%; height:30rpx; margin:0 auto 20rpx; border-radius:8rpx; background:#f0efeb; }
+.skeleton.short { width:50%; margin-bottom:30rpx; }
+@media (max-width:340px) { .page { padding-left:24rpx; padding-right:24rpx; } .headline { font-size:38rpx; } }

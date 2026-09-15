@@ -1,0 +1,5 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <path d="M160 250c0-40 32-72 72-72h220c40 0 72 32 72 72v540c0-40-32-72-72-72H232c-40 0-72 32-72 72V250Z" fill="none" stroke="#2c2c2c" stroke-width="52" stroke-linejoin="round"/>
+  <path d="M864 250c0-40-32-72-72-72H572c-40 0-72 32-72 72v540c0-40 32-72 72-72h220c40 0 72 32 72 72V250Z" fill="none" stroke="#2c2c2c" stroke-width="52" stroke-linejoin="round"/>
+  <path d="M300 360h120M300 440h120M620 360h120M620 440h120" fill="none" stroke="#2c2c2c" stroke-width="44" stroke-linecap="round"/>
+</svg>

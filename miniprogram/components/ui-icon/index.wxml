@@ -1,0 +1,3 @@
+<view class="icon-root">
+  <image class="icon" src="{{iconFile}}" style="{{sizeStyle}}{{iconTransform}}" mode="aspectFit" aria-hidden="true" />
+</view>

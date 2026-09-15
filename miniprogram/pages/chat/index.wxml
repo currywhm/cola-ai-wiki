@@ -1,0 +1,296 @@
+<view class="page chat-page {{conversationActive ? 'conversation-mode' : ''}}" style="{{safeBottom ? 'padding-bottom:calc(' + (conversationActive ? 0 : 10) + 'rpx + ' + safeBottom + 'px)' : ''}}">
+  <app-nav wx:if="{{conversationActive}}" title="{{knowledgeName || '微信用户的知识库'}}" back conversation action="pin" bind:conversationback="leaveConversation" bind:actiontap="togglePinned" />
+  <app-nav wx:else title="cola知识库" showContext="{{false}}" menu bind:menutap="openMine" />
+  <view wx:if="{{!conversationActive}}" class="library-toolbar">
+    <button class="library-title-wrap" bindtap="openKnowledgePicker" disabled="{{sending}}" aria-label="切换知识库">
+      <text>{{knowledgeName || '微信用户的知识库'}}</text>
+      <view class="library-switch"><ui-icon name="chevron-down" size="{{15}}" /></view>
+    </button>
+    <view class="toolbar-actions">
+      <button class="toolbar-button" bindtap="goSearch" disabled="{{!knowledgeId}}" aria-label="搜索知识库"><ui-icon name="search" size="{{23}}" /></button>
+      <button class="toolbar-button add-button" bindtap="openUpload" disabled="{{!knowledgeId || sending}}" aria-label="导入文件"><ui-icon name="upload" size="{{22}}" /></button>
+      <button class="toolbar-button" bindtap="openKnowledgeActions" disabled="{{!knowledgeId || sending}}" aria-label="知识库管理"><ui-icon name="menu" size="{{21}}" /></button>
+    </view>
+  </view>
+  <view wx:if="{{!conversationActive && knowledgeDesc}}" class="library-desc">{{knowledgeDesc}}</view>
+  <scroll-view class="messages" scroll-y scroll-with-animation enhanced show-scrollbar="{{false}}" scroll-into-view="{{lastMessageId}}">
+    <view wx:if="{{loadState === 'error'}}" class="state-panel">
+      <view class="state-icon"><ui-icon name="response" size="{{28}}" /></view>
+      <text class="state-title">暂时无法连接资料</text>
+      <text class="state-desc">登录或网络暂不可用，请稍后重试。</text>
+      <button class="outline-button" bindtap="load">重新加载</button>
+    </view>
+    <view wx:elif="{{loadState === 'loggedout'}}" class="state-panel">
+      <view class="state-icon"><ui-icon name="user" size="{{28}}" /></view>
+      <text class="state-title">需要重新登录</text>
+      <text class="state-desc">当前微信登录状态已退出，请重新登录后继续使用资料问答。</text>
+      <button class="outline-button" bindtap="login">使用微信重新登录</button>
+    </view>
+    <view wx:elif="{{loadState === 'ready' && !knowledgeId}}" class="state-panel">
+      <view class="state-icon"><ui-icon name="folder" size="{{28}}" /></view>
+      <text class="state-title">先建立一个资料空间</text>
+      <text class="state-desc">创建资料库并上传文档，回答才会有可追溯的出处。</text>
+      <button class="dark-button" bindtap="create">创建资料库</button>
+    </view>
+    <view wx:elif="{{!messages.length && knowledgeId}}" class="welcome {{!conversationActive && (documents.length || folders.length) ? 'with-directory' : ''}}">
+      <view wx:if="{{!conversationActive && documentsLoading}}" class="directory-state">
+        <view class="directory-skeleton"></view>
+        <view class="directory-skeleton short"></view>
+      </view>
+      <view wx:elif="{{!conversationActive && documentsError}}" class="directory-state">
+        <view class="directory-state-icon"><ui-icon name="folder" size="{{28}}" /></view>
+        <text>目录加载失败</text>
+        <button class="directory-retry" bindtap="retryDirectory" data-id="{{knowledgeId}}">重新加载</button>
+      </view>
+      <view wx:elif="{{!conversationActive && (documents.length || folders.length)}}" class="directory-panel">
+        <view class="directory-list">
+          <block wx:if="{{!currentFolderId}}">
+            <block wx:for="{{documentGroups}}" wx:key="key" wx:for-item="group">
+              <view wx:if="{{group.key}}" class="dir-swipe-row">
+                <view class="dir-actions">
+                  <button class="dir-action pin-action" catchtap="pinFolder" data-key="{{group.key}}" aria-label="置顶"><ui-icon name="pin-white" size="{{30}}" /></button>
+                  <button class="dir-action delete-action" catchtap="confirmDeleteFolder" data-key="{{group.key}}" data-name="{{group.name}}" aria-label="删除"><ui-icon name="trash" size="{{31}}" /></button>
+                </view>
+                <view class="directory-folder-head dir-swipe-card" style="transform:translateX({{group.swipeX || 0}}rpx);" bindtap="enterFolder" data-key="{{group.key}}" bindtouchstart="onDirTouchStart" bindtouchmove="onDirTouchMove" bindtouchend="onDirTouchEnd" data-rowtype="folder" data-rowkey="{{group.key}}">
+                  <view class="directory-folder-icon"><ui-icon name="folder-green" size="{{84}}" rpx /></view>
+                  <view class="directory-folder-copy">
+                    <view class="directory-file-name-row">
+                      <text wx:if="{{group.pinned}}" class="pin-badge">置顶</text>
+                      <text class="directory-folder-name">{{group.name}}</text>
+                    </view>
+                    <text class="directory-folder-meta">{{group.documents.length}} 个项目</text>
+                  </view>
+                  <view class="directory-folder-chevron"><ui-icon name="chevron-right" size="{{15}}" /></view>
+                </view>
+              </view>
+            </block>
+          </block>
+          <view wx:for="{{visibleDocuments}}" wx:key="id" wx:for-item="item" class="dir-swipe-row">
+            <view class="dir-actions">
+              <button class="dir-action pin-action" catchtap="pinDocument" data-id="{{item.id}}" aria-label="置顶"><ui-icon name="pin-white" size="{{30}}" /></button>
+              <button class="dir-action delete-action" catchtap="confirmDeleteDocument" data-id="{{item.id}}" data-name="{{item.filename}}" aria-label="删除"><ui-icon name="trash" size="{{31}}" /></button>
+            </view>
+            <view class="directory-item dir-swipe-card" style="transform:translateX({{item.swipeX || 0}}rpx);" bindtap="openDocument" data-id="{{item.id}}" bindlongpress="showDocumentActions" data-id="{{item.id}}" bindtouchstart="onDirTouchStart" bindtouchmove="onDirTouchMove" bindtouchend="onDirTouchEnd" data-rowtype="doc" data-rowkey="{{item.id}}">
+              <view class="directory-file-icon {{item.preview_url ? '' : 'thumb-fallback'}}">
+                <image wx:if="{{item.preview_url}}" src="{{item.preview_url}}" mode="aspectFill" />
+                <ui-icon wx:else name="file" size="{{30}}" rpx />
+              </view>
+              <view class="directory-file-copy">
+                <view class="directory-file-name-row">
+                  <text wx:if="{{item.pinned}}" class="pin-badge">置顶</text>
+                  <text class="directory-file-name">{{item.filename}}</text>
+                </view>
+                <view class="directory-file-meta">
+                  <ui-icon wx:if="{{item.typeKind === 'image'}}" name="image-blue" size="{{24}}" />
+                  <text class="directory-file-type {{item.typeKind === 'pdf' ? 'type-pdf' : ''}}">{{item.typeLabel}}</text>
+                  <text class="directory-meta-sep">|</text>
+                  <text wx:if="{{item.status === 'completed'}}">{{item.displayTime}}</text>
+                  <text wx:else class="directory-status-text {{item.status}}">{{item.status === 'failed' ? '解析失败' : '解析中'}}</text>
+                </view>
+              </view>
+            </view>
+          </view>
+          <view wx:if="{{currentFolderId && !visibleDocuments.length}}" class="dir-empty-hint">这个文件夹还是空的，长按文件可以移动进来</view>
+        </view>
+      </view>
+      <view wx:else class="empty-knowledge">
+        <image class="empty-illustration" src="/assets/brand/cola-empty-knowledge.png" mode="aspectFit" />
+        <text class="empty-title">构建你的专属知识库</text>
+        <button class="empty-import" bindtap="openUpload"><ui-icon name="upload" size="{{24}}" /><text>导入文件</text></button>
+      </view>
+    </view>
+    <block wx:for="{{messages}}" wx:key="id">
+      <view id="{{item.id}}" class="message {{item.role}}">
+        <view wx:if="{{item.role === 'user'}}" class="user-bubble">{{item.content}}</view>
+        <view wx:else class="assistant-message">
+          <view class="assistant-avatar"><image src="/assets/brand/cola-avatar.png" mode="aspectFit" /></view>
+          <view class="assistant-card">
+            <view class="assistant-head"><text class="assistant-name">cola</text></view>
+            <view class="assistant-body">
+              <rich-text wx:if="{{item.content}}" class="assistant-content" nodes="{{item.html || item.content}}"></rich-text>
+              <text wx:else class="assistant-loading">{{item.progress || '正在检索资料并组织回答…'}}</text>
+              <view wx:if="{{item.sources.length}}" class="sources">
+                <text class="source-title">参考出处 · {{item.sources.length}} 条</text>
+                <view wx:for="{{item.sources}}" wx:for-item="source" wx:key="id" class="source-card" bindtap="openSource" data-id="{{source.document_id || source.id}}" data-url="{{source.url || ''}}">
+                  <view class="source-index">{{index + 1}}</view><view class="grow"><text class="source-file">{{source.filename}}</text><text class="source-page">{{source.url ? '公开网页 · 点击复制链接' : '第 ' + source.page_number + ' 页'}}</text></view><ui-icon name="chevron-right" size="{{15}}" />
+                </view>
+              </view>
+            </view>
+            <view wx:if="{{!item.local && item.content}}" class="answer-actions">
+              <button class="action-icon" bindtap="copyAnswer" data-content="{{item.content}}" aria-label="复制回答"><ui-icon name="copy" size="{{18}}" /></button>
+              <button class="action-icon" bindtap="shareAnswer" data-content="{{item.content}}" aria-label="分享回答"><ui-icon name="share" size="{{18}}" /></button>
+            </view>
+          </view>
+        </view>
+      </view>
+    </block>
+  </scroll-view>
+  <view class="chat-footer">
+    <view wx:if="{{!conversationActive && modePickerVisible}}" class="mode-picker">
+      <button class="mode-option {{askMode === 'web' ? 'active' : ''}}" bindtap="selectAskMode" data-mode="web">
+        <view class="mode-option-icon web"><ui-icon name="web" size="{{24}}" /></view>
+        <text>问全网</text>
+      </button>
+      <button class="mode-option {{askMode === 'knowledge' ? 'active' : ''}}" bindtap="selectAskMode" data-mode="knowledge" disabled="{{!knowledgeId}}">
+        <view class="mode-option-icon knowledge"><ui-icon name="knowledge-mode" size="{{22}}" /></view>
+        <text>问知识库{{(!documentsLoading && !documents.length && knowledgeId) ? ' · 空' : ''}}</text>
+      </button>
+    </view>
+    <view wx:if="{{!conversationActive}}" class="home-composer" bindtap="enterConversationFromComposer">
+      <button class="scope-button scope-inline" catchtap="toggleModePicker" disabled="{{sending || loadState !== 'ready'}}" aria-label="选择提问范围">
+        <view class="scope-icon {{askMode}}"><ui-icon name="{{askMode === 'web' ? 'web' : 'knowledge-mode'}}" size="{{22}}" /></view>
+        <view class="scope-chevron"><ui-icon name="chevron-down" size="{{12}}" /></view>
+      </button>
+      <text class="home-placeholder">{{askMode === 'web' ? '向全网提问' : (knowledgeId ? '基于知识库提问' : '正在准备默认知识库…')}}</text>
+    </view>
+    <view wx:if="{{conversationActive}}" class="composer">
+      <textarea class="composer-input" value="{{input}}" placeholder="{{askMode === 'web' ? '向全网提问' : '基于知识库提问'}}" auto-height maxlength="8000" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
+      <view class="composer-bar">
+        <button class="model-button" bindtap="chooseModel" disabled="{{sending}}">
+          <text>{{modelShortLabel}} <text class="model-mode">{{thinkingMode === 'deep' ? '深度' : '快速'}}</text></text>
+          <ui-icon name="chevron-down" size="{{11}}" />
+        </button>
+        <view class="composer-bar-spacer"></view>
+      </view>
+      <button wx:if="{{sending}}" class="send-button active" bindtap="stopSend" aria-label="停止"><ui-icon name="stop" size="{{44}}" rpx /></button>
+      <button wx:else class="send-button {{canSend ? 'active' : ''}}" bindtap="send" disabled="{{!canSend}}" aria-label="发送"><ui-icon name="send" size="{{52}}" rpx /></button>
+    </view>
+    <text wx:if="{{conversationActive}}" class="ai-disclaimer">内容由AI生成仅供参考</text>
+  </view>
+  <view wx:if="{{askLayerVisible}}" class="ask-layer">
+    <app-nav conversation back title="{{knowledgeName || '微信用户的知识库'}}" bind:conversationback="closeAskLayer" />
+    <scroll-view class="ask-body" scroll-y enhanced show-scrollbar="{{false}}">
+      <text class="ask-greeting">{{askGreeting}}</text>
+      <view wx:if="{{askMode === 'knowledge'}}" class="ask-questions">
+        <button wx:for="{{suggestions}}" wx:key="index" class="ask-question" bindtap="chooseSuggestion" data-index="{{index}}">{{item}}</button>
+        <view wx:if="{{suggestionsLoading && !suggestions.length}}" class="ask-questions-hint">正在生成推荐问题…</view>
+        <view wx:elif="{{!suggestions.length && !suggestionsLoading}}" class="ask-questions-hint">导入文档后，这里会出现推荐问题</view>
+      </view>
+    </scroll-view>
+    <view class="ask-footer">
+      <view class="composer ask-composer">
+        <textarea class="composer-input" value="{{input}}" placeholder="{{askMode === 'web' ? '向全网提问' : '基于知识库提问'}}" focus="{{askFocus}}" auto-height maxlength="8000" bindinput="onInput" bindconfirm="sendFromAsk" confirm-type="send" adjust-position="{{true}}" show-confirm-bar="{{false}}"></textarea>
+        <view class="composer-bar">
+          <button class="model-button" bindtap="chooseModel" disabled="{{sending}}">
+            <text>{{modelShortLabel}} <text class="model-mode">{{thinkingMode === 'deep' ? '深度' : '快速'}}</text></text>
+            <ui-icon name="chevron-down" size="{{11}}" />
+          </button>
+          <view class="composer-bar-spacer"></view>
+        </view>
+        <button wx:if="{{sending}}" class="send-button active" bindtap="stopSend" aria-label="停止"><ui-icon name="stop" size="{{44}}" rpx /></button>
+        <button wx:else class="send-button {{canSend ? 'active' : ''}}" bindtap="sendFromAsk" disabled="{{!canSend}}" aria-label="发送"><ui-icon name="send" size="{{52}}" rpx /></button>
+      </view>
+    </view>
+  </view>
+  <view wx:if="{{modelPickerVisible}}" class="model-layer">
+    <view class="model-mask" bindtap="closeModelPicker"></view>
+    <view class="model-sheet" catchtap="stopModelPickerBubble">
+      <view class="sheet-grabber"></view>
+      <view class="model-sheet-title">选择模型</view>
+      <view class="thinking-card">
+        <view class="thinking-copy">
+          <view class="thinking-icon"><ui-icon name="atom" size="{{31}}" /></view>
+          <text class="thinking-title">思考模式</text>
+        </view>
+        <view class="thinking-switch">
+          <button class="thinking-tab {{thinkingMode === 'quick' ? 'active' : ''}}" bindtap="selectThinkingMode" data-mode="quick">快速</button>
+          <button class="thinking-tab {{thinkingMode === 'deep' ? 'active' : ''}}" bindtap="selectThinkingMode" data-mode="deep">深度</button>
+        </view>
+      </view>
+      <text class="model-section-title">选择模型</text>
+      <view class="model-list">
+        <button wx:for="{{modelOptions}}" wx:key="id" class="model-row" bindtap="selectModel" data-id="{{item.id}}">
+          <view class="model-row-copy">
+            <text class="model-row-name">{{item.name}}</text>
+            <text wx:if="{{item.badge}}" class="model-new-badge">{{item.badge}}</text>
+          </view>
+          <text wx:if="{{item.id === selectedModelKey}}" class="model-check">✓</text>
+        </button>
+      </view>
+    </view>
+  </view>
+  <view wx:if="{{pickerVisible}}" class="picker-layer">
+    <view class="picker-mask" bindtap="closeKnowledgePicker"></view>
+    <view class="knowledge-sheet">
+      <view class="picker-head"><button class="picker-close" bindtap="closeKnowledgePicker" aria-label="关闭"><ui-icon name="close" size="{{21}}" /></button><text class="picker-title">{{importMode ? '请选择要上传的目标知识库' : '选择知识库'}}</text><button class="picker-market" bindtap="openDiscover"><ui-icon name="compass" size="{{16}}" /><text>发现</text></button></view>
+      <view class="search-bar picker-search"><ui-icon name="search" size="{{18}}" /><input value="{{pickerQuery}}" placeholder="搜索知识库" bindinput="filterPicker" /></view>
+      <scroll-view class="picker-list" scroll-y>
+        <view class="picker-group">
+          <view class="picker-group-head"><view class="picker-group-title"><text>个人知识库</text><ui-icon name="chevron-down" size="{{13}}" /></view><button class="picker-add" bindtap="createFromPicker" aria-label="创建知识库"><ui-icon name="plus" size="{{20}}" /></button></view>
+          <view wx:for="{{filteredKnowledge}}" wx:key="id" class="picker-item {{item.id === knowledgeId ? 'selected' : ''}}" bindtap="selectKnowledge" data-id="{{item.id}}"><view class="picker-folder"><ui-icon name="knowledge" size="{{20}}" /></view><view class="grow"><text class="picker-name">{{item.name}}</text><text class="picker-meta">{{item.document_count || 0}} 份文档</text></view><ui-icon wx:if="{{item.id === knowledgeId}}" name="check" size="{{18}}" /></view>
+          <view wx:if="{{!filteredKnowledge.length}}" class="picker-empty">没有找到匹配的知识库</view>
+        </view>
+        <view class="picker-group">
+          <view class="picker-group-head"><view class="picker-group-title"><text>共享知识库</text><ui-icon name="chevron-down" size="{{13}}" /></view></view>
+          <view class="picker-empty-row">暂无共享知识库</view>
+        </view>
+        <view class="picker-group">
+          <view class="picker-group-head"><view class="picker-group-title"><text>订阅知识库</text><ui-icon name="chevron-down" size="{{13}}" /></view></view>
+          <view class="picker-empty-row">暂无订阅知识库</view>
+        </view>
+        <view class="picker-footer"><text class="picker-footer-dash">- </text><button bindtap="openAgreement">服务协议</button><text> · </text><button bindtap="openPrivacy">隐私政策</button><text class="picker-footer-dash"> -</text></view>
+      </scroll-view>
+    </view>
+  </view>
+  <view wx:if="{{uploadSheetVisible}}" class="upload-layer" catchtouchmove="stopModelPickerBubble">
+    <view class="upload-mask" bindtap="closeUploadSheet"></view>
+    <view class="upload-sheet">
+      <view class="upload-usage">
+        <text class="upload-usage-text">已使用{{uploadUsedLabel}}/{{uploadLimitLabel}}</text>
+        <button class="upload-upgrade" bindtap="activate">会员扩容<text class="upload-dot"></text></button>
+      </view>
+      <view class="upload-divider"></view>
+      <view class="upload-grid">
+        <button class="upload-option" bindtap="chooseUploadSource" data-source="knowledge">
+          <view class="upload-option-icon upload-knowledge-icon"><ui-icon name="knowledge" size="{{33}}" /></view>
+          <text>个人知识库</text>
+        </button>
+        <button class="upload-option" bindtap="chooseUploadSource" data-source="file">
+          <view class="upload-option-icon"><ui-icon name="wechat-file" size="{{33}}" /></view>
+          <text>微信文件</text>
+        </button>
+        <button class="upload-option" bindtap="chooseUploadSource" data-source="article">
+          <view class="upload-option-icon"><ui-icon name="gongzhonghao" size="{{33}}" /></view>
+          <text>公众号导入</text>
+        </button>
+        <button class="upload-option" bindtap="chooseUploadSource" data-source="album">
+          <view class="upload-option-icon"><ui-icon name="image" size="{{33}}" /></view>
+          <text>本地相册</text>
+        </button>
+        <button class="upload-option" bindtap="chooseUploadSource" data-source="camera">
+          <view class="upload-option-icon"><ui-icon name="camera" size="{{33}}" /></view>
+          <text>拍照</text>
+        </button>
+        <button class="upload-option" bindtap="chooseUploadSource" data-source="folder">
+          <view class="upload-option-icon"><ui-icon name="folder-add" size="{{33}}" /></view>
+          <text>创建文件夹</text>
+        </button>
+      </view>
+      <button class="upload-cancel" bindtap="closeUploadSheet">取消</button>
+    </view>
+  </view>
+  <view wx:if="{{articleSheetVisible}}" class="upload-layer" catchtouchmove="stopModelPickerBubble">
+    <view class="upload-mask" bindtap="closeArticleSheet"></view>
+    <view class="upload-sheet article-sheet">
+      <text class="article-sheet-title">导入公众号文章</text>
+      <text class="article-sheet-desc">粘贴公众号文章链接，正文的图片、文字和代码都会完整保留。</text>
+      <view class="article-input-wrap">
+        <input class="article-input" value="{{articleUrl}}" placeholder="https://mp.weixin.qq.com/s/..." bindinput="onArticleUrlInput" confirm-type="done" bindconfirm="confirmArticleImport" focus="{{articleSheetVisible}}" />
+        <button wx:if="{{articleUrl}}" class="article-clear" bindtap="clearArticleUrl" aria-label="清空"><ui-icon name="close" size="{{16}}" /></button>
+      </view>
+      <button class="article-submit {{articleUrl && !articleImporting ? 'active' : ''}}" bindtap="confirmArticleImport" disabled="{{!articleUrl || articleImporting}}">{{articleImporting ? '正在抓取文章…' : '开始导入'}}</button>
+      <button class="upload-cancel" bindtap="closeArticleSheet">取消</button>
+    </view>
+  </view>
+  <view wx:if="{{booting}}" class="boot-screen" catchtouchmove="stopModelPickerBubble">
+    <view class="boot-center">
+      <image class="boot-avatar" src="/assets/brand/cola-avatar.png" mode="aspectFit" />
+      <text class="boot-title">cola知识库</text>
+      <view class="boot-dots" aria-label="正在加载">
+        <view class="boot-dot boot-dot-one"></view>
+        <view class="boot-dot boot-dot-two"></view>
+        <view class="boot-dot boot-dot-three"></view>
+      </view>
+    </view>
+  </view>
+</view>

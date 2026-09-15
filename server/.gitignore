@@ -1,0 +1,11 @@
+.env
+.venv/
+.run/
+logs/
+data/
+uploads/
+cert/
+dist/
+__pycache__/
+*.pyc
+.DS_Store

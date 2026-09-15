@@ -1,0 +1,9 @@
+.legal-page { padding-top: 0; }
+.legal-title { font-size: 42rpx; }
+.legal-updated { display: block; margin-top: 12rpx; font-size: 23rpx; }
+.legal-card { margin-top: 24rpx; padding: 28rpx; }
+.legal-h2 { display: block; margin: 4rpx 0 12rpx; font-size: 30rpx; font-weight: 700; line-height: 1.5; }
+.legal-p { display: block; margin-bottom: 26rpx; color: #4f596d; line-height: 1.85; }
+.legal-actions { display:flex; gap:16rpx; margin-top:8rpx; }
+button.legal-action { flex:1; min-width:0; font-size:24rpx; }
+@media (max-width:340px) { .legal-actions { flex-direction:column; } }

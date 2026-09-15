@@ -1,0 +1,13 @@
+<view class="page knowledge-page">
+  <app-nav title="cola 知识库" />
+  <view class="library-head"><view class="grow"><text class="library-title">cola 知识库</text><text class="library-subtitle">{{visibleKnowledge.length}} 个资料库</text></view><view class="library-actions"><button class="head-action" bindtap="toggleSearch" aria-label="搜索资料库"><ui-icon name="search" size="{{21}}" /></button><button class="head-action head-add" bindtap="create" aria-label="创建资料库"><ui-icon name="plus" size="{{22}}" /></button></view></view>
+  <view wx:if="{{searchVisible}}" class="search-bar list-search"><ui-icon name="search" size="{{20}}" /><input value="{{query}}" placeholder="搜索资料库" focus="{{searchVisible}}" bindinput="filterInput" confirm-type="search" /></view>
+  <view wx:if="{{loadState === 'loading'}}" class="card state-card"><view class="skeleton"></view><view class="skeleton short"></view><text class="state-desc">正在加载你的资料…</text></view>
+  <view wx:elif="{{loadState === 'error'}}" class="card state-card"><view class="state-icon"><ui-icon name="shield" size="{{32}}" /></view><text class="state-title">暂时无法连接资料</text><text class="state-desc">请检查网络并重试。微信登录暂不可用时，你的资料不会丢失。</text><button class="ghost-btn" bindtap="load">重新加载</button></view>
+  <block wx:if="{{loadState === 'ready'}}">
+    <view wx:for="{{visibleKnowledge}}" wx:key="id" class="kb-row" bindtap="open" data-id="{{item.id}}">
+      <view class="book-icon"><ui-icon name="folder" size="{{21}}" /></view><view class="grow"><text class="kb-name">{{item.name}}</text><text class="kb-meta">{{item.document_count || 0}} 份文档 · {{item.displayDate}} 更新</text></view><button class="more-btn" aria-label="资料库更多操作" catchtap="showActions" data-id="{{item.id}}"><ui-icon name="more" size="{{20}}" /></button>
+    </view>
+    <view wx:if="{{!visibleKnowledge.length}}" class="card state-card"><view class="state-icon"><ui-icon name="folder" size="{{32}}" /></view><text class="state-title">{{query ? '没有匹配的资料库' : '从第一份资料开始'}}</text><text class="state-desc">{{query ? '试试更短的名称，或到全文检索中查找文档。' : '按工作、学习或兴趣创建资料库，\n让文档可以被搜索，也可以被提问。'}}</text><button wx:if="{{!query}}" class="ghost-btn" bindtap="create">创建资料库</button><button wx:else class="ghost-btn" bindtap="search">全文检索</button></view>
+  </block>
+</view>

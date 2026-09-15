@@ -1,0 +1,6 @@
+# cola 知识库定制：深度通道保留完整工具/技能/子智能体
+# 流空闲超时 48h -> 240s：推理模型思考阶段长时间无可见 token，
+# 60s 超时会误判断流；工具调用链本身也可能超过 60s
+- id: llm-deepseek
+  config:
+    streamIdleTimeoutMs: 240000

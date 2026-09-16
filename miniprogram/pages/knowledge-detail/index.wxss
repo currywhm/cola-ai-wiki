@@ -32,10 +32,11 @@ button.doc-action:active { opacity:.82; }
 .doc-thumb-fallback ui-icon { position:relative; z-index:1; margin-top:62rpx; }
 .doc-copy { flex:1; min-width:0; }
 .doc-title { display:block; overflow:hidden; color:#202124; font-size:29rpx; line-height:1.45; text-overflow:ellipsis; white-space:nowrap; }
-.doc-meta-line { display:flex; align-items:center; gap:10rpx; margin-top:10rpx; color:#a1a1a1; }
+/* .doc-swipe-row 把行高归零：这一行里的文字必须自带 line-height，否则会被裁没 */
+.doc-meta-line { display:flex; align-items:center; gap:10rpx; margin-top:10rpx; color:#a1a1a1; line-height:1.3; }
 .pdf-mark { color:#ef3340; font-size:24rpx; line-height:1.2; }
 .pdf-mark.mark-plain { color:#a1a1a1; }
-.doc-meta-divider { color:#c8c8c8; font-size:23rpx; }
+.doc-meta-divider { color:#c8c8c8; font-size:23rpx; line-height:1.3; }
 .doc-meta { color:#a1a1a1; font-size:24rpx; line-height:1.3; }
 button.more-btn { display:flex; align-items:center; justify-content:center; flex:0 0 54rpx; width:54rpx; height:54rpx; min-height:54rpx; color:#7f7f7f; }
 .empty-upload { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:620rpx; margin-top:72rpx; color:#8d8d8d; font-size:29rpx; font-weight:600; background:transparent; }

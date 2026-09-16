@@ -197,8 +197,9 @@ Page({
     return groups
   },
   // 当前视图下应展示的文档：根目录=未入夹文档；文件夹内=该夹文档
-  visibleDocumentsOf(groups: any[]) {
-    if (this.data.currentFolderId) return groups.length ? groups[0].documents : []
+  // folderId 显式传入：切换文件夹的那一次 setData 之前 data 里还是旧值，不能读 data
+  visibleDocumentsOf(this: any, groups: any[], folderId = this.data.currentFolderId) {
+    if (folderId) return groups.length ? groups[0].documents : []
     const root = groups.find((g) => !g.key)
     return root ? root.documents : []
   },
@@ -206,7 +207,8 @@ Page({
     const documentGroups = this.buildDocumentGroups(this.data.documents, this.data.folders)
     this.setData({ documentGroups, visibleDocuments: this.visibleDocumentsOf(documentGroups) })
   },
-  // 点击文件夹=跳转独立文件夹问答页（文件隔离：该页问答仅检索该文件夹内文档）
+  // 点文件夹＝进入这个文件夹（在知识库里就地展开它的文件列表），
+  // 问答留在下一步：由目录底部的输入框带着文件夹身份进独立的文件夹问答页。
   enterFolder(e: any) {
     const key = String(e.currentTarget.dataset.key || '')
     if (!key) return
@@ -214,7 +216,34 @@ Page({
     if (this.getDirSwipe('folder', key) < 0) { this.applyDirSwipe('folder', key, 0); return }
     const folder = this.data.folders.find((f) => f.id === key)
     if (!folder) return
-    const query = `knowledgeId=${encodeURIComponent(this.data.knowledgeId)}&knowledgeName=${encodeURIComponent(this.data.knowledgeName || '')}&folderId=${encodeURIComponent(folder.id)}&folderName=${encodeURIComponent(folder.name)}`
+    const documentGroups = this.buildDocumentGroups(this.data.documents, this.data.folders, folder.id)
+    this.setData({
+      currentFolderId: folder.id,
+      currentFolderName: folder.name,
+      documentGroups,
+      visibleDocuments: this.visibleDocumentsOf(documentGroups, folder.id),
+    }, () => this.syncCanSend())
+  },
+  // 面包屑点知识库名＝退回知识库根目录
+  exitFolder() {
+    const documentGroups = this.buildDocumentGroups(this.data.documents, this.data.folders, '')
+    this.setData({
+      currentFolderId: '',
+      currentFolderName: '',
+      documentGroups,
+      visibleDocuments: this.visibleDocumentsOf(documentGroups, ''),
+    }, () => this.syncCanSend())
+  },
+  // 目录视图底部输入框：在根目录进知识库问答，在文件夹里进该文件夹问答页（范围由后端锁定）
+  openDirectoryAsk() {
+    if (this.data.sending || this.data.loadState !== 'ready' || this.data.conversationActive) return
+    if (this.data.currentFolderId) { this.openFolderChat(); return }
+    this.enterConversationFromComposer()
+  },
+  openFolderChat() {
+    const folderId = this.data.currentFolderId
+    if (!folderId || !this.data.knowledgeId) return
+    const query = `knowledgeId=${encodeURIComponent(this.data.knowledgeId)}&knowledgeName=${encodeURIComponent(this.data.knowledgeName || '')}&folderId=${encodeURIComponent(folderId)}&folderName=${encodeURIComponent(this.data.currentFolderName || '')}`
     wx.navigateTo({ url: `/pages/folder-chat/index?${query}` })
   },
   // 目录左滑手势：行卡片左移露出「置顶 / 删除」，一次只展开一行

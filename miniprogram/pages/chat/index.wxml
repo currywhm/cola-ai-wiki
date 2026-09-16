@@ -47,6 +47,12 @@
         <button class="directory-retry" bindtap="retryDirectory" data-id="{{knowledgeId}}">重新加载</button>
       </view>
       <view wx:elif="{{!conversationActive && (documents.length || folders.length)}}" class="directory-panel">
+        <!-- 进入文件夹后的路径面包屑：点知识库名退回根目录，右侧是当前文件夹 -->
+        <view wx:if="{{currentFolderId}}" class="dir-crumb">
+          <button class="dir-crumb-root" bindtap="exitFolder" aria-label="返回知识库根目录"><text>{{knowledgeName || '微信用户的知识库'}}</text></button>
+          <view class="dir-crumb-sep"><ui-icon name="chevron-right" size="{{19}}" rpx /></view>
+          <text class="dir-crumb-current">{{currentFolderName}}</text>
+        </view>
         <view class="directory-list">
           <block wx:if="{{!currentFolderId}}">
             <block wx:for="{{documentGroups}}" wx:key="key" wx:for-item="group">
@@ -169,6 +175,11 @@
     </view>
   </scroll-view>
   <view class="chat-footer">
+    <!-- 目录视图的提问入口：和问AI首页同款胶囊输入框，点一下才进问答页，
+         这里只是入口，不放任何切换 / 发送图标 -->
+    <view wx:if="{{!conversationActive && !askLayerVisible && knowledgeId && loadState === 'ready'}}" class="dir-composer" bindtap="openDirectoryAsk">
+      <text class="dir-composer-placeholder">{{currentFolderId ? '基于本文件夹提问' : '基于知识库提问'}}</text>
+    </view>
     <view wx:if="{{conversationActive}}" class="qa-composer">
       <view wx:if="{{pendingSkillName}}" class="qa-skill-chip">
         <text class="qa-skill-chip-text">技能 · {{pendingSkillName}}</text>

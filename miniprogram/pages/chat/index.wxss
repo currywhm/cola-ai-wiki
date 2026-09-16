@@ -20,6 +20,14 @@ button.toolbar-button { display:flex; align-items:center; justify-content:center
 .empty-title { display:block; margin-top:24rpx; color:#969696; font-size:33rpx; font-weight:600; line-height:1.35; letter-spacing:0; }
 .empty-import { display:flex; align-items:center; justify-content:center; gap:10rpx; min-height:72rpx; margin-top:30rpx; padding:0 34rpx; border:1rpx solid #e3e5e6; border-radius:20rpx; background:#fff; color:#23262b; font-size:30rpx; font-weight:600; }
 .directory-panel { width:100%; align-self:flex-start; }
+/* 文件夹内的路径：知识库名 › 文件夹名；点前一段退回根目录，全程不画分隔线 */
+.dir-crumb { display:flex; align-items:center; gap:10rpx; padding:12rpx 8rpx 16rpx; }
+button.dir-crumb-root { display:flex; align-items:center; flex:0 1 auto; min-width:0; margin:0; padding:0; border:0; background:transparent; }
+button.dir-crumb-root::after { border:0; }
+button.dir-crumb-root:active { opacity:.6; }
+button.dir-crumb-root text { display:block; min-width:0; max-width:400rpx; overflow:hidden; color:#98a1ab; font-size:29rpx; font-weight:500; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
+.dir-crumb-sep { display:flex; align-items:center; flex:0 0 auto; color:#c3c9cf; }
+.dir-crumb-current { flex:0 1 auto; min-width:0; overflow:hidden; color:#20242b; font-size:29rpx; font-weight:600; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
 .directory-list { overflow:hidden; border:0; border-radius:0; background:transparent; box-shadow:none; }
 /* 列表不画分隔线；行高归零让操作区与行体完全重合，避免漏出 1px 细边像表格线 */
 .dir-swipe-row { position:relative; display:block; overflow:hidden; border:0 none; font-size:0; line-height:0; }
@@ -114,6 +122,10 @@ button.dark-button { background:#18212e; color:#fff; }
 .answer-actions button { display:flex; align-items:center; justify-content:center; width:44rpx; height:44rpx; min-height:44rpx; border-radius:12rpx; background:#f4f5f6; color:#8e8e8e; }
 .answer-actions button:active { background:#eceef0; color:#5a5a5a; }
 .chat-footer { position:relative; flex-shrink:0; padding-top:10rpx; }
+/* 目录视图的提问入口：与「问AI」首页同一套胶囊输入框，只是入口，不放图标 */
+.dir-composer { display:flex; align-items:center; min-height:100rpx; padding:0 34rpx; border-radius:999rpx; background:#fff; box-shadow:0 4rpx 18rpx rgba(24,28,34,.055); }
+.dir-composer:active { background:#fafbfb; }
+.dir-composer-placeholder { flex:1; min-width:0; overflow:hidden; color:#b0b5bb; font-size:30rpx; font-weight:400; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
 .composer { position:relative; border:1rpx solid #e7e7e7; border-radius:32rpx; background:#fff; box-shadow:0 14rpx 34rpx rgba(20,20,20,.12), inset 0 1rpx 0 rgba(255,255,255,.95); }
 .composer-input { display:block; width:100%; min-height:78rpx; max-height:200rpx; padding:22rpx 28rpx 10rpx; color:#23272d; font-size:30rpx; font-weight:400; line-height:1.5; }
 .composer-bar { display:flex; align-items:center; gap:12rpx; padding:0 20rpx 16rpx; }
@@ -222,7 +234,8 @@ button.article-submit.active { background:#1f1f1f; color:#fff; }
 .directory-folder-head { display:flex; align-items:center; gap:20rpx; min-height:136rpx; padding:18rpx 8rpx; }
 .directory-folder-icon { display:flex; align-items:center; justify-content:center; flex:0 0 92rpx; width:92rpx; min-width:92rpx; height:104rpx; }
 .directory-folder-copy { flex:1; min-width:0; }
-.directory-folder-name { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:32rpx; font-weight:600; color:#20242b; }
+/* line-height 必须显式声明：.dir-swipe-row 把行高归零，漏写就会被裁没 */
+.directory-folder-name { display:block; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:32rpx; font-weight:600; line-height:1.35; color:#20242b; }
 .directory-folder-meta { display:block; margin-top:7rpx; color:#9aa3ad; font-size:23rpx; line-height:1.3; }
 .directory-folder-chevron { display:flex; align-items:center; color:#9aa3ad; }
 /* 面包屑导航：知识库名 › 文件夹名（对齐 ima 文件夹内页头） */

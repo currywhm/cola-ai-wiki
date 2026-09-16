@@ -439,7 +439,9 @@ def _forward(notification, emit: Callable, state: _TraceState) -> None:
             names = [ _skill_label(str(e.get('name') or '')) for e in entries if isinstance(e, dict) ]
             emit('trace', {'item': {
                 'kind': 'skill', 'state': 'catalog',
-                'title': f'已注入 {len(names)} 项技能' if names else '已注入技能目录',
+                # 目录只把「运行时有哪些技能包」告知模型，并不等于把技能注入本轮；
+                # 真正生效的只有用户选中的那一个，措辞上不要混。
+                'title': f'技能目录：{len(names)} 项可用' if names else '技能目录：暂无可用技能',
                 'detail': '、'.join(names[:4]),
             }}, 0.0)
         elif skind == 'skill-invocation':
@@ -542,7 +544,22 @@ def _skill_instruction(skill: str) -> str:
     )
 
 
-def _build_prompt(question: str, system: str, skill: str, mode: str) -> str:
+def _custom_skill_instruction(skill_prompt: str, skill_label: str) -> str:
+    """用户自己创建/收藏的技能：直接把技能指令作为本轮的硬约束注入。
+
+    自定义技能不是运行时技能包，指令本身就定义了这个技能，所以要把话说死：
+    让模型直接用这段指令干活，不要再去加载同名技能包，否则会多出一段无意义的加载失败过程。
+    """
+    label = (skill_label or '').strip() or '用户选择的技能'
+    note = '这是用户自定义技能，定义就是下面这段指令，不要再调用 skill 工具或加载同名技能包。'
+    return (
+        f'本轮启用了技能「{label}」，必须严格按下面的技能指令执行，不要跳过，也不要改写技能目标：\n'
+        f'{skill_prompt.strip()}'
+        f'（{note}）'
+    )
+
+
+def _build_prompt(question: str, system: str, skill: str, mode: str, skill_prompt: str = '', skill_label: str = '') -> str:
     parts: list[str] = []
     if system.strip():
         parts.append(system.strip())
@@ -556,10 +573,12 @@ def _build_prompt(question: str, system: str, skill: str, mode: str) -> str:
         parts.append(
             '本轮任务模式：基于知识库资料问答。请直接依据上方给出的资料作答，'
             '不要为了了解环境而执行命令或浏览文件系统；资料不足时明确说明。'
-            '如果任务需要写作/整理类产出，可以调用 skill 工具加载对应技能。'
+            '本轮不要主动调用 skill 工具去加载技能包：只有用户明确选中的技能才会随指令下发。'
         )
     if skill.strip():
         parts.append(_skill_instruction(skill))
+    if skill_prompt.strip():
+        parts.append(_custom_skill_instruction(skill_prompt, skill_label))
     parts.append('思考与推理过程请使用简体中文（便于用户阅读过程），最终回答同样使用简体中文。')
     parts.append('用户问题：\n' + question)
     return '\n\n'.join(parts)
@@ -573,6 +592,8 @@ async def stream_answer(
     thinking: str = 'quick',
     skill: str = '',
     mode: str = 'knowledge',
+    skill_prompt: str = '',
+    skill_label: str = '',
 ) -> AsyncIterator[dict]:
     """流式执行一轮 Harness agent turn。
 
@@ -584,7 +605,7 @@ async def stream_answer(
     sync_skills()
     session_id = session_id or uuid.uuid4().hex
     profile = profile_for_thinking(thinking)
-    prompt = _build_prompt(question, system, skill, mode)
+    prompt = _build_prompt(question, system, skill, mode, skill_prompt, skill_label)
 
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[tuple[str, dict, float]] = asyncio.Queue()

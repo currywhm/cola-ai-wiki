@@ -1,7 +1,7 @@
 import { renderMarkdown } from '../../utils/markdown'
 import { appendTrace, assistantMessage, createFlusher, decorateSources, settleTrace } from '../../utils/thread'
 import { deleteConversation, getConversation, getConversations, getKnowledge, getModels, pinConversation, Knowledge, Source, streamChat } from '../../services/api'
-import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER, SKILLS } from '../../utils/skills'
+import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER } from '../../utils/skills'
 import { buildSharePayload, homePayload, questionFor } from '../../utils/share'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
@@ -35,12 +35,12 @@ Page({
     skillSheetVisible: false,
     knowledgeSheetVisible: false,
     deepThinking: true,
-    // 本轮选中的 harness 技能包（发送后清空，避免后续问题被旧技能影响）
+    // 本轮选中的技能 id（技能广场或我的技能，发送后清空，避免后续问题被旧技能影响）
     pendingSkill: '',
     pendingSkillName: '',
+    selectedSkillId: '',
     model: 'deepseek-flash',
     selectedModelKey: 'deepseek-flash',
-    skills: SKILLS,
   },
   onLoad() {
     this.measureNav()
@@ -117,17 +117,12 @@ Page({
       else this.syncCanSend()
     })
   },
+  // 技能只随请求下发，不再往输入框里塞模板：改写输入不影响已选技能
   onInput(e: any) {
-    const input = e.detail.value
-    // 用户改写输入时，若已经不包含技能模板，就取消本轮技能绑定
-    const bound = this.data.pendingSkill ? SKILLS.find((item) => item.harness === this.data.pendingSkill) : undefined
-    const stillBound = bound ? input.includes(bound.prompt) : false
-    this.setData({ input, readyForInput: true, pendingSkill: stillBound ? this.data.pendingSkill : '', pendingSkillName: stillBound ? this.data.pendingSkillName : '' }, () => this.syncCanSend())
+    this.setData({ input: e.detail.value, readyForInput: true }, () => this.syncCanSend())
   },
   clearSkill() {
-    const bound = this.data.pendingSkill ? SKILLS.find((item) => item.harness === this.data.pendingSkill) : undefined
-    const input = bound ? this.data.input.replace(bound.prompt, '').trim() : this.data.input
-    this.setData({ input, pendingSkill: '', pendingSkillName: '' }, () => this.syncCanSend())
+    this.setData({ pendingSkill: '', pendingSkillName: '', selectedSkillId: '' }, () => this.syncCanSend())
   },
   syncCanSend() {
     const scoped = this.data.askMode === 'planner' || !!this.data.knowledgeId
@@ -159,13 +154,19 @@ Page({
   // 弹层内部点击不穿透到遮罩
   noop() { return },
   toggleDeepThinking() { this.setData({ deepThinking: !this.data.deepThinking }) },
-  useSkill(e: any) {
-    const skill = SKILLS.find((item) => item.id === e.currentTarget.dataset.id)
-    if (!skill) return
-    const base = this.data.input.trim()
-    const input = base ? `${base}\n${skill.prompt}` : skill.prompt
-    // 绑定后端技能包：发送时随请求下发，后端让 agent 先加载并注入该技能
-    this.setData({ input, skillSheetVisible: false, readyForInput: true, pendingSkill: skill.harness, pendingSkillName: skill.name }, () => this.syncCanSend())
+  // 选中即把技能 id 绑定到本轮对话：发送时随请求下发，后端按 id 解析
+  // （内置技能走仓库内的技能包，我的技能走技能指令），不选就不注入。
+  onSkillSelect(e: any) {
+    const skill = (e && e.detail) || {}
+    if (!skill.id) return
+    this.setData({ skillSheetVisible: false, readyForInput: true, pendingSkill: skill.id, pendingSkillName: skill.name || '', selectedSkillId: skill.id }, () => this.syncCanSend())
+  },
+  // 新建 / 编辑技能：先收起面板，回来时重新打开就是最新列表
+  onSkillCreate() { this.setData({ skillSheetVisible: false }, () => wx.navigateTo({ url: '/pages/skill-edit/index' })) },
+  onSkillEdit(e: any) {
+    const id = String((e.detail && e.detail.id) || '')
+    if (!id) return
+    this.setData({ skillSheetVisible: false }, () => wx.navigateTo({ url: `/pages/skill-edit/index?id=${encodeURIComponent(id)}` }))
   },
   // 选择知识：与知识库页面同一份数据源
   openKnowledgeSheet() {
@@ -227,7 +228,7 @@ Page({
     }).catch(() => wx.showToast({ title: '历史对话加载失败', icon: 'none' }))
   },
   newConversation() {
-    this.setData({ historyVisible: false, conversationId: '', messages: [], input: '', sending: false, canSend: false, readyForInput: true, lastMessageId: '' }, () => this.syncCanSend())
+    this.setData({ historyVisible: false, conversationId: '', messages: [], input: '', sending: false, canSend: false, readyForInput: true, lastMessageId: '', pendingSkill: '', pendingSkillName: '', selectedSkillId: '' }, () => this.syncCanSend())
   },
   // 左滑出「删除」后二次确认再删。历史存在服务端，删除范围限定本用户。
   // 左滑「置顶 / 取消置顶」：只改当前用户自己的会话，置顶后排到列表最前。
@@ -278,6 +279,7 @@ Page({
       canSend: false,
       pendingSkill: '',
       pendingSkillName: '',
+      selectedSkillId: '',
       messages: [...this.data.messages, { id: userId, role: 'user', content, sources: [] }, assistantMessage(assistantId)],
       lastMessageId: assistantId,
     })

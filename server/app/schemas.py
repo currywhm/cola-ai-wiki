@@ -75,3 +75,25 @@ class ShareCreate(BaseModel):
     answer: str = Field(min_length=1, max_length=12000)
     knowledge_name: str = Field(default='', max_length=80)
     sources: list[ShareSource] = Field(default_factory=list, max_length=12)
+
+
+class SkillForm(BaseModel):
+    """新建 / 编辑「我的技能」。"""
+
+    name: str = Field(min_length=1, max_length=30)
+    summary: str = Field(default='', max_length=60)
+    prompt: str = Field(min_length=1, max_length=4000)
+    developer_wechat: str = Field(default='', max_length=40)
+    icon: str = Field(default='skill-node', max_length=40)
+
+
+class SkillPublishUpdate(BaseModel):
+    """发布到技能广场 / 从广场下架。"""
+
+    published: bool = True
+
+
+class SkillFlagUpdate(BaseModel):
+    """点赞 / 收藏的开与关。"""
+
+    active: bool = True

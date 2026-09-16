@@ -2,7 +2,6 @@ import { consumeChatTarget } from '../../services/navigation'
 import { appendTrace, assistantMessage, createFlusher, decorateSources, settleTrace } from '../../utils/thread'
 import { renderMarkdown } from '../../utils/markdown'
 import { deleteConversation, getConversation, getConversations, getKnowledge, getKnowledgeDetail, deleteDocument, deleteKnowledge, getModels, getFolders, getSuggestions, createFolder, deleteFolder, importArticle, moveDocument, pinConversation, uploadLocalFile, Knowledge, ModelOption, Folder, resumeWechatLogin, Source, streamChat, uploadDocument, UploadSource } from '../../services/api'
-import { SKILLS } from '../../utils/skills'
 import { buildSharePayload, homePayload, questionFor } from '../../utils/share'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
@@ -32,7 +31,7 @@ Page({
   // 自定义 tabBar 需要页面自己同步选中项与显隐：会话视图为全屏，隐藏底部导航
   // 会话视图与问AI问答页共用一套交互：技能包、历史对话抽屉、顶部安全高度
   primeThreadState() {
-    this.setData({ navHeight: 88, skillSheetVisible: false, skills: SKILLS, pendingSkill: '', pendingSkillName: '', historyVisible: false, historyLoading: false, historyItems: [] })
+    this.setData({ navHeight: 88, skillSheetVisible: false, pendingSkill: '', pendingSkillName: '', selectedSkillId: '', historyVisible: false, historyLoading: false, historyItems: [] })
     this.measureNav()
   },
   syncTabBar() {
@@ -571,9 +570,7 @@ Page({
       Object.assign(next, { conversationActive: true, conversationId: '', messages: [guide], lastMessageId: guide.id, modePickerVisible: false, askMode: mode })
     }
     this.setData(next)
-    // 用户改写输入后若已不含技能模板，就解除本轮技能绑定，避免注入与文本不一致
-    const bound = (this.data as any).pendingSkill ? SKILLS.find((item) => item.harness === (this.data as any).pendingSkill) : undefined
-    if (bound && !String(this.data.input || '').includes(bound.prompt)) this.setData({ pendingSkill: '', pendingSkillName: '' })
+    // 技能只随请求下发，不再往输入框里塞模板：改写输入不会误删已选技能
     this.syncCanSend()
   },
   useSuggestion(e: any) {
@@ -720,18 +717,21 @@ Page({
   closeSheets() { this.setData({ skillSheetVisible: false }) },
   // 弹层内部点击不穿透到遮罩
   noop() { return },
-  // 选中技能会把模板写进输入框，同时把包名下发给后端做技能加载与注入
-  useSkill(e: any) {
-    const skill = SKILLS.find((item) => item.id === e.currentTarget.dataset.id)
-    if (!skill) return
-    const base = this.data.input.trim()
-    const input = base ? `${base}\n${skill.prompt}` : skill.prompt
-    this.setData({ input, skillSheetVisible: false, readyForInput: true, pendingSkill: skill.harness, pendingSkillName: skill.name }, () => this.syncCanSend())
+  // 选中即把技能 id 绑定到本轮对话，发送时随请求下发；后端按 id 解析并注入
+  onSkillSelect(e: any) {
+    const skill = (e && e.detail) || {}
+    if (!skill.id) return
+    this.setData({ skillSheetVisible: false, readyForInput: true, pendingSkill: skill.id, pendingSkillName: skill.name || '', selectedSkillId: skill.id }, () => this.syncCanSend())
   },
   clearSkill() {
-    const bound = (this.data as any).pendingSkill ? SKILLS.find((item) => item.harness === (this.data as any).pendingSkill) : undefined
-    const input = bound ? this.data.input.replace(bound.prompt, '').trim() : this.data.input
-    this.setData({ input, pendingSkill: '', pendingSkillName: '' }, () => this.syncCanSend())
+    this.setData({ pendingSkill: '', pendingSkillName: '', selectedSkillId: '' }, () => this.syncCanSend())
+  },
+  // 新建 / 编辑技能：先收起面板，回来时重新打开就是最新列表
+  onSkillCreate() { this.setData({ skillSheetVisible: false }, () => wx.navigateTo({ url: '/pages/skill-edit/index' })) },
+  onSkillEdit(e: any) {
+    const id = String((e.detail && e.detail.id) || '')
+    if (!id) return
+    this.setData({ skillSheetVisible: false }, () => wx.navigateTo({ url: `/pages/skill-edit/index?id=${encodeURIComponent(id)}` }))
   },
   // 历史对话抽屉：数据来自服务端 /api/conversations，按用户 + 知识库收窄，只显示根目录会话
   openHistory() {
@@ -794,7 +794,7 @@ Page({
     const userId = `m${Date.now()}`; const assistantId = `m${Date.now() + 1}`
     const skill = (this.data as any).pendingSkill
     this.setData({ input: '', conversationActive:true, sending: true, canSend: false, messages: [...this.data.messages, { id: userId, role: 'user', content, sources: [] }, assistantMessage(assistantId)], lastMessageId: assistantId })
-    this.setData({ pendingSkill: '', pendingSkillName: '' })
+    this.setData({ pendingSkill: '', pendingSkillName: '', selectedSkillId: '' })
     let assistant = ''
     const payload: any = { mode, conversation_id: this.data.conversationId || undefined, content, model: this.data.model, thinking: this.data.thinkingMode }
     // 选中的 harness 技能随请求下发，后端先加载并注入技能再执行任务

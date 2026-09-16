@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from .config import settings
 from .db import connect, decode_sources, fetchall, fetchone, init_db, row_dict
-from .schemas import ArticleImportRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, ProfileUpdate, ShareCreate
+from .schemas import ArticleImportRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, ProfileUpdate, ShareCreate, SkillFlagUpdate, SkillForm, SkillPublishUpdate
 from .security import create_token, current_user, rate_limit
 from .services.documents import extract_text, split_chunks
 from .services.wechat_article import ArticleFetchError, build_document_html, fetch_wechat_article
@@ -1019,20 +1019,30 @@ async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)
     if memory_summary:
         messages.append({"role": "system", "content": f"以下是本会话此前的记忆摘要（供保持上下文连贯，不要在回答中复述它）：\n{memory_summary}"})
     messages += recent_context(history)
+    # 本轮技能：只有用户明确选择的技能才会注入——内置技能走技能包，我的技能走技能指令。
+    # 别人的私有技能在这里解析为空，保证「我的技能」严格隔离。
+    turn_skill_info = await resolve_turn_skill(db, user_id, payload.skill)
+    turn_skill = turn_skill_info['skill']
+    turn_skill_prompt = turn_skill_info['prompt']
+    turn_skill_label = turn_skill_info['label']
+    if turn_skill_info['id']:
+        await db.execute('UPDATE skills SET use_count=COALESCE(use_count,0)+1 WHERE id=?', (turn_skill_info['id'],))
+        await db.commit()
     async def events():
         answer = ""
         yield f"data: {json.dumps({'type':'meta','conversation_id':conversation_id,'sources':sources}, ensure_ascii=False)}\n\n"
         try:
             # harness 模型统一取后端配置（深度思考即 deepseek-flash，见 HARNESS_MODEL）
             turn_model = settings.harness_model if harness_configured() else payload.model
-            # 技能白名单：只接受仓库内存在的技能包，杜绝把任意文本�入提示词
-            turn_skill = payload.skill if (harness_configured() and payload.skill in SKILL_LABELS) else ''
+            # 技能已在进入流之前解析好：内置技能 = 技能包 slug，我的技能 = 技能指令文本
             async for event in stream_answer(
                 messages,
                 turn_model,
                 conversation_id,
                 thinking=payload.thinking,
                 skill=turn_skill,
+                skill_prompt=turn_skill_prompt,
+                skill_label=turn_skill_label,
                 mode='planner' if payload.mode == 'web' else 'knowledge',
             ):
                 kind = event.get('kind')
@@ -1174,3 +1184,230 @@ async def read_share(share_id: str, request: Request) -> dict:
     await db.execute('UPDATE share_cards SET views=COALESCE(views,0)+1 WHERE id=?', (share_id,))
     await db.commit(); await db.close()
     return {'id': row['id'], 'question': row['question'] or '', 'answer': row['answer'], 'knowledge_name': row['knowledge_name'] or '', 'sources': decode_sources(row['sources_json']), 'views': int(row['views'] or 0) + 1, 'created_at': row['created_at']}
+
+
+# ---- 技能：技能广场（所有人可用）与我的技能（用户级隔离）----
+
+# 与前端技能编辑页的可选图标一致；保留早期用过的图标名，避免旧技能在编辑时被改写
+SKILL_ICONS = {'skill-node', 'knowledge-pick', 'book', 'ppt', 'image', 'sousuo', 'sliders', 'wangluo', 'atom', 'robot', 'liebiao', 'shuju', 'history', 'dui', 'dengpao', 'tag'}
+SKILL_NAME_MAX = 30
+SKILL_OWNED_MAX = 50
+
+
+def skill_payload(row: Any, viewer: str) -> dict:
+    keys = set(row.keys())
+    owner = row['user_id'] or ''
+    return {
+        'id': row['id'],
+        'name': row['name'],
+        'summary': row['summary'] or '',
+        'prompt': row['prompt'] or '',
+        'icon': row['icon'] or 'skill-node',
+        'developer_wechat': row['developer_wechat'] or '',
+        'source': row['source'] or 'custom',
+        'builtin': (row['source'] or '') == 'builtin',
+        'visibility': row['visibility'] or 'private',
+        'published': (row['visibility'] or '') == 'public',
+        'is_owner': bool(owner) and owner == viewer,
+        'harness': row['harness'] or '',
+        'use_count': int(row['use_count'] or 0),
+        'like_count': int(row['like_count'] or 0),
+        'favorite_count': int(row['favorite_count'] or 0),
+        'liked': bool(row['liked']) if 'liked' in keys else False,
+        'favorited': bool(row['favorited']) if 'favorited' in keys else False,
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
+    }
+
+
+def clean_skill_form(payload: SkillForm) -> dict[str, str]:
+    icon = payload.icon if payload.icon in SKILL_ICONS else 'skill-node'
+    return {
+        'name': payload.name.strip()[:SKILL_NAME_MAX],
+        'summary': payload.summary.strip(),
+        'prompt': payload.prompt.strip(),
+        'developer_wechat': payload.developer_wechat.strip(),
+        'icon': icon,
+    }
+
+
+async def resolve_turn_skill(db, user_id: str, skill_id: str) -> dict[str, str]:
+    """把前端选中的技能解析成本轮要注入的内容。
+
+    只有用户明确选择（skill 非空）才会注入：内置技能走仓库内的技能包 slug，
+    我的技能走技能指令文本；别人的私有技能在这里解析为空，保证用户级隔离。
+    """
+    slug = (skill_id or '').strip()
+    empty = {'id': '', 'skill': '', 'prompt': '', 'label': ''}
+    if not slug or len(slug) > 40:
+        return empty
+    row = await fetchone(db, "SELECT * FROM skills WHERE id=? AND status='active'", (slug,))
+    if not row:
+        return empty
+    owner = row['user_id'] or ''
+    if owner and owner != user_id and (row['visibility'] or '') != 'public':
+        return empty
+    harness = row['harness'] or ''
+    label = row['name'] or ''
+    if harness and harness in SKILL_LABELS:
+        return {'id': slug, 'skill': harness, 'prompt': '', 'label': label}
+    return {'id': slug, 'skill': '', 'prompt': row['prompt'] or '', 'label': label}
+
+
+@app.get('/api/skills')
+async def list_skills(
+    scope: str = Query(default='market', pattern='^(market|mine)$'),
+    q: str = Query(default='', max_length=40),
+    user_id: str = Depends(current_user),
+) -> list[dict]:
+    """技能广场（所有人发布的技能 + 内置技能）与我的技能（仅自己可见）。"""
+    liked = "EXISTS(SELECT 1 FROM skill_likes l WHERE l.skill_id=s.id AND l.user_id=?)"
+    favorited = "EXISTS(SELECT 1 FROM skill_favorites f WHERE f.skill_id=s.id AND f.user_id=?)"
+    keyword = q.strip()
+    pattern = f'%{keyword}%'
+    db = await connect()
+    if scope == 'mine':
+        rows = await fetchall(
+            db,
+            f"SELECT s.*, {liked} AS liked, {favorited} AS favorited FROM skills s WHERE s.user_id=? AND s.status='active' AND (?='' OR s.name LIKE ? OR s.summary LIKE ?) ORDER BY s.updated_at DESC LIMIT 200",
+            (user_id, user_id, user_id, keyword, pattern, pattern),
+        )
+    else:
+        rows = await fetchall(
+            db,
+            f"SELECT s.*, {liked} AS liked, {favorited} AS favorited FROM skills s WHERE s.status='active' AND s.visibility='public' AND (?='' OR s.name LIKE ? OR s.summary LIKE ?) ORDER BY (s.source='builtin') DESC, (s.favorite_count + s.like_count) DESC, s.created_at DESC LIMIT 200",
+            (user_id, user_id, keyword, pattern, pattern),
+        )
+    await db.close()
+    return [skill_payload(row, user_id) for row in rows]
+
+
+
+@app.get('/api/skills/{skill_id}')
+async def read_skill(skill_id: str, user_id: str = Depends(current_user)) -> dict:
+    """读取单个技能：技能编辑页回填用。
+
+    内置技能与已发布到广场的技能所有人可读；「我的技能」默认私有，只有作者本人能读到。
+    """
+    slug = (skill_id or '').strip()
+    if not slug or len(slug) > 40:
+        raise HTTPException(404, '技能不存在')
+    db = await connect()
+    row = await fetchone(db, "SELECT * FROM skills WHERE id=? AND status='active'", (slug,))
+    if not row:
+        await db.close(); raise HTTPException(404, '技能不存在')
+    owner = row['user_id'] or ''
+    if owner and owner != user_id and (row['visibility'] or '') != 'public':
+        await db.close(); raise HTTPException(404, '技能不存在')
+    payload = skill_payload(row, user_id)
+    await db.close()
+    return payload
+
+@app.post('/api/skills')
+async def create_skill(payload: SkillForm, user_id: str = Depends(current_user)) -> dict:
+    """新建「我的技能」：默认私有，只有自己能用，需要时才发布到广场。"""
+    rate_limit(f"skill-write:{user_id}", 30, 3600, '新建技能过于频繁，请稍后再试')
+    form = clean_skill_form(payload)
+    db = await connect()
+    owned = await fetchone(db, "SELECT COUNT(*) AS c FROM skills WHERE user_id=? AND status='active'", (user_id,))
+    if int((owned['c'] if owned else 0) or 0) >= SKILL_OWNED_MAX:
+        await db.close(); raise HTTPException(400, f'技能数量已达上限（{SKILL_OWNED_MAX} 个）')
+    skill_id = f"sk-{uuid.uuid4().hex[:12]}"
+    stamp = now()
+    await db.execute(
+        "INSERT INTO skills(id,user_id,name,summary,prompt,icon,developer_wechat,harness,visibility,source,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'','private','custom','active',?,?)",
+        (skill_id, user_id, form['name'], form['summary'], form['prompt'], form['icon'], form['developer_wechat'], stamp, stamp),
+    )
+    await db.commit()
+    row = await fetchone(db, 'SELECT * FROM skills WHERE id=?', (skill_id,))
+    await db.close()
+    return skill_payload(row, user_id)
+
+
+@app.patch('/api/skills/{skill_id}')
+async def update_skill(skill_id: str, payload: SkillForm, user_id: str = Depends(current_user)) -> dict:
+    """编辑自己的技能：内置技能与他人技能一律不可改。"""
+    form = clean_skill_form(payload)
+    db = await connect()
+    row = await fetchone(db, "SELECT * FROM skills WHERE id=? AND status='active'", (skill_id,))
+    if not row or (row['user_id'] or '') != user_id:
+        await db.close(); raise HTTPException(404, '技能不存在或不属于你')
+    await db.execute(
+        'UPDATE skills SET name=?, summary=?, prompt=?, icon=?, developer_wechat=?, updated_at=? WHERE id=?',
+        (form['name'], form['summary'], form['prompt'], form['icon'], form['developer_wechat'], now(), skill_id),
+    )
+    await db.commit()
+    updated = await fetchone(db, 'SELECT * FROM skills WHERE id=?', (skill_id,))
+    await db.close()
+    return skill_payload(updated, user_id)
+
+
+@app.delete('/api/skills/{skill_id}')
+async def delete_skill(skill_id: str, user_id: str = Depends(current_user)) -> dict:
+    """删除自己的技能：连带清掉点赞 / 收藏记录。"""
+    db = await connect()
+    row = await fetchone(db, "SELECT * FROM skills WHERE id=? AND status='active'", (skill_id,))
+    if not row or (row['user_id'] or '') != user_id:
+        await db.close(); raise HTTPException(404, '技能不存在或不属于你')
+    if (row['source'] or '') == 'builtin':
+        await db.close(); raise HTTPException(400, '内置技能不可删除')
+    await db.execute('DELETE FROM skill_likes WHERE skill_id=?', (skill_id,))
+    await db.execute('DELETE FROM skill_favorites WHERE skill_id=?', (skill_id,))
+    await db.execute('DELETE FROM skills WHERE id=? AND user_id=?', (skill_id, user_id))
+    await db.commit(); await db.close()
+    return {'ok': True}
+
+
+@app.post('/api/skills/{skill_id}/publish')
+async def publish_skill(skill_id: str, payload: SkillPublishUpdate, user_id: str = Depends(current_user)) -> dict:
+    """发布到技能广场 / 从广场下架：只有作者本人能操作。"""
+    db = await connect()
+    row = await fetchone(db, "SELECT * FROM skills WHERE id=? AND status='active'", (skill_id,))
+    if not row or (row['user_id'] or '') != user_id:
+        await db.close(); raise HTTPException(404, '技能不存在或不属于你')
+    if (row['source'] or '') == 'builtin':
+        await db.close(); raise HTTPException(400, '内置技能已在技能广场')
+    stamp = now()
+    await db.execute(
+        'UPDATE skills SET visibility=?, published_at=?, updated_at=? WHERE id=? AND user_id=?',
+        ('public' if payload.published else 'private', stamp if payload.published else '', stamp, skill_id, user_id),
+    )
+    await db.commit()
+    updated = await fetchone(db, 'SELECT * FROM skills WHERE id=?', (skill_id,))
+    await db.close()
+    return skill_payload(updated, user_id)
+
+
+async def toggle_skill_flag(table: str, skill_id: str, user_id: str, active: bool) -> dict:
+    """点赞 / 收藏开关：技能广场与自己的技能都可以点，计数以明细表为准。"""
+    counter = 'like_count' if table == 'skill_likes' else 'favorite_count'
+    db = await connect()
+    row = await fetchone(db, "SELECT * FROM skills WHERE id=? AND status='active'", (skill_id,))
+    if not row:
+        await db.close(); raise HTTPException(404, '技能不存在')
+    owner = row['user_id'] or ''
+    if owner and owner != user_id and (row['visibility'] or '') != 'public':
+        await db.close(); raise HTTPException(404, '技能不存在')
+    if active:
+        await db.execute(f'INSERT OR IGNORE INTO {table}(skill_id,user_id,created_at) VALUES(?,?,?)', (skill_id, user_id, now()))
+    else:
+        await db.execute(f'DELETE FROM {table} WHERE skill_id=? AND user_id=?', (skill_id, user_id))
+    total = await fetchone(db, f'SELECT COUNT(*) AS c FROM {table} WHERE skill_id=?', (skill_id,))
+    count = int((total['c'] if total else 0) or 0)
+    await db.execute(f'UPDATE skills SET {counter}=?, updated_at=? WHERE id=?', (count, now(), skill_id))
+    await db.commit(); await db.close()
+    return {'id': skill_id, 'active': bool(active), 'count': count}
+
+
+@app.post('/api/skills/{skill_id}/like')
+async def like_skill(skill_id: str, payload: SkillFlagUpdate, user_id: str = Depends(current_user)) -> dict:
+    rate_limit(f"skill-like:{user_id}", 80, 60, '操作过于频繁，请稍后再试')
+    result = await toggle_skill_flag('skill_likes', skill_id, user_id, payload.active)
+    return {**result, 'field': 'like_count'}
+
+
+@app.post('/api/skills/{skill_id}/favorite')
+async def favorite_skill(skill_id: str, payload: SkillFlagUpdate, user_id: str = Depends(current_user)) -> dict:
+    rate_limit(f"skill-favorite:{user_id}", 80, 60, '操作过于频繁，请稍后再试')
+    result = await toggle_skill_flag('skill_favorites', skill_id, user_id, payload.active)
+    return {**result, 'field': 'favorite_count'}

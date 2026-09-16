@@ -1,0 +1,87 @@
+<view wx:if="{{visible}}" class="sk-layer">
+  <view class="sk-mask" bindtap="close"></view>
+  <view class="sk-panel" catchtap="noop">
+    <view class="sk-head">
+      <view class="sk-head-copy">
+        <text class="sk-title">选择技能</text>
+        <text class="sk-sub">选中后，本轮对话按这个技能执行</text>
+      </view>
+      <button class="sk-close" bindtap="close" aria-label="关闭"><ui-icon name="close" size="{{26}}" rpx /></button>
+    </view>
+
+    <view class="sk-tabs">
+      <view class="sk-tab {{scope === 'market' ? 'on' : ''}}" data-scope="market" bindtap="switchScope">
+        <view class="sk-tab-icon"><ui-icon name="skill-node" size="{{46}}" rpx /></view>
+        <text class="sk-tab-text">技能广场</text>
+      </view>
+      <view class="sk-tab {{scope === 'mine' ? 'on' : ''}}" data-scope="mine" bindtap="switchScope">
+        <view class="sk-tab-icon"><ui-icon name="geren" size="{{46}}" rpx /></view>
+        <text class="sk-tab-text">我的技能</text>
+      </view>
+    </view>
+
+    <view class="sk-search">
+      <ui-icon name="search" size="{{28}}" rpx />
+      <input class="sk-search-input" value="{{query}}" placeholder="搜索技能" placeholder-class="sk-search-ph" confirm-type="search" bindinput="onSearch" />
+      <button wx:if="{{query}}" class="sk-search-clear" bindtap="clearSearch" aria-label="清空搜索"><ui-icon name="close" size="{{20}}" rpx /></button>
+    </view>
+
+    <scroll-view class="sk-body" scroll-y enhanced show-scrollbar="{{false}}">
+      <!-- 新建技能：只在「我的技能」里提供，创建后默认私有 -->
+      <view wx:if="{{scope === 'mine'}}" class="sk-new" bindtap="createSkill" hover-class="sk-new-hover">
+        <view class="sk-new-icon"><ui-icon name="tianjia" size="{{28}}" rpx /></view>
+        <text class="sk-new-text">新建技能</text>
+        <text class="sk-new-hint">只有自己能用</text>
+      </view>
+
+      <view wx:if="{{loading && !list.length}}" class="sk-hint">正在加载技能…</view>
+
+      <view wx:elif="{{failed}}" class="sk-empty">
+        <view class="sk-empty-icon"><ui-icon name="refresh" size="{{44}}" rpx /></view>
+        <text class="sk-empty-title">技能加载失败</text>
+        <text class="sk-empty-desc">请检查网络后重试</text>
+      </view>
+
+      <view wx:elif="{{!list.length}}" class="sk-empty">
+        <view class="sk-empty-icon"><ui-icon name="skill-node" size="{{44}}" rpx /></view>
+        <text class="sk-empty-title">{{query ? '没有找到相关技能' : (scope === 'mine' ? '还没有自己的技能' : '技能广场还空着')}}</text>
+        <text class="sk-empty-desc">{{query ? '换个关键词试试' : (scope === 'mine' ? '把常用的做法写成技能，默认只有你能用' : '稍后再来看看')}}</text>
+      </view>
+
+      <block wx:else>
+        <view wx:for="{{list}}" wx:key="id" class="sk-item {{item.id === selected ? 'on' : ''}}" data-id="{{item.id}}" bindtap="pick" hover-class="sk-item-hover">
+          <view class="sk-item-icon"><ui-icon name="{{item.icon}}" size="{{42}}" rpx /></view>
+          <view class="sk-item-main">
+            <view class="sk-item-head">
+              <text class="sk-item-name">{{item.name}}</text>
+              <text wx:if="{{item.builtin}}" class="sk-badge">内置</text>
+              <text wx:elif="{{item.is_owner && item.published}}" class="sk-badge published">已发布</text>
+              <text wx:elif="{{item.is_owner}}" class="sk-badge mine">仅自己</text>
+              <view wx:if="{{item.id === selected}}" class="sk-check"><ui-icon name="dui" size="{{24}}" rpx /></view>
+            </view>
+            <text class="sk-item-desc">{{item.summary}}</text>
+            <!-- 右下角：开发者微信号 + 收藏 + 点赞，都做小，避免抢技能名的主次 -->
+            <view class="sk-item-foot">
+              <view wx:if="{{item.is_owner}}" class="sk-item-actions">
+                <button class="sk-mini" catchtap="editSkill" data-id="{{item.id}}">编辑</button>
+                <button class="sk-mini {{item.published ? '' : 'primary'}}" catchtap="togglePublish" data-id="{{item.id}}">{{item.published ? '已发布' : '发布到广场'}}</button>
+              </view>
+              <view class="sk-stats">
+                <text wx:if="{{item.developer_wechat}}" class="sk-item-wechat">微信号 {{item.developer_wechat}}</text>
+                <view class="sk-stat" catchtap="toggleFavorite" data-id="{{item.id}}" hover-class="sk-stat-hover" aria-label="收藏">
+                  <ui-icon name="{{item.favorited ? 'shoucang-on' : 'shoucang'}}" size="{{22}}" rpx />
+                  <text class="sk-stat-num {{item.favorited ? 'on' : ''}}">{{item.favorite_count}}</text>
+                </view>
+                <view class="sk-stat" catchtap="toggleLike" data-id="{{item.id}}" hover-class="sk-stat-hover" aria-label="点赞">
+                  <ui-icon name="{{item.liked ? 'dianzan-on' : 'dianzan'}}" size="{{22}}" rpx />
+                  <text class="sk-stat-num {{item.liked ? 'on' : ''}}">{{item.like_count}}</text>
+                </view>
+              </view>
+            </view>
+          </view>
+        </view>
+      </block>
+      <view class="sk-bottom-space"></view>
+    </scroll-view>
+  </view>
+</view>

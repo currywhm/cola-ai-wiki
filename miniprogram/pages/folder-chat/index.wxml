@@ -137,22 +137,8 @@
   </view>
 
   <!-- 技能：与问AI页共用同一份技能清单与后端技能包 -->
-  <view wx:if="{{skillSheetVisible}}" class="sheet-layer">
-    <view class="sheet-mask" bindtap="closeSheets"></view>
-    <view class="sheet-panel option-panel" catchtap="noop">
-      <view class="sheet-head">
-        <text class="sheet-title">技能</text>
-        <button class="sheet-close" bindtap="closeSheets" aria-label="关闭"><ui-icon name="close" size="{{28}}" rpx /></button>
-      </view>
-      <button wx:for="{{skills}}" wx:key="id" class="skill-row" bindtap="useSkill" data-id="{{item.id}}">
-        <view class="skill-icon"><ui-icon name="{{item.icon}}" size="{{40}}" rpx /></view>
-        <view class="skill-copy">
-          <text class="skill-name">{{item.name}}</text>
-          <text class="skill-desc">{{item.desc}}</text>
-        </view>
-      </button>
-    </view>
-  </view>
+  <!-- 技能：与问AI页共用同一份数据源，只有选中的才会随本轮对话注入后端 -->
+  <skill-picker visible="{{skillSheetVisible}}" selected="{{selectedSkillId}}" bind:close="closeSheets" bind:select="onSkillSelect" bind:create="onSkillCreate" bind:edit="onSkillEdit" />
 
   <!-- 选择知识：文件夹会话里换成「本文件夹资料 + 回到知识库」，范围始终锁定在当前文件夹 -->
   <view wx:if="{{scopeSheetVisible}}" class="sheet-layer">

@@ -81,6 +81,24 @@ export type ShareCard = { id: string; question: string; answer: string; knowledg
 export const createShare = (data: { question: string; answer: string; knowledge_name: string; sources: ShareSourcePayload[] }) => request<{ id: string }>('/api/shares', 'POST', data)
 // 分享页对未登录的微信访客开放：不走登录态，也不用带 token
 export const getShare = (id: string) => rawRequest<ShareCard>(`/api/shares/${encodeURIComponent(id)}`)
+// 技能：技能广场（所有人可用）与我的技能（用户级隔离，仅作者本人可见可用）
+export type Skill = {
+  id: string; name: string; summary: string; prompt: string; icon: string
+  developer_wechat: string; source: 'builtin' | 'custom'; builtin: boolean
+  visibility: 'private' | 'public'; published: boolean; is_owner: boolean
+  harness: string; use_count: number; like_count: number; favorite_count: number
+  liked: boolean; favorited: boolean; created_at: string; updated_at: string
+}
+export type SkillForm = { name: string; summary: string; prompt: string; developer_wechat: string; icon: string }
+export type SkillFlagResult = { id: string; active: boolean; count: number; field: string }
+export const getSkills = (scope: 'market' | 'mine', query = '') => request<Skill[]>(`/api/skills?scope=${scope}&q=${encodeURIComponent(query)}`)
+export const getSkill = (id: string) => request<Skill>(`/api/skills/${encodeURIComponent(id)}`)
+export const createSkill = (data: SkillForm) => request<Skill>('/api/skills', 'POST', data)
+export const updateSkill = (id: string, data: SkillForm) => request<Skill>(`/api/skills/${id}`, 'PATCH', data)
+export const deleteSkill = (id: string) => request<any>(`/api/skills/${id}`, 'DELETE')
+export const publishSkill = (id: string, published: boolean) => request<Skill>(`/api/skills/${id}/publish`, 'POST', { published })
+export const likeSkill = (id: string, active: boolean) => request<SkillFlagResult>(`/api/skills/${id}/like`, 'POST', { active })
+export const favoriteSkill = (id: string, active: boolean) => request<SkillFlagResult>(`/api/skills/${id}/favorite`, 'POST', { active })
 export const logout = () => request<any>('/api/auth/logout', 'POST').catch(() => ({ ok: false }))
 export type Folder = { id: string; name: string; document_count: number }
 export const getFolders = (knowledgeId: string) => request<Folder[]>(`/api/knowledge/${knowledgeId}/folders`)

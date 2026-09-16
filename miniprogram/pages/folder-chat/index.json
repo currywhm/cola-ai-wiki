@@ -2,6 +2,7 @@
   "navigationBarTitleText": "cola知识库",
   "usingComponents": {
     "ui-icon": "/components/ui-icon/index",
+    "skill-picker": "/components/skill-picker/index",
     "history-drawer": "/components/history-drawer/index"
   }
 }

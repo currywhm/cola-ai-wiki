@@ -1,7 +1,17 @@
 import json
+from datetime import datetime, timezone
 from typing import Any
 import aiosqlite
 from .config import settings
+
+# 技能广场的内置技能：随包发行、所有人可用（owner 为空串即官方内置）。
+# 只放「怎么做」的技能指令，具体要做什么仍由用户那一句话决定。
+BUILTIN_SKILLS: tuple[tuple[str, str, str, str, str, str], ...] = (
+    ('builtin-organize-knowledge', '整理知识库', '把资料整理成结构化知识条目', 'knowledge-pick', 'organize-knowledge', '把当前知识库里的资料整理成结构化的知识条目：按主题归类，每条给出标题、要点和出处，合并重复内容，并在结尾列出仍然缺口的主题。'),
+    ('builtin-write-report', '撰写报告', '基于资料输出一份调研报告', 'book', 'write-report', '基于当前知识库的资料写一份调研报告：先给结论与关键数据，再展开背景、现状、对比与风险，最后给出建议，并保留资料出处标记。'),
+    ('builtin-make-deck', '生成 PPT', '输出分页大纲与每页要点', 'ppt', 'make-deck', '基于当前知识库的资料输出一份 PPT 大纲：按页给出标题、每页要点与建议配图方向，整体 8-14 页，重点数据单独成页。'),
+    ('builtin-knowledge-diagram', '知识图解', '把长文梳理成知识结构', 'image', 'knowledge-diagram', '把当前知识库里的长文整理成一份知识图解：按主题分组，给出层级关系与关键节点，并标出节点之间的因果关系或先后顺序。'),
+)
 
 DB_PATH = settings.database_path
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -30,6 +40,9 @@ async def init_db() -> None:
     CREATE TABLE IF NOT EXISTS folder_suggestions (knowledge_id TEXT NOT NULL, folder_id TEXT NOT NULL, fingerprint TEXT NOT NULL, questions_json TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(knowledge_id, folder_id));
     CREATE TABLE IF NOT EXISTS pay_orders (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, out_trade_no TEXT UNIQUE NOT NULL, plan TEXT NOT NULL, amount INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', transaction_id TEXT DEFAULT '', prepay_id TEXT DEFAULT '', created_at TEXT NOT NULL, paid_at TEXT DEFAULT '', offer_id TEXT DEFAULT '', product_id TEXT DEFAULT '', wx_order_id TEXT DEFAULT '', attach TEXT DEFAULT '', quantity INTEGER DEFAULT 1, deliver_status TEXT DEFAULT 'pending', delivered_at TEXT DEFAULT '', FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS share_cards (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, knowledge_name TEXT DEFAULT '', question TEXT DEFAULT '', answer TEXT NOT NULL, sources_json TEXT DEFAULT '[]', views INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS skills (id TEXT PRIMARY KEY, user_id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, summary TEXT DEFAULT '', prompt TEXT NOT NULL DEFAULT '', icon TEXT DEFAULT 'skill-node', developer_wechat TEXT DEFAULT '', harness TEXT DEFAULT '', visibility TEXT NOT NULL DEFAULT 'private', source TEXT NOT NULL DEFAULT 'custom', use_count INTEGER NOT NULL DEFAULT 0, like_count INTEGER NOT NULL DEFAULT 0, favorite_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'active', published_at TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS skill_likes (skill_id TEXT NOT NULL, user_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(skill_id, user_id), FOREIGN KEY(skill_id) REFERENCES skills(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS skill_favorites (skill_id TEXT NOT NULL, user_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(skill_id, user_id), FOREIGN KEY(skill_id) REFERENCES skills(id) ON DELETE CASCADE);
     """)
     # Keep existing local databases compatible with the deployable schema.
     for table, columns in {
@@ -60,6 +73,14 @@ async def init_db() -> None:
             if name not in existing:
                 await db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {declaration}')
     await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pay_orders_wx_order_id ON pay_orders(wx_order_id) WHERE wx_order_id != ''")
+    # 内置技能随版本写回技能表：id 固定，老库也不会重复插入
+    stamp = datetime.now(timezone.utc).isoformat()
+    for skill_id, name, summary, icon, harness, prompt in BUILTIN_SKILLS:
+        await db.execute(
+            "INSERT OR IGNORE INTO skills(id,user_id,name,summary,prompt,icon,harness,visibility,source,status,published_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (skill_id, '', name, summary, prompt, icon, harness, 'public', 'builtin', 'active', stamp, stamp, stamp),
+        )
+        await db.execute("UPDATE skills SET name=?, summary=?, prompt=?, icon=?, harness=?, status='active' WHERE id=? AND source='builtin'", (name, summary, prompt, icon, harness, skill_id))
     await db.commit()
     await db.close()
 

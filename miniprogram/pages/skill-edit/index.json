@@ -1,0 +1,6 @@
+{
+  "navigationBarTitleText": "我的技能",
+  "usingComponents": {
+    "ui-icon": "/components/ui-icon/index"
+  }
+}

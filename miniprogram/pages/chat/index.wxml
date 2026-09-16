@@ -325,22 +325,8 @@
     </view>
   </view>
   <!-- 技能：把常用任务写进输入框，随知识库资料执行；与问AI问答页共用同一套技能包 -->
-  <view wx:if="{{skillSheetVisible}}" class="sheet-layer">
-    <view class="sheet-mask" bindtap="closeSheets"></view>
-    <view class="sheet-panel option-panel" catchtap="noop">
-      <view class="sheet-head">
-        <text class="sheet-title">技能</text>
-        <button class="sheet-close" bindtap="closeSheets" aria-label="关闭"><ui-icon name="close" size="{{28}}" rpx /></button>
-      </view>
-      <button wx:for="{{skills}}" wx:key="id" class="skill-row" bindtap="useSkill" data-id="{{item.id}}">
-        <view class="skill-icon"><ui-icon name="{{item.icon}}" size="{{40}}" rpx /></view>
-        <view class="skill-copy">
-          <text class="skill-name">{{item.name}}</text>
-          <text class="skill-desc">{{item.desc}}</text>
-        </view>
-      </button>
-    </view>
-  </view>
+  <!-- 技能：与问AI问答页共用同一份数据源（技能广场 + 我的技能），只有选中的才会注入后端 -->
+  <skill-picker visible="{{skillSheetVisible}}" selected="{{selectedSkillId}}" bind:close="closeSheets" bind:select="onSkillSelect" bind:create="onSkillCreate" bind:edit="onSkillEdit" />
   <!-- 历史对话：后端持久化，按用户 + 知识库收窄，长按可删 -->
   <history-drawer visible="{{historyVisible}}" loading="{{historyLoading}}" activeId="{{conversationId}}" items="{{historyItems}}" bind:pick="pickHistory" bind:create="newConversation" bind:close="closeHistory" bind:pin="pinHistory" bind:remove="removeHistory" />
 </view>

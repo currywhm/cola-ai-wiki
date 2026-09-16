@@ -2,7 +2,7 @@
 // 差别只有两点——顶部显示「文件夹 / 知识库」上下文，问答范围由后端锁定在该文件夹内。
 import { renderMarkdown } from '../../utils/markdown'
 import { appendTrace, assistantMessage, createFlusher, decorateSources, settleTrace } from '../../utils/thread'
-import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER, SKILLS } from '../../utils/skills'
+import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER } from '../../utils/skills'
 import { buildSharePayload, homePayload, questionFor } from '../../utils/share'
 import { deleteConversation, getConversation, getConversations, getKnowledgeDetail, getModels, getSuggestions, pinConversation, Source, streamChat } from '../../services/api'
 
@@ -50,7 +50,7 @@ Page({
     pendingSkill: '',
     pendingSkillName: '',
     model: 'deepseek-flash',
-    skills: SKILLS,
+    selectedSkillId: '',
     historyVisible: false,
     historyLoading: false,
     historyItems: [] as any[],
@@ -165,17 +165,12 @@ Page({
     if (!question || this.data.sending) return
     this.setData({ input: question }, () => this.send())
   },
+  // 技能只随请求下发，不再往输入框里塞模板：改写输入不影响已选技能
   onInput(e: any) {
-    const input = e.detail.value
-    // 用户改写输入时，若已经不包含技能模板，就取消本轮技能绑定
-    const bound = this.data.pendingSkill ? SKILLS.find((item) => item.harness === this.data.pendingSkill) : undefined
-    const stillBound = bound ? input.includes(bound.prompt) : false
-    this.setData({ input, readyForInput: true, pendingSkill: stillBound ? this.data.pendingSkill : '', pendingSkillName: stillBound ? this.data.pendingSkillName : '' }, () => this.syncCanSend())
+    this.setData({ input: e.detail.value, readyForInput: true }, () => this.syncCanSend())
   },
   clearSkill() {
-    const bound = this.data.pendingSkill ? SKILLS.find((item) => item.harness === this.data.pendingSkill) : undefined
-    const input = bound ? this.data.input.replace(bound.prompt, '').trim() : this.data.input
-    this.setData({ input, pendingSkill: '', pendingSkillName: '' }, () => this.syncCanSend())
+    this.setData({ pendingSkill: '', pendingSkillName: '', selectedSkillId: '' }, () => this.syncCanSend())
   },
   syncCanSend() {
     this.setData({ canSend: !!this.data.readyForInput && !!this.data.input.trim() && !!this.data.knowledgeId && !!this.data.folderId && this.data.loadState === 'ready' && !this.data.sending })
@@ -200,12 +195,18 @@ Page({
   closeSheets() { this.setData({ modelSheetVisible: false, skillSheetVisible: false, scopeSheetVisible: false }) },
   noop() { return },
   toggleDeepThinking() { this.setData({ deepThinking: !this.data.deepThinking }) },
-  useSkill(e: any) {
-    const skill = SKILLS.find((item) => item.id === e.currentTarget.dataset.id)
-    if (!skill) return
-    const base = this.data.input.trim()
-    const input = base ? `${base}\n${skill.prompt}` : skill.prompt
-    this.setData({ input, skillSheetVisible: false, readyForInput: true, pendingSkill: skill.harness, pendingSkillName: skill.name }, () => this.syncCanSend())
+  // 选中即把技能 id 绑定到本轮对话，发送时随请求下发，隔离由后端按用户判定
+  onSkillSelect(e: any) {
+    const skill = (e && e.detail) || {}
+    if (!skill.id) return
+    this.setData({ skillSheetVisible: false, readyForInput: true, pendingSkill: skill.id, pendingSkillName: skill.name || '', selectedSkillId: skill.id }, () => this.syncCanSend())
+  },
+  // 新建 / 编辑技能：先收起面板，回来时重新打开就是最新列表
+  onSkillCreate() { this.setData({ skillSheetVisible: false }, () => wx.navigateTo({ url: '/pages/skill-edit/index' })) },
+  onSkillEdit(e: any) {
+    const id = String((e.detail && e.detail.id) || '')
+    if (!id) return
+    this.setData({ skillSheetVisible: false }, () => wx.navigateTo({ url: `/pages/skill-edit/index?id=${encodeURIComponent(id)}` }))
   },
   send() {
     const content = this.data.input.trim()
@@ -223,6 +224,7 @@ Page({
       canSend: false,
       pendingSkill: '',
       pendingSkillName: '',
+      selectedSkillId: '',
       messages: [...this.data.messages, { id: userId, role: 'user', content, sources: [] }, assistantMessage(assistantId)],
       lastMessageId: assistantId,
     })

@@ -48,6 +48,12 @@ const ICONS: Record<string, IconConfig> = {
   help: { file: 'guanyu.svg' },
   settings: { file: 'liebiao.svg' },
   trash: { file: 'trash.svg' },
+  // 技能面板：收藏 / 点赞 / 我的技能（选中态用实心图标，与底部导航一致）
+  shoucang: { file: 'shoucang.svg' },
+  'shoucang-on': { file: 'shoucang-on.svg' },
+  dianzan: { file: 'dianzan.svg' },
+  'dianzan-on': { file: 'dianzan-on.svg' },
+  geren: { file: 'geren.svg' },
   tag: { file: 'tag.svg' },
   upload: { file: 'document-add.svg' },
   'wechat-file': { file: 'wechat-custom.svg' },

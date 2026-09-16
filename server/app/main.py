@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from .config import settings
 from .db import connect, decode_sources, fetchall, fetchone, init_db, row_dict
-from .schemas import ArticleImportRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, ProfileUpdate
+from .schemas import ArticleImportRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, ProfileUpdate, ShareCreate
 from .security import create_token, current_user, rate_limit
 from .services.documents import extract_text, split_chunks
 from .services.wechat_article import ArticleFetchError, build_document_html, fetch_wechat_article
@@ -1128,3 +1128,49 @@ async def delete_conversation(conversation_id: str, user_id: str = Depends(curre
 @app.get("/api/conversations/{conversation_id}")
 async def conversation_detail(conversation_id: str, user_id: str = Depends(current_user)) -> list[dict]:
     db = await connect(); rows = await fetchall(db, "SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.conversation_id=? AND c.user_id=? ORDER BY m.created_at", (conversation_id, user_id)); await db.close(); return [{**row_dict(r), "sources": decode_sources(r["sources_json"])} for r in rows]
+
+
+@app.post('/api/shares')
+async def create_share(payload: ShareCreate, user_id: str = Depends(current_user)) -> dict:
+    """把一条回答落成分享卡片，供用户转发给微信好友。
+
+    只保存问答正文与出处文件名，不保存分享者的昵称 / 头像 / openid：
+    好友点开卡片看到的是内容本身，而不是分享者的账号信息。
+    """
+    rate_limit(f"share:{user_id}", 30, 60, '分享过于频繁，请稍后再试')
+    share_id = secrets.token_urlsafe(9)
+    sources = [{'filename': item.filename, 'page_number': item.page_number, 'url': item.url} for item in payload.sources if item.filename or item.url]
+    db = await connect()
+    await db.execute(
+        'INSERT INTO share_cards(id,user_id,knowledge_name,question,answer,sources_json,views,created_at) VALUES(?,?,?,?,?,?,0,?)',
+        (share_id, user_id, payload.knowledge_name, payload.question, payload.answer, json.dumps(sources, ensure_ascii=False), now()),
+    )
+    # 分享卡片给好友看一段时间就够：顺手清掉半年前的记录，避免只增不减
+    await db.execute('DELETE FROM share_cards WHERE created_at < ?', ((datetime.now(timezone.utc) - timedelta(days=180)).isoformat(),))
+    await db.commit(); await db.close()
+    return {'id': share_id}
+
+
+def valid_share_id(share_id: str) -> bool:
+    """分享 id 是 url-safe 随机串：长度与字符集都要卡死，避免被拿来探测。"""
+    if not 6 <= len(share_id) <= 32:
+        return False
+    return all(char.isascii() and (char.isalnum() or char in '-_') for char in share_id)
+
+
+@app.get('/api/shares/{share_id}')
+async def read_share(share_id: str, request: Request) -> dict:
+    """公开只读：好友点开分享卡片时读取内容，不需要登录。
+
+    返回体里没有任何用户身份字段，只回内容与出处。
+    """
+    if not valid_share_id(share_id):
+        raise HTTPException(404, '分享内容不存在或已失效')
+    rate_limit(f"share-read:{request.client.host if request.client else 'unknown'}", 120, 60, '访问过于频繁，请稍后再试')
+    db = await connect()
+    row = await fetchone(db, 'SELECT id,knowledge_name,question,answer,sources_json,views,created_at FROM share_cards WHERE id=?', (share_id,))
+    if not row:
+        await db.close(); raise HTTPException(404, '分享内容不存在或已失效')
+    await db.execute('UPDATE share_cards SET views=COALESCE(views,0)+1 WHERE id=?', (share_id,))
+    await db.commit(); await db.close()
+    return {'id': row['id'], 'question': row['question'] or '', 'answer': row['answer'], 'knowledge_name': row['knowledge_name'] or '', 'sources': decode_sources(row['sources_json']), 'views': int(row['views'] or 0) + 1, 'created_at': row['created_at']}

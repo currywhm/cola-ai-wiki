@@ -55,3 +55,23 @@ class ConversationPinUpdate(BaseModel):
     """历史对话的置顶开关：只改当前用户名下的会话。"""
 
     pinned: bool = True
+
+
+class ShareSource(BaseModel):
+    """分享卡片里的参考出处：只带文件名 / 页码 / 公开网页链接。
+
+    不上传原文片段（quote）与文档 id，避免把私有资料内容写进公开分享记录。
+    """
+
+    filename: str = Field(default='', max_length=200)
+    page_number: int = Field(default=0, ge=0, le=100000)
+    url: str = Field(default='', max_length=2048)
+
+
+class ShareCreate(BaseModel):
+    """用户主动转发一条回答给微信好友时落库的分享卡片。"""
+
+    question: str = Field(default='', max_length=500)
+    answer: str = Field(min_length=1, max_length=12000)
+    knowledge_name: str = Field(default='', max_length=80)
+    sources: list[ShareSource] = Field(default_factory=list, max_length=12)

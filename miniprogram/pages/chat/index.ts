@@ -3,6 +3,7 @@ import { appendTrace, assistantMessage, createFlusher, decorateSources, settleTr
 import { renderMarkdown } from '../../utils/markdown'
 import { deleteConversation, getConversation, getConversations, getKnowledge, getKnowledgeDetail, deleteDocument, deleteKnowledge, getModels, getFolders, getSuggestions, createFolder, deleteFolder, importArticle, moveDocument, pinConversation, uploadLocalFile, Knowledge, ModelOption, Folder, resumeWechatLogin, Source, streamChat, uploadDocument, UploadSource } from '../../services/api'
 import { SKILLS } from '../../utils/skills'
+import { buildSharePayload, homePayload, questionFor } from '../../utils/share'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
 // 与后端 CHAT_MODELS 一致的兜底清单；正常运行时会被 /api/models 的返回值覆盖
@@ -506,9 +507,13 @@ Page({
     if (!content) return
     wx.setClipboardData({ data: content, success: () => wx.showToast({ title: '回答已复制', icon: 'success' }) })
   },
-  shareAnswer(e: any) {
-    const content = String(e.currentTarget.dataset.content || '')
-    if (content) wx.setClipboardData({ data: content, success: () => wx.showToast({ title: '回答已复制，可转发', icon: 'none' }) })
+  // 分享给微信好友：点「分享」直接拉起转发面板，卡片里带这条回答的分享页
+  onShareAppMessage(e: any): any {
+    const id = String((e && e.target && e.target.dataset && e.target.dataset.id) || '')
+    const messages = this.data.messages
+    const index = messages.findIndex((message: any) => message.id === id)
+    if (index < 0) return homePayload()
+    return buildSharePayload({ message: messages[index], question: questionFor(messages, index), knowledgeName: this.data.knowledgeName })
   },
   toggleModePicker() { if (!this.data.sending) this.setData({ modePickerVisible: !this.data.modePickerVisible }) },
   selectAskMode(e: any) {

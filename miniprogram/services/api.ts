@@ -75,6 +75,12 @@ export const getConversations = (params: { knowledgeId?: string; folderId?: stri
 export const getConversation = (id: string) => request<any[]>(`/api/conversations/${id}`)
 export const deleteConversation = (id: string) => request<any>(`/api/conversations/${id}`, 'DELETE')
 export const pinConversation = (id: string, pinned: boolean) => request<any>(`/api/conversations/${id}/pin`, 'POST', { pinned })
+// 分享给微信好友：把一条回答落成一张分享卡片，好友点开 /pages/share/index?id=xxx 查看
+export type ShareSourcePayload = { filename: string; page_number: number; url: string }
+export type ShareCard = { id: string; question: string; answer: string; knowledge_name: string; sources: ShareSourcePayload[]; views: number; created_at: string }
+export const createShare = (data: { question: string; answer: string; knowledge_name: string; sources: ShareSourcePayload[] }) => request<{ id: string }>('/api/shares', 'POST', data)
+// 分享页对未登录的微信访客开放：不走登录态，也不用带 token
+export const getShare = (id: string) => rawRequest<ShareCard>(`/api/shares/${encodeURIComponent(id)}`)
 export const logout = () => request<any>('/api/auth/logout', 'POST').catch(() => ({ ok: false }))
 export type Folder = { id: string; name: string; document_count: number }
 export const getFolders = (knowledgeId: string) => request<Folder[]>(`/api/knowledge/${knowledgeId}/folders`)

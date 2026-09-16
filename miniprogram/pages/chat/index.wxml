@@ -154,7 +154,7 @@
           </view>
           <view wx:if="{{item.content && !item.local}}" class="qa-answer-actions">
             <button class="qa-action" bindtap="copyAnswer" data-content="{{item.content}}" aria-label="复制回答"><ui-icon name="copy" size="{{18}}" />复制</button>
-            <button class="qa-action" bindtap="shareAnswer" data-content="{{item.content}}" aria-label="分享回答"><ui-icon name="share" size="{{18}}" />分享</button>
+            <button class="qa-action" open-type="share" data-id="{{item.id}}" aria-label="分享给微信好友"><ui-icon name="share" size="{{18}}" />分享</button>
           </view>
         </view>
       </view>

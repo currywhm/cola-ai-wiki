@@ -16,7 +16,7 @@ function resolveApiBase(): string {
 }
 
 App<IAppOption>({
-  globalData: { apiBase: resolveApiBase(), token: '', user: wx.getStorageSync('llmwiki_user') || null, loggedOut: !!wx.getStorageSync('llmwiki_logged_out'), pendingImportFile: null as { path: string; filename: string } | null },
+  globalData: { apiBase: resolveApiBase(), token: '', user: wx.getStorageSync('llmwiki_user') || null, loggedOut: !!wx.getStorageSync('llmwiki_logged_out'), pendingImportFile: null as { path: string; filename: string } | null, splashShown: false },
   onLaunch(options?: any) {
     this.captureOpenFile?.(options)
     const cachedToken = wx.getStorageSync('llmwiki_token')

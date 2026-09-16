@@ -63,7 +63,7 @@ Page({
       })
     }).catch(() => wx.showToast({ title: '知识库加载失败', icon: 'none' }))
   },
-  activate() { wx.navigateTo({ url: '/pages/mine/index' }) },
+  activate() { wx.switchTab({ url: '/pages/mine/index' }) },
   dismissActivation() { this.setData({ activationVisible: false }) },
   showActions() {
     wx.showActionSheet({

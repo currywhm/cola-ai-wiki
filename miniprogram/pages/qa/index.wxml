@@ -1,0 +1,91 @@
+<view class="qa-page" style="{{safeBottom ? 'padding-bottom:' + safeBottom + 'px;' : ''}}">
+  <app-nav back menu title="{{knowledgeName || '微信用户的知识库'}}" bind:menutap="openHistory" />
+
+  <scroll-view class="qa-body" scroll-y scroll-with-animation enhanced show-scrollbar="{{false}}" scroll-into-view="{{lastMessageId}}">
+    <view wx:if="{{loadState === 'error'}}" class="qa-state">
+      <text class="qa-state-title">暂时无法连接资料</text>
+      <text class="qa-state-desc">登录或网络暂不可用，请稍后重试。</text>
+      <button class="qa-outline-button" bindtap="retry">重新加载</button>
+    </view>
+    <block wx:for="{{messages}}" wx:key="id">
+      <view id="{{item.id}}" class="qa-message {{item.role}}">
+        <view wx:if="{{item.role === 'user'}}" class="qa-user-bubble">{{item.content}}</view>
+        <view wx:else class="qa-answer">
+          <view wx:if="{{!item.content}}" class="qa-progress">{{item.progress || '正在思考…'}}</view>
+          <rich-text wx:else class="qa-answer-text" nodes="{{item.html || item.content}}"></rich-text>
+          <view wx:if="{{item.sources.length}}" class="qa-sources">
+            <text class="qa-source-title">参考出处 · {{item.sources.length}} 条</text>
+            <view wx:for="{{item.sources}}" wx:for-item="source" wx:key="id" class="qa-source" bindtap="openSource" data-id="{{source.document_id || source.id}}" data-url="{{source.url || ''}}">
+              <text class="qa-source-file">{{source.filename}}</text>
+              <text class="qa-source-page">{{source.url ? '公开网页 · 点击复制链接' : '第 ' + source.page_number + ' 页'}}</text>
+            </view>
+          </view>
+          <view wx:if="{{item.content}}" class="qa-answer-actions">
+            <button class="qa-action" bindtap="copyAnswer" data-content="{{item.content}}" aria-label="复制回答"><ui-icon name="copy" size="{{18}}" />复制</button>
+            <button class="qa-action" bindtap="shareAnswer" data-content="{{item.content}}" aria-label="分享回答"><ui-icon name="share" size="{{18}}" />分享</button>
+          </view>
+        </view>
+      </view>
+    </block>
+  </scroll-view>
+
+  <view class="qa-footer">
+    <view class="qa-composer">
+      <view wx:if="{{modePickerVisible}}" class="qa-mode-picker">
+        <button class="qa-mode-option {{askMode === 'web' ? 'active' : ''}}" bindtap="selectAskMode" data-mode="web">
+          <view class="qa-mode-icon"><ui-icon name="web" size="{{22}}" /></view>
+          <view class="qa-mode-copy"><text class="qa-mode-name">问全网</text><text class="qa-mode-desc">检索公开网页给出答案</text></view>
+        </button>
+        <button class="qa-mode-option {{askMode === 'knowledge' ? 'active' : ''}}" bindtap="selectAskMode" data-mode="knowledge" disabled="{{!knowledgeId}}">
+          <view class="qa-mode-icon"><ui-icon name="knowledge-mode" size="{{22}}" /></view>
+          <view class="qa-mode-copy"><text class="qa-mode-name">问知识库</text><text class="qa-mode-desc">基于你的资料作答并给出来源</text></view>
+        </button>
+      </view>
+      <textarea class="qa-input" value="{{input}}" placeholder="{{askMode === 'web' ? '向全网提问，AI 会检索最新公开信息' : '基于全部知识，或 @指定知识进行提问'}}" placeholder-style="color:#b6bcc4;font-size:32rpx;" auto-height maxlength="8000" focus="{{autoFocus}}" adjust-position="{{true}}" show-confirm-bar="{{false}}" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
+      <view class="qa-bar">
+        <button class="qa-agent" bindtap="chooseModel" disabled="{{sending}}" aria-label="选择模型与思考模式"><ui-icon name="robot" size="{{30}}" rpx /></button>
+        <button class="qa-model" bindtap="chooseModel" disabled="{{sending}}">
+          <text class="qa-model-name">{{modelShortLabel}}</text>
+          <text class="qa-model-mode">{{thinkingMode === 'deep' ? '深度' : '快速'}}</text>
+          <ui-icon name="chevron-down" size="{{13}}" rpx />
+        </button>
+        <button class="qa-scope" bindtap="toggleModePicker" disabled="{{sending}}" aria-label="选择提问范围">
+          <ui-icon name="{{askMode === 'web' ? 'web' : 'at'}}" size="{{26}}" rpx />
+          <ui-icon name="chevron-down" size="{{13}}" rpx />
+        </button>
+        <view class="qa-bar-spacer"></view>
+        <button class="qa-tune" bindtap="chooseModel" disabled="{{sending}}" aria-label="思考模式"><ui-icon name="sliders" size="{{30}}" rpx /></button>
+        <button wx:if="{{sending}}" class="qa-send stop" bindtap="stopSend" aria-label="停止"><ui-icon name="stop" size="{{44}}" rpx /></button>
+        <button wx:else class="qa-send {{canSend ? 'active' : ''}}" bindtap="send" disabled="{{!canSend}}" aria-label="发送"><ui-icon name="send-white" size="{{44}}" rpx /></button>
+      </view>
+    </view>
+  </view>
+
+  <view wx:if="{{modelPickerVisible}}" class="model-layer">
+    <view class="model-mask" bindtap="closeModelPicker"></view>
+    <view class="model-sheet" catchtap="stopModelPickerBubble">
+      <view class="sheet-grabber"></view>
+      <view class="model-sheet-title">选择模型</view>
+      <view class="thinking-card">
+        <view class="thinking-copy">
+          <view class="thinking-icon"><ui-icon name="atom" size="{{31}}" /></view>
+          <text class="thinking-title">思考模式</text>
+        </view>
+        <view class="thinking-switch">
+          <button class="thinking-tab {{thinkingMode === 'quick' ? 'active' : ''}}" bindtap="selectThinkingMode" data-mode="quick">快速</button>
+          <button class="thinking-tab {{thinkingMode === 'deep' ? 'active' : ''}}" bindtap="selectThinkingMode" data-mode="deep">深度</button>
+        </view>
+      </view>
+      <text class="model-section-title">选择模型</text>
+      <view class="model-list">
+        <button wx:for="{{modelOptions}}" wx:key="id" class="model-row" bindtap="selectModel" data-id="{{item.id}}">
+          <view class="model-row-copy">
+            <text class="model-row-name">{{item.name}}</text>
+            <text wx:if="{{item.badge}}" class="model-new-badge">{{item.badge}}</text>
+          </view>
+          <text wx:if="{{item.id === selectedModelKey}}" class="model-check">✓</text>
+        </button>
+      </view>
+    </view>
+  </view>
+</view>

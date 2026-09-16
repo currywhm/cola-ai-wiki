@@ -34,7 +34,12 @@ Page({
       { id: 'pro_yearly', tier: 'pro', label: '年付', price: '99.00', period: '365 天', note: '省 17%' },
     ],
   },
-  onShow() { this.load() },
+  onShow() {
+    if (typeof this.getTabBar === 'function' && this.getTabBar()) {
+      this.getTabBar().setData({ selected: 3 })
+    }
+    this.load()
+  },
   async syncWechatProfile() {
     try {
       const profile = await new Promise<any>((resolve, reject) => (wx as any).getUserProfile({ desc: '用于显示你的头像和昵称', success: resolve, fail: reject }))

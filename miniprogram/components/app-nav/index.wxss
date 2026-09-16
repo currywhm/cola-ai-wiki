@@ -19,3 +19,6 @@
 .nav-conversation-title { left:92rpx; right:180rpx; font-size:34rpx; font-weight:700; text-align:left; }
 .nav-action { position:absolute; right:126rpx; width:56rpx; height:56rpx; min-height:56rpx; border:1rpx solid #e3e5e6; border-radius:17rpx; background:#fff; color:#25282e; }
 .nav-back:active { background:#edf1f5; }
+.nav-center-title { position:absolute; left:112rpx; right:112rpx; overflow:hidden; color:#161e2d; font-size:34rpx; font-weight:600; line-height:44rpx; text-align:center; text-overflow:ellipsis; white-space:nowrap; }
+.nav-menu-left { position:absolute; left:92rpx; top:50%; transform:translateY(-50%); width:60rpx; height:60rpx; min-height:60rpx; border-radius:50%; color:#263247; }
+.nav-menu-left:active { background:#edf1f5; }

@@ -1,9 +1,12 @@
 {
   "pages": [
+    "pages/ask/index",
     "pages/chat/index",
+    "pages/recent/index",
+    "pages/mine/index",
+    "pages/qa/index",
     "pages/folder-chat/index",
     "pages/market/index",
-    "pages/mine/index",
     "pages/knowledge-detail/index",
     "pages/document/index",
     "pages/search/index",
@@ -17,6 +20,19 @@
     "navigationBarBackgroundColor": "#f6f6f4",
     "backgroundColor": "#f6f6f4",
     "backgroundTextStyle": "light"
+  },
+  "tabBar": {
+    "custom": true,
+    "color": "#b3b3b3",
+    "selectedColor": "#2c2c2c",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      { "pagePath": "pages/ask/index", "text": "问AI" },
+      { "pagePath": "pages/chat/index", "text": "知识库" },
+      { "pagePath": "pages/recent/index", "text": "最近" },
+      { "pagePath": "pages/mine/index", "text": "我的" }
+    ]
   },
   "style": "v2",
   "componentFramework": "glass-easel",

@@ -1,0 +1,39 @@
+/* 最近：沿用「知识库 / 我的」的视觉语言——浅灰底、白卡片、克制描边、绿系强调色 */
+.recent-page { display: flex; flex-direction: column; min-height: 100vh; background: #f6f6f6; box-sizing: border-box; padding-bottom: calc(112rpx + env(safe-area-inset-bottom)); }
+.recent-body { flex: 1; padding: 10rpx 32rpx 0; box-sizing: border-box; }
+
+.recent-section { margin-bottom: 34rpx; }
+.recent-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12rpx; margin: 0 2rpx 16rpx; }
+.recent-section-title { color: #1f2227; font-size: 34rpx; font-weight: 760; line-height: 1.35; letter-spacing: -.6rpx; }
+.recent-section-hint { flex: 0 0 auto; color: #98a2ac; font-size: 21rpx; line-height: 1.4; }
+
+/* 最近知识库 */
+.recent-kb-scroll { width: 100%; white-space: nowrap; }
+.recent-kb-list { display: inline-flex; align-items: stretch; gap: 16rpx; padding: 2rpx 32rpx 4rpx 0; }
+.recent-kb-card { display: inline-flex; flex-direction: column; justify-content: flex-start; width: 268rpx; padding: 22rpx 22rpx 20rpx; box-sizing: border-box; border-radius: 20rpx; background: #fff; }
+.recent-kb-card-hover { background: #f4f7f5; }
+.recent-kb-icon { display: flex; align-items: center; justify-content: center; width: 56rpx; height: 56rpx; margin-bottom: 16rpx; border-radius: 16rpx; background: #f0fbf5; }
+.recent-kb-icon.tone-blue { background: #eef3fd; }
+.recent-kb-icon.tone-green { background: #eef9f3; }
+.recent-kb-icon.tone-yellow { background: #fbf6e8; }
+.recent-kb-icon.tone-purple { background: #f2eefb; }
+.recent-kb-name { display: block; color: #1f2227; font-size: 29rpx; font-weight: 700; line-height: 1.36; letter-spacing: -.3rpx; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-kb-time { display: block; margin-top: 8rpx; color: #98a2ac; font-size: 22rpx; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 最近知识 */
+.recent-doc-card { border-radius: 20rpx; background: #fff; overflow: hidden; }
+.recent-doc { display: flex; align-items: center; gap: 20rpx; padding: 20rpx 22rpx; }
+.recent-doc + .recent-doc { border-top: 1rpx solid #f2f3f4; }
+.recent-doc-hover { background: #f6f8f7; }
+.recent-doc-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 64rpx; width: 64rpx; height: 64rpx; }
+.recent-doc-info { flex: 1; min-width: 0; }
+.recent-doc-name { display: block; color: #1f2227; font-size: 30rpx; font-weight: 600; line-height: 1.38; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-doc-time { display: block; margin-top: 6rpx; color: #98a2ac; font-size: 23rpx; line-height: 1.4; }
+
+.recent-empty { padding: 56rpx 24rpx; border-radius: 20rpx; background: #fff; color: #98a2ac; font-size: 26rpx; line-height: 1.6; text-align: center; }
+.recent-end { padding: 30rpx 0 10rpx; color: #b3b8bf; font-size: 24rpx; text-align: center; }
+.recent-bottom-space { height: 40rpx; }
+
+.recent-skeleton-wrap { padding: 8rpx 0; }
+.recent-skeleton { height: 168rpx; margin-bottom: 20rpx; border-radius: 20rpx; background: #ededee; }
+.recent-skeleton.short { height: 104rpx; }

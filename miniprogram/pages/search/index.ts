@@ -12,6 +12,6 @@ Page({
   finally {this.setData({searching:false})}
  },
  openDocument(e:any){wx.navigateTo({url:`/pages/document/index?id=${e.currentTarget.dataset.id}`})},
- openMine(){wx.navigateTo({url:'/pages/mine/index'})},
+ openMine(){wx.switchTab({url:'/pages/mine/index'})},
  back(){wx.navigateBack()},
 })

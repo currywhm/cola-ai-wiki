@@ -1,5 +1,5 @@
 <view class="page mine-page">
-  <app-nav id="pageNav" title="" back />
+  <app-nav id="pageNav" title="我的" center />
   <view class="mine-content">
     <view class="profile-card">
       <view class="profile-main">

@@ -1,4 +1,4 @@
-.mine-page { background:#f6f6f6; padding-bottom:42rpx; }
+.mine-page { background:#f6f6f6; padding-bottom:calc(100rpx + env(safe-area-inset-bottom)); }
 .mine-content { padding-top:22rpx; }
 .profile-card { padding:30rpx 28rpx 28rpx; border:0; border-radius:22rpx; background:#fff; box-shadow:none; }
 .profile-main { display:flex; align-items:center; min-width:0; gap:16rpx; }

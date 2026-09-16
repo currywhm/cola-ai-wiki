@@ -1,0 +1,40 @@
+.tab-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  box-sizing: content-box;
+  width: 100%;
+  height: 104rpx;
+  background: #ffffff;
+  border-top: 1rpx solid #efefef;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Helvetica Neue", Arial, sans-serif;
+}
+.tab-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  height: 104rpx;
+  gap: 6rpx;
+}
+.tab-item-hover { opacity: .6; }
+.tab-icon {
+  display: block;
+  width: 46rpx;
+  height: 46rpx;
+}
+.tab-label {
+  font-size: 20rpx;
+  line-height: 1.1;
+  color: #9a9a9a;
+  letter-spacing: 0;
+}
+.tab-item.active .tab-label {
+  color: #1d1d1d;
+  font-weight: 600;
+}

@@ -1,0 +1,33 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="glowCool" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#8fc4f4" stop-opacity="0.62"/>
+      <stop offset="55%" stop-color="#8fc4f4" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#8fc4f4" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowWarm" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#8fdcb2" stop-opacity="0.60"/>
+      <stop offset="55%" stop-color="#8fdcb2" stop-opacity="0.20"/>
+      <stop offset="100%" stop-color="#8fdcb2" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 品牌光晕：左冷右暖，柔和地铺在头像后方 -->
+  <ellipse cx="392" cy="470" rx="330" ry="330" fill="url(#glowCool)"/>
+  <ellipse cx="642" cy="636" rx="316" ry="316" fill="url(#glowWarm)"/>
+
+  <!-- 圆角六边形脸部：先铺白底挡住光晕，再描粗轮廓 -->
+  <path d="M329 314 Q370 250 446 250 L554 250 Q630 250 671 314 L769 466 Q810 530 769 594 L671 746 Q630 810 554 810 L446 810 Q370 810 329 746 L231 594 Q190 530 231 466 Z"
+        fill="#ffffff"/>
+  <path d="M329 314 Q370 250 446 250 L554 250 Q630 250 671 314 L769 466 Q810 530 769 594 L671 746 Q630 810 554 810 L446 810 Q370 810 329 746 L231 594 Q190 530 231 466 Z"
+        fill="none" stroke="#1c1c1c" stroke-width="54" stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- 眼睛与笑意 -->
+  <ellipse cx="438" cy="506" rx="27" ry="37" fill="#1c1c1c"/>
+  <ellipse cx="582" cy="506" rx="27" ry="37" fill="#1c1c1c"/>
+  <path d="M440 598 Q512 672 592 588" fill="none" stroke="#1c1c1c" stroke-width="46" stroke-linecap="round"/>
+
+  <!-- 右上角星芒：先用底色留出间隙，再叠上实心星形 -->
+  <path d="M772 138 Q800 214 876 242 Q800 270 772 346 Q744 270 668 242 Q744 214 772 138 Z" fill="#ffffff" stroke="#ffffff" stroke-width="36" stroke-linejoin="round"/>
+  <path d="M772 138 Q800 214 876 242 Q800 270 772 346 Q744 270 668 242 Q744 214 772 138 Z" fill="#1c1c1c"/>
+</svg>

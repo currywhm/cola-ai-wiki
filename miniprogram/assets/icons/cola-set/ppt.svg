@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <path fill="#2c2c2c" d="M192 128h640c35.3 0 64 28.7 64 64v480c0 35.3-28.7 64-64 64H192c-35.3 0-64-28.7-64-64V192c0-35.3 28.7-64 64-64zm0 64v480h640V192H192z"/>
+  <path fill="#2c2c2c" d="M256 256h512v64H256zM256 384h512v64H256zM256 512h320v64H256z"/>
+  <path fill="#2c2c2c" d="M512 704l-64 128h128l-64-128z"/>
+</svg>

@@ -1,0 +1,62 @@
+<view class="ask-page">
+  <!-- 参考设计：问AI 页不放标题栏，只留出胶囊按钮的安全高度 -->
+  <view class="ask-navspace" style="height:{{navHeight}}px;"></view>
+  <scroll-view class="ask-body" scroll-y enhanced show-scrollbar="{{false}}">
+    <view class="ask-hero-icon"><ui-icon name="ask-hero" size="{{108}}" rpx /></view>
+    <text class="ask-hero-title">{{loggedIn ? '今天从哪里开始？' : '快来开启你的 AI 知识库'}}</text>
+
+    <!-- 登录后：能力入口 + 推荐提问 -->
+    <block wx:if="{{loggedIn}}">
+      <view class="ask-actions">
+        <button class="ask-chip" bindtap="onAction" data-action="build">
+          <ui-icon name="book" size="{{34}}" rpx /><text>一键搭建知识库</text>
+        </button>
+        <button class="ask-chip" bindtap="onAction" data-action="diagram">
+          <ui-icon name="image" size="{{34}}" rpx /><text>长文秒变知识图解</text>
+        </button>
+        <button class="ask-chip" bindtap="onAction" data-action="report">
+          <ui-icon name="ppt" size="{{34}}" rpx /><text>制作调研PPT</text>
+        </button>
+        <button class="ask-chip" bindtap="refreshActions">
+          <ui-icon name="refresh" size="{{32}}" rpx /><text>换一换</text>
+        </button>
+      </view>
+      <view class="ask-suggestions">
+        <button wx:for="{{suggestions}}" wx:key="*this" class="ask-suggestion" bindtap="onSuggestion" data-text="{{item}}">{{item}}</button>
+      </view>
+    </block>
+
+    <!-- 登录前：导入引导 -->
+    <view wx:else class="ask-promo">
+      <view class="ask-promo-copy">
+        <text class="ask-promo-title">没有合适文件？</text>
+        <text class="ask-promo-desc">试试导入更多知识提问</text>
+        <button class="ask-promo-button" bindtap="onPromoAsk">在线提问</button>
+      </view>
+      <image class="ask-promo-art" src="/assets/brand/ask-import-collage.svg" mode="aspectFit" />
+      <view class="ask-promo-dots"><view class="ask-promo-dot"></view><view class="ask-promo-dot active"></view></view>
+    </view>
+
+    <view class="ask-bottom-space"></view>
+  </scroll-view>
+
+  <view class="ask-footer">
+    <view class="ask-composer" bindtap="onComposerTap">
+      <text class="ask-placeholder">基于知识问AI</text>
+      <view wx:if="{{loggedIn}}" class="ask-send"><ui-icon name="send-white" size="{{30}}" rpx /></view>
+      <view wx:else class="ask-plus"><ui-icon name="plus" size="{{44}}" rpx /></view>
+    </view>
+  </view>
+
+  <view wx:if="{{booting}}" class="boot-screen">
+    <view class="boot-center">
+      <image class="boot-avatar" src="/assets/brand/cola-avatar.png" mode="aspectFit" />
+      <text class="boot-title">cola知识库</text>
+      <view class="boot-dots" aria-label="正在加载">
+        <view class="boot-dot boot-dot-one"></view>
+        <view class="boot-dot boot-dot-two"></view>
+        <view class="boot-dot boot-dot-three"></view>
+      </view>
+    </view>
+  </view>
+</view>

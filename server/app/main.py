@@ -460,6 +460,22 @@ async def list_knowledge(user_id: str = Depends(current_user)) -> list[dict]:
     return [row_dict(r) for r in rows]
 
 
+@app.get("/api/recent")
+async def recent(user_id: str = Depends(current_user)) -> dict:
+    """最近使用：知识库按更新时间倒序，文件和文件夹合并后按时间倒序。"""
+    db = await connect()
+    await ensure_default_knowledge(db, user_id)
+    await db.commit()
+    kbs = await fetchall(db, "SELECT id,name,updated_at FROM knowledge_bases WHERE user_id=? AND status='active' ORDER BY updated_at DESC LIMIT 10", (user_id,))
+    docs = await fetchall(db, "SELECT d.id,d.filename,d.file_type,d.folder_id,d.updated_at,d.created_at,d.knowledge_id,k.name AS knowledge_name FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_id WHERE d.user_id=? AND d.status!='deleted' AND k.status='active' ORDER BY d.updated_at DESC LIMIT 40", (user_id,))
+    folders = await fetchall(db, "SELECT f.id,f.name,f.updated_at,f.knowledge_id,k.name AS knowledge_name FROM folders f JOIN knowledge_bases k ON k.id=f.knowledge_id WHERE f.user_id=? AND k.status='active' ORDER BY f.updated_at DESC LIMIT 20", (user_id,))
+    await db.close()
+    items = [{'id': str(r['id']), 'kind': 'document', 'name': str(r['filename'] or ''), 'file_type': str(r['file_type'] or ''), 'knowledge_id': str(r['knowledge_id']), 'knowledge_name': str(r['knowledge_name'] or ''), 'folder_id': str(r['folder_id'] or ''), 'updated_at': str(r['updated_at'] or r['created_at'] or '')} for r in docs]
+    items += [{'id': str(r['id']), 'kind': 'folder', 'name': str(r['name'] or ''), 'file_type': 'folder', 'knowledge_id': str(r['knowledge_id']), 'knowledge_name': str(r['knowledge_name'] or ''), 'folder_id': '', 'updated_at': str(r['updated_at'] or '')} for r in folders]
+    items.sort(key=lambda item: item['updated_at'], reverse=True)
+    return {'knowledge': [row_dict(r) for r in kbs], 'items': items}
+
+
 @app.get("/api/market")
 async def market_knowledge(query: str = Query(default="", max_length=80), category: str = Query(default="", max_length=40)) -> list[dict]:
     """Return only explicitly published knowledge bases for discovery."""

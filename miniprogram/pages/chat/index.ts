@@ -8,18 +8,32 @@ const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
   { id: 'deepseek-flash', name: '云枢', value: 'deepseek-flash', badge: '', short: '云枢' },
   { id: 'deepseek-v4-pro', name: '墨衡', value: 'deepseek-v4-pro', badge: '', short: '墨衡' },
 ]
-const BOOT_SPLASH_MIN_MS = 1200
-let bootSplashShown = false
-let bootStartedAt = 0
+// 启动页已上移到小程序入口（问AI tab）：知识库页面不再拦截首屏，这里保留空标记保证旧调用安全
+let bootSplashShown = true
 
 Page({
   data: { safeBottom: 0, dirTouchStartX: 0, dirTouchStartY: 0, booting: !bootSplashShown, knowledgeId: '', knowledgeName: '', knowledgeDesc: '', conversationId: '', conversationActive: false, selectedIndex: 0, input: '', canSend: false, sending: false, readyForInput: false, lastMessageId: '', model: 'deepseek-flash', selectedModelKey: 'deepseek-flash', modelLabel: '云枢', modelShortLabel: '云枢', thinkingMode: 'quick' as 'quick' | 'deep', modelOptions: FALLBACK_MODEL_OPTIONS, modelPickerVisible: false, askMode: 'knowledge' as 'knowledge' | 'web', modePickerVisible: false, pinned: false, uploadSheetVisible: false, uploadUsedLabel: '0.00GB', uploadLimitLabel: '300MB', loadState:'loading', knowledge:[] as Knowledge[], filteredKnowledge:[] as Knowledge[], pickerQuery:'', pickerVisible:false, documents:[] as any[], documentsLoading:false, documentsError:false, folders:[] as Folder[], documentGroups:[] as any[], visibleDocuments:[] as any[], currentFolderId:'', currentFolderName:'', articleSheetVisible:false, articleUrl:'', articleImporting:false, importMode:false, pendingFileName:'', askLayerVisible:false, askFocus:false, askGreeting:'', suggestions:[] as string[], suggestionsFor:'', suggestionsLoading:false, messages: [] as any[] },
-  onShow() {
-    this.measureSafeArea()
-    if (!bootSplashShown) {
-      bootStartedAt = Date.now()
-      this.setData({ booting: true })
+  onLoad() {
+    // tabBar 为自定义组件：会话态需要隐藏它，这里统一拦截 setData 同步，避免逐个调用点遗漏
+    const originalSetData = this.setData.bind(this)
+    ;(this as any).setData = (data: any, callback?: () => void) => {
+      originalSetData(data, () => {
+        if (data && (Object.prototype.hasOwnProperty.call(data, 'conversationActive') || Object.prototype.hasOwnProperty.call(data, 'askLayerVisible'))) this.syncTabBar()
+        if (callback) callback()
+      })
     }
+  },
+  // 自定义 tabBar 需要页面自己同步选中项与显隐：会话视图为全屏，隐藏底部导航
+  syncTabBar() {
+    if (typeof this.getTabBar !== 'function') return
+    const bar = this.getTabBar() as any
+    if (!bar || typeof bar.setData !== 'function') return
+    // 会话视图与提问层都属于「问答页」，全屏展示，不再保留底部 bar；只有四个 tab 首页才有底部导航
+    bar.setData({ selected: 1, hidden: !!(this.data.conversationActive || this.data.askLayerVisible) })
+  },
+  onShow() {
+    this.syncTabBar()
+    this.measureSafeArea()
     const target = consumeChatTarget()
     if (target) this.setData({ knowledgeId:target.knowledgeId, conversationId:target.conversationId || '', conversationActive:true, messages:[], input:'', canSend:false, readyForInput:false, lastMessageId:'' })
     this.load(!!target)
@@ -34,13 +48,7 @@ Page({
     } catch (e) { /* 忽略，继续使用 CSS env() 兜底 */ }
   },
   finishBoot() {
-    if (bootSplashShown) return
-    const elapsed = Date.now() - bootStartedAt
-    const delay = Math.max(0, BOOT_SPLASH_MIN_MS - elapsed)
-    setTimeout(() => {
-      bootSplashShown = true
-      this.setData({ booting: false })
-    }, delay)
+    // 启动页已上移到小程序入口（问AI tab）：知识库页不再有首屏加载动画
   },
   load(loadConversation = false) {
     this.setData({ loadState:'loading', readyForInput:false, canSend:false })
@@ -63,11 +71,15 @@ Page({
         const guide = this.buildGuideMessage(this.data.askMode)
         this.setData({ messages:[guide], lastMessageId:guide.id, readyForInput:true }, () => this.syncCanSend())
       }
-      else if (current && !this.data.conversationActive && !this.data.messages.length && !(this as any).userLeftConversation) {
-        // 进入知识库时自动恢复该库最近一次会话：有历史的对话窗不再展示打招呼引导
-        this.restoreLatestConversation(current.id)
-      }
       this.maybePromptOpenFileImport()
+      // 从问AI页跳转过来：自动打开提问层，可带上问AI页选中的提问内容
+      const shouldOpenAsk = wx.getStorageSync('open_ask_layer')
+      if (shouldOpenAsk) {
+        const draft = String(wx.getStorageSync('ask_draft') || '')
+        wx.removeStorageSync('open_ask_layer')
+        wx.removeStorageSync('ask_draft')
+        setTimeout(() => this.openAskLayer(draft), 300)
+      }
     }).catch((error: any) => this.setData({ loadState: error?.loggedOut ? 'loggedout' : 'error', readyForInput:false, canSend:false }, () => this.finishBoot()))
   },
   // 微信「用小程序打开」进入：弹出知识库选择，选完直接把文件上传到目标知识库
@@ -324,7 +336,6 @@ Page({
       ;(this as any).userLeftConversation = false
       this.setData({selectedIndex:Number(e.detail.value),knowledgeId:item.id,knowledgeName:item.name,knowledgeDesc:item.description || '',conversationId:'',messages:[],input:'',canSend:false,askMode:'knowledge',currentFolderId:'',currentFolderName:''})
       this.loadDirectory(item.id)
-      this.restoreLatestConversation(item.id)
     }
   },
   openKnowledgePicker() {
@@ -348,7 +359,6 @@ Page({
     ;(this as any).userLeftConversation = false
     this.setData({ knowledgeId:item.id, knowledgeName:item.name, knowledgeDesc:item.description || '', conversationId:'', messages:[], input:'', canSend:false, pickerVisible:false, selectedIndex:this.data.knowledge.indexOf(item), askMode:'knowledge', currentFolderId:'', currentFolderName:'' })
     this.loadDirectory(item.id)
-    this.restoreLatestConversation(item.id)
   },
   createFromPicker() { this.closeKnowledgePicker(); this.create() },
   create() { wx.navigateTo({url:'/pages/create/index'}) },
@@ -356,8 +366,8 @@ Page({
     this.setData({ loadState:'loading' })
     resumeWechatLogin().then(() => this.load()).catch(() => this.setData({ loadState:'error' }))
   },
-  openMine() { wx.navigateTo({ url: '/pages/mine/index' }) },
-  activate() { wx.navigateTo({ url: '/pages/mine/index' }) },
+  openMine() { wx.switchTab({ url: '/pages/mine/index' }) },
+  activate() { wx.switchTab({ url: '/pages/mine/index' }) },
   goSearch() { wx.navigateTo({ url: this.data.knowledgeId ? `/pages/search/index?knowledgeId=${this.data.knowledgeId}` : '/pages/search/index' }) },
   openKnowledgeActions() {
     if (!this.data.knowledgeId || this.data.sending) return
@@ -408,19 +418,19 @@ Page({
     }
     return { id, role: 'assistant', local: true, sources: [], content }
   },
-  // 目录视图下点击输入框：进入 ima 式提问页（顶部问候+推荐问题，底部输入框）
+  // 目录视图下点击输入框：有历史会话则直接恢复进入对话页，否则进入 ima 式提问层
   enterConversationFromComposer() {
     if (this.data.conversationActive || this.data.sending || this.data.loadState !== 'ready') return
-    this.openAskLayer()
+    this.restoreLatestConversation(this.data.knowledgeId, () => this.openAskLayer())
   },
-  openAskLayer() {
+  openAskLayer(draft = '') {
     if (this.data.sending || this.data.loadState !== 'ready' || this.data.askLayerVisible) return
     const kbName = this.data.knowledgeName || '微信用户的知识库'
     const isEmpty = !this.data.documentsLoading && !this.data.documents.length
     const askGreeting = this.data.askMode === 'web'
       ? 'Hi，想了解什么？cola 可以帮你搜全网，尽管问。'
       : (isEmpty ? `Hi，这是「${kbName}」。当前还没有文件，先导入文档后就能基于资料提问啦。` : `Hi，有任何关于「${kbName}」的问题，都尽管问cola！`)
-    this.setData({ askLayerVisible: true, modePickerVisible: false, askGreeting, input: '' }, () => {
+    this.setData({ askLayerVisible: true, modePickerVisible: false, askGreeting, input: draft }, () => {
       this.syncCanSend()
       if (this.data.askMode === 'knowledge' && this.data.suggestionsFor !== this.data.knowledgeId) this.loadSuggestions()
       setTimeout(() => { if (this.data.askLayerVisible) this.setData({ askFocus: true }) }, 250)
@@ -496,14 +506,17 @@ Page({
   loadConversation() { getConversation(this.data.conversationId).then((messages) => { const hydrated = messages.map((m: any) => m.role === 'assistant' ? { ...m, html: renderMarkdown(m.content || ''), progress: '' } : m); this.setData({ messages: hydrated, lastMessageId: hydrated.length ? hydrated[hydrated.length - 1].id : '' }) }).catch(() => undefined) },
   // 恢复当前知识库最近一次会话；异步返回时用户可能已切库/已输入/已主动离开，恢复前需再校验。
   // 文件夹会话在独立文件夹页内恢复，这里只挑根目录（folder_id 为空）的会话，保证隔离
-  restoreLatestConversation(knowledgeId: string) {
+  restoreLatestConversation(knowledgeId: string, onNoHistory?: () => void) {
     getConversations().then((items) => {
       const latest = (items || []).find((item: any) => item.knowledge_id === knowledgeId && !(item.folder_id || ''))
-      if (!latest) return
+      if (!latest) {
+        if (onNoHistory) onNoHistory()
+        return
+      }
       if ((this as any).userLeftConversation || this.data.conversationActive || this.data.messages.length || this.data.knowledgeId !== knowledgeId) return
       this.setData({ conversationId: latest.id, conversationActive: true })
       this.loadConversation()
-    }).catch(() => undefined)
+    }).catch(() => { if (onNoHistory) onNoHistory() })
   },
   syncCanSend() { this.setData({ canSend: !!this.data.readyForInput && !!this.data.input.trim() && (this.data.askMode === 'web' || !!this.data.knowledgeId) && this.data.loadState === 'ready' && !this.data.sending }) },
   onInput(e: any) {

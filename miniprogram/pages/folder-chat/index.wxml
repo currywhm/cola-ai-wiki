@@ -70,7 +70,7 @@
   </scroll-view>
   <view class="chat-footer">
     <view class="composer">
-      <textarea class="composer-input" value="{{input}}" placeholder="{{documents.length ? '基于本文件夹提问' : '这个文件夹还没有文件'}}" auto-height maxlength="8000" bindtap="enterConversation" bindfocus="enterConversation" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
+      <textarea class="composer-input" value="{{input}}" placeholder="{{documents.length ? '基于本文件夹提问' : '这个文件夹还没有文件'}}" placeholder-style="color:#c7c7c7;font-size:32rpx;" auto-height maxlength="8000" bindtap="enterConversation" bindfocus="enterConversation" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
       <view class="composer-bar">
         <button class="model-button" bindtap="chooseModel" disabled="{{sending}}">
           <text>{{modelShortLabel}} <text class="model-mode">{{thinkingMode === 'deep' ? '深度' : '快速'}}</text></text>

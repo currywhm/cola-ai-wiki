@@ -47,6 +47,7 @@ export const deleteAccount = () => request<any>('/api/me', 'DELETE')
 export const getKnowledge = () => request<Knowledge[]>('/api/knowledge')
 export type MarketKnowledge = { id: string; name: string; description: string; icon: string; category: string; subscribers: number; documents: number; updated_at: string }
 export const getMarketKnowledge = (query = '', category = '') => request<MarketKnowledge[]>(`/api/market?query=${encodeURIComponent(query)}&category=${encodeURIComponent(category)}`)
+export const getRecent = () => request<{ knowledge: any[]; items: any[] }>('/api/recent')
 export const createKnowledge = (data: { name: string; description: string }) => request<Knowledge>('/api/knowledge', 'POST', data)
 export const deleteKnowledge = (id: string) => request<any>(`/api/knowledge/${id}`, 'DELETE')
 export const getKnowledgeDetail = (id: string) => request<{ knowledge: Knowledge; documents: Document[] }>(`/api/knowledge/${id}`)

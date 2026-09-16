@@ -52,7 +52,7 @@ Page({
         documentsLoading: false,
         loadState: 'ready',
         readyForInput: true,
-      }, () => { this.syncCanSend(); this.restoreLatestConversation() })
+      }, () => this.syncCanSend())
     }).catch(() => this.setData({ documents: [], documentsLoading: false, documentsError: true, loadState: 'error' }))
   },
   displayTime(value: string) {

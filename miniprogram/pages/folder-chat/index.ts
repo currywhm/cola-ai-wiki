@@ -3,7 +3,7 @@
 import { renderMarkdown } from '../../utils/markdown'
 import { appendTrace, assistantMessage, createFlusher, settleTrace } from '../../utils/thread'
 import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER, SKILLS } from '../../utils/skills'
-import { deleteConversation, getConversation, getConversations, getKnowledgeDetail, getModels, pinConversation, Source, streamChat } from '../../services/api'
+import { deleteConversation, getConversation, getConversations, getKnowledgeDetail, getModels, getSuggestions, pinConversation, Source, streamChat } from '../../services/api'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
 
@@ -33,6 +33,8 @@ Page({
     conversationId: '',
     messages: [] as any[],
     lastMessageId: '',
+    suggestions: [] as string[],
+    suggestionsLoading: false,
     input: '',
     placeholder: KNOWLEDGE_PLACEHOLDER,
     canSend: false,
@@ -110,6 +112,7 @@ Page({
         .map((item: any) => ({ ...item, typeLabel: typeLabelOf(item.file_type) }))
       this.setData({ documents, loadState: 'ready', readyForInput: true }, () => {
         this.seedGreeting()
+        this.loadSuggestions()
         this.syncCanSend()
         this.restoreLatestConversation()
       })
@@ -140,11 +143,26 @@ Page({
     const kbName = this.data.knowledgeName || DEFAULT_KNOWLEDGE_NAME
     const folderName = this.data.folderName || '当前文件夹'
     const count = this.data.documents.length
-    const content = count
-      ? `我是 cola。这里是「${kbName}」的「${folderName}」，共 ${count} 份资料，提问时我会只依据它们回答。`
-      : `我是 cola。这里是「${kbName}」的「${folderName}」，目前还没有资料。先把文件移动进来，或直接提问也可以。`
-    const greeting = { id: `greeting-${Date.now()}`, role: 'assistant', local: true, sources: [], trace: [], reason: '', content }
+    const title = '你好，我是 cola'
+    const desc = count
+      ? `这里是「${kbName}」的「${folderName}」，共 ${count} 份资料，提问时我会只依据它们回答。`
+      : `这里是「${kbName}」的「${folderName}」，目前还没有资料。先把文件移动进来，或直接提问也可以。`
+    const greeting = { id: `greeting-${Date.now()}`, role: 'assistant', local: true, greeting: true, title, desc, sources: [], trace: [], reason: '', content: `${title}。${desc}` }
     this.setData({ messages: [greeting], lastMessageId: greeting.id })
+  },
+  // 提问建议：按「知识库 + 文件夹」范围生成；没资料或生成失败就不展示，不阻塞问答
+  loadSuggestions() {
+    if (!this.data.knowledgeId || !this.data.folderId) return
+    this.setData({ suggestionsLoading: true })
+    getSuggestions(this.data.knowledgeId, this.data.folderId).then((result: any) => {
+      this.setData({ suggestions: (result && result.questions) || [], suggestionsLoading: false })
+    }).catch(() => this.setData({ suggestions: [], suggestionsLoading: false }))
+  },
+  // 点提问建议 = 直接发出，不再回填输入框
+  pickPrompt(e: any) {
+    const question = String(e.currentTarget.dataset.text || '')
+    if (!question || this.data.sending) return
+    this.setData({ input: question }, () => this.send())
   },
   onInput(e: any) {
     const input = e.detail.value
@@ -300,7 +318,11 @@ Page({
     }).catch(() => { this.seedGreeting(); wx.showToast({ title: '历史对话加载失败', icon: 'none' }) })
   },
   newConversation() {
-    this.setData({ historyVisible: false, conversationId: '', messages: [], input: '', sending: false, canSend: false, readyForInput: true, lastMessageId: '' }, () => { this.seedGreeting(); this.syncCanSend() })
+    this.setData({ historyVisible: false, conversationId: '', messages: [], input: '', sending: false, canSend: false, readyForInput: true, lastMessageId: '' }, () => {
+      this.seedGreeting()
+      if (!this.data.suggestions.length) this.loadSuggestions()
+      this.syncCanSend()
+    })
   },
   // 左滑出「删除」，二次确认后再删（服务端按用户名下校验）
   removeHistory(e: any) {

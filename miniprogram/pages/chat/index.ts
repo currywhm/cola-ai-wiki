@@ -21,6 +21,8 @@ Page({
     ;(this as any).setData = (data: any, callback?: () => void) => {
       originalSetData(data, () => {
         if (data && (Object.prototype.hasOwnProperty.call(data, 'conversationActive') || Object.prototype.hasOwnProperty.call(data, 'askLayerVisible'))) this.syncTabBar()
+        // 会话里只剩下开场白时，顺手拉一次推荐问题（后端按指纹缓存）
+        if (data && Array.isArray(data.messages) && data.messages.length === 1 && data.messages[0] && data.messages[0].greeting) this.ensureSuggestions()
         if (callback) callback()
       })
     }
@@ -425,20 +427,22 @@ Page({
     this.setData({ conversationId: '', conversationActive: false, messages: [], input: '', modePickerVisible: false, modelPickerVisible:false, lastMessageId:'' })
     this.syncCanSend()
   },
+  // 开场白：先说清「在哪个范围内问答」，再由推荐问题引导第一句提问（本地消息，不写入历史）
   buildGuideMessage(mode?: 'knowledge' | 'web') {
     const id = `guide-${Date.now()}`
     const askMode = mode || this.data.askMode
     const kbName = this.data.knowledgeName || '微信用户的知识库'
     const isEmpty = !this.data.documentsLoading && !this.data.documents.length
-    let content: string
+    const title = '你好，我是 cola'
+    let desc: string
     if (askMode === 'web') {
-      content = `Hi，想了解什么？cola 可以帮你搜全网，尽管问。`
+      desc = '当前是全网问答，我会先检索公开资料再回答你的问题。'
     } else if (isEmpty) {
-      content = `Hi，这是「${kbName}」。当前还没有文件，先导入文档后就能基于资料提问啦。`
+      desc = `这里是「${kbName}」，目前还没有资料。导入文件后就能基于资料问答，也可以直接提问。`
     } else {
-      content = `Hi，关于「${kbName}」的问题，都尽管问 cola 吧。`
+      desc = `这里是「${kbName}」，共 ${this.data.documents.length} 份资料，提问时我会只依据这些资料回答。`
     }
-    return { id, role: 'assistant', local: true, sources: [], content }
+    return { id, role: 'assistant', local: true, greeting: true, title, desc, sources: [], trace: [], reason: '', content: `${title}。${desc}` }
   },
   // 目录视图下点击输入框：有历史会话则直接恢复进入对话页，否则进入 ima 式提问层
   enterConversationFromComposer() {
@@ -471,6 +475,18 @@ Page({
     if (!question) return
     // 点推荐问题=直接发送，不再回填输入框
     this.setData({ input: question }, () => this.sendFromAsk())
+  },
+  // 开场白出现时才需要推荐问题：同一个知识库只拉一次
+  ensureSuggestions() {
+    if (!this.data.knowledgeId || this.data.suggestionsLoading) return
+    if (this.data.suggestionsFor === this.data.knowledgeId && this.data.suggestions.length) return
+    this.loadSuggestions()
+  },
+  // 会话开场后的提问建议：点了直接发，不再回填输入框
+  pickPrompt(e: any) {
+    const question = String(e.currentTarget.dataset.text || '')
+    if (!question || this.data.sending) return
+    this.setData({ input: question, readyForInput: true }, () => this.send())
   },
   sendFromAsk() {
     if (!this.data.input.trim()) return

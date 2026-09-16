@@ -78,7 +78,8 @@ export const pinConversation = (id: string, pinned: boolean) => request<any>(`/a
 export const logout = () => request<any>('/api/auth/logout', 'POST').catch(() => ({ ok: false }))
 export type Folder = { id: string; name: string; document_count: number }
 export const getFolders = (knowledgeId: string) => request<Folder[]>(`/api/knowledge/${knowledgeId}/folders`)
-export const getSuggestions = (knowledgeId: string) => request<{ questions: string[] }>(`/api/knowledge/${knowledgeId}/suggestions`)
+// 推荐问题：不传 folderId 时按整个知识库生成，传了则收窄到该文件夹
+export const getSuggestions = (knowledgeId: string, folderId = '') => request<{ questions: string[] }>(`/api/knowledge/${knowledgeId}/suggestions${folderId ? `?folder_id=${encodeURIComponent(folderId)}` : ''}`)
 export const createFolder = (knowledgeId: string, name: string) => request<Folder>(`/api/knowledge/${knowledgeId}/folders`, 'POST', { name })
 export const deleteFolder = (folderId: string) => request<any>(`/api/folders/${folderId}`, 'DELETE')
 export const moveDocument = (documentId: string, folderId: string) => request<any>(`/api/documents/${documentId}/move`, 'PATCH', { folder_id: folderId })

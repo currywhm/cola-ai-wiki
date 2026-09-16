@@ -107,6 +107,14 @@
     <block wx:for="{{messages}}" wx:key="id">
       <view id="{{item.id}}" class="qa-message {{item.role}}">
         <view wx:if="{{item.role === 'user'}}" class="qa-user-bubble">{{item.content}}</view>
+        <!-- 开场白：头像 + 招呼 + 当前范围（本地消息，不写入历史） -->
+        <view wx:elif="{{item.greeting}}" class="qa-hello">
+          <image class="qa-hello-avatar" src="/assets/brand/cola-avatar.png" mode="aspectFit" />
+          <view class="qa-hello-copy">
+            <text class="qa-hello-title">{{item.title}}</text>
+            <text class="qa-hello-desc">{{item.desc}}</text>
+          </view>
+        </view>
         <view wx:else class="qa-answer">
           <view wx:if="{{item.trace.length || item.reason}}" class="qa-trace">
             <view class="qa-trace-head" bindtap="toggleTrace" data-id="{{item.id}}">
@@ -141,6 +149,14 @@
         </view>
       </view>
     </block>
+    <!-- 开场之后紧跟问答提示：与知识库 / 文件夹会话一致 -->
+    <view wx:if="{{conversationActive && !sending && messages.length === 1 && messages[0].greeting && suggestions.length}}" class="qa-prompts">
+      <text class="qa-prompts-title">你可以这样问</text>
+      <button wx:for="{{suggestions}}" wx:key="*this" class="qa-prompt" bindtap="pickPrompt" data-text="{{item}}">{{item}}</button>
+    </view>
+    <view wx:elif="{{conversationActive && !sending && messages.length === 1 && messages[0].greeting && suggestionsLoading}}" class="qa-prompts">
+      <text class="qa-prompts-hint">正在根据这个知识库的资料生成提问建议…</text>
+    </view>
   </scroll-view>
   <view class="chat-footer">
     <view wx:if="{{conversationActive}}" class="qa-composer">

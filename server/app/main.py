@@ -528,8 +528,8 @@ SUGGESTION_FALLBACK = [
 ]
 
 
-async def _generate_suggestions(kb_name: str, samples: list[dict]) -> list[str]:
-    """根据知识库名 + 文件清单用 LLM 猜用户最想问的问题（返回空列表表示失败）。"""
+async def _generate_suggestions(scope_name: str, samples: list[dict], scope_label: str = '知识库') -> list[str]:
+    """根据资料范围名称 + 文件清单用 LLM 猜用户最想问的问题（返回空列表表示失败）。"""
     from .services.llm import provider_config
     config = provider_config('')
     if not config:
@@ -545,8 +545,8 @@ async def _generate_suggestions(kb_name: str, samples: list[dict]) -> list[str]:
             response = await client.post(endpoint, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json={
                 "model": model, "temperature": 0.7, "max_tokens": 400,
                 "messages": [
-                    {"role": "system", "content": "你是知识库助手。根据给出的知识库名称与文件清单，猜测用户最想问的 4 个问题。只输出 JSON 数组（字符串元素），不要输出任何其他内容。每个问题不超过 30 个字，用中文。"},
-                    {"role": "user", "content": f"知识库名称：{kb_name}\n文件清单：\n{listing}"},
+                    {"role": "system", "content": f"你是知识库助手。根据给出的{scope_label}名称与文件清单，猜测用户最想问的 4 个问题（要能直接由这些文件回答）。只输出 JSON 数组（字符串元素），不要输出任何其他内容。每个问题不超过 30 个字，用中文。"},
+                    {"role": "user", "content": f"{scope_label}名称：{scope_name}\n文件清单：\n{listing}"},
                 ],
             })
             response.raise_for_status()
@@ -563,31 +563,54 @@ async def _generate_suggestions(kb_name: str, samples: list[dict]) -> list[str]:
 
 
 @app.get("/api/knowledge/{knowledge_id}/suggestions")
-async def knowledge_suggestions(knowledge_id: str, user_id: str = Depends(current_user)) -> dict:
-    """提问页推荐问题：LLM 按文件清单生成一次，按 数量+最新更新时间 指纹缓存，文档变化自动失效。"""
+async def knowledge_suggestions(knowledge_id: str, folder_id: str = "", user_id: str = Depends(current_user)) -> dict:
+    """推荐问题：LLM 按文件清单生成一次，按 数量+最新更新时间 指纹缓存，资料变化自动失效。
+
+    传 folder_id 时范围收窄到该文件夹（文件夹会话就该问这个文件夹里的资料）；
+    没有任何已完成资料时直接返回空列表，前端不展示无意义的提问提示。
+    """
     db = await connect()
     kb = await fetchone(db, "SELECT id,name FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
     if not kb:
         await db.close(); raise HTTPException(404, "知识库不存在")
-    stats = await fetchone(db, "SELECT COUNT(*) AS n, COALESCE(MAX(updated_at),'') AS latest FROM documents WHERE knowledge_id=? AND status!='deleted'", (knowledge_id,))
+    folder = None
+    if folder_id:
+        folder = await fetchone(db, "SELECT id,name FROM folders WHERE id=? AND knowledge_id=? AND user_id=?", (folder_id, knowledge_id, user_id))
+        if not folder:
+            await db.close(); raise HTTPException(404, "文件夹不存在")
+    scope_sql = " AND folder_id=?" if folder else ""
+    scope_params: tuple = (knowledge_id, folder_id) if folder else (knowledge_id,)
+    stats = await fetchone(db, f"SELECT COUNT(*) AS n, COALESCE(MAX(updated_at),'') AS latest FROM documents WHERE knowledge_id=? AND status!='deleted'{scope_sql}", scope_params)
     fingerprint = f"{stats['n']}:{stats['latest']}"
-    cached = await fetchone(db, "SELECT questions_json FROM knowledge_suggestions WHERE knowledge_id=? AND fingerprint=?", (knowledge_id, fingerprint))
-    if cached:
+    if folder:
+        cached = await fetchone(db, "SELECT fingerprint,questions_json FROM folder_suggestions WHERE knowledge_id=? AND folder_id=?", (knowledge_id, folder_id))
+    else:
+        cached = await fetchone(db, "SELECT fingerprint,questions_json FROM knowledge_suggestions WHERE knowledge_id=?", (knowledge_id,))
+    if cached and str(cached['fingerprint'] or '') == fingerprint:
         try:
             questions = json.loads(cached['questions_json'])
         except json.JSONDecodeError:
             questions = []
         await db.close()
-        return {"questions": questions}
-    rows = await fetchall(db, "SELECT filename,summary FROM documents WHERE knowledge_id=? AND status='completed' ORDER BY updated_at DESC LIMIT 20", (knowledge_id,))
+        return {"questions": questions, "scope": "folder" if folder else "knowledge"}
+    # 没有已完成资料时不必生成：让前端直接不展示提问提示
+    if not int(stats['n'] or 0):
+        await db.close()
+        return {"questions": [], "scope": "folder" if folder else "knowledge"}
+    rows = await fetchall(db, f"SELECT filename,summary FROM documents WHERE knowledge_id=? AND status='completed'{scope_sql} ORDER BY updated_at DESC LIMIT 20", scope_params)
     await db.close()
-    questions = await _generate_suggestions(kb['name'], [dict(r) for r in rows])
+    scope_name = f"{kb['name']} / {folder['name']}" if folder else kb['name']
+    questions = await _generate_suggestions(scope_name, [dict(r) for r in rows], '文件夹' if folder else '知识库')
     if not questions:
         questions = list(SUGGESTION_FALLBACK)
+    payload = json.dumps(questions, ensure_ascii=False)
     db = await connect()
-    await db.execute("INSERT INTO knowledge_suggestions(knowledge_id,fingerprint,questions_json,created_at) VALUES(?,?,?,?) ON CONFLICT(knowledge_id) DO UPDATE SET fingerprint=excluded.fingerprint,questions_json=excluded.questions_json,created_at=excluded.created_at", (knowledge_id, fingerprint, json.dumps(questions, ensure_ascii=False), now()))
+    if folder:
+        await db.execute("INSERT INTO folder_suggestions(knowledge_id,folder_id,fingerprint,questions_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT(knowledge_id,folder_id) DO UPDATE SET fingerprint=excluded.fingerprint,questions_json=excluded.questions_json,created_at=excluded.created_at", (knowledge_id, folder_id, fingerprint, payload, now()))
+    else:
+        await db.execute("INSERT INTO knowledge_suggestions(knowledge_id,fingerprint,questions_json,created_at) VALUES(?,?,?,?) ON CONFLICT(knowledge_id) DO UPDATE SET fingerprint=excluded.fingerprint,questions_json=excluded.questions_json,created_at=excluded.created_at", (knowledge_id, fingerprint, payload, now()))
     await db.commit(); await db.close()
-    return {"questions": questions}
+    return {"questions": questions, "scope": "folder" if folder else "knowledge"}
 
 
 @app.get("/api/knowledge/{knowledge_id}/folders")

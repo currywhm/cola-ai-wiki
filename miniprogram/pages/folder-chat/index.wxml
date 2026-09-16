@@ -28,6 +28,14 @@
     <block wx:for="{{messages}}" wx:key="id">
       <view id="{{item.id}}" class="qa-message {{item.role}}">
         <view wx:if="{{item.role === 'user'}}" class="qa-user-bubble">{{item.content}}</view>
+        <!-- 开场白：头像 + 招呼 + 范围，替代之前一整段裸文本 -->
+        <view wx:elif="{{item.greeting}}" class="qa-hello">
+          <image class="qa-hello-avatar" src="/assets/brand/cola-avatar.png" mode="aspectFit" />
+          <view class="qa-hello-copy">
+            <text class="qa-hello-title">{{item.title}}</text>
+            <text class="qa-hello-desc">{{item.desc}}</text>
+          </view>
+        </view>
         <view wx:else class="qa-answer">
           <!-- 过程区：思考 / 步骤 / 工具 / 技能 / 子智能体，与问AI页完全一致 -->
           <view wx:if="{{item.trace.length || item.reason}}" class="qa-trace">
@@ -63,8 +71,15 @@
         </view>
       </view>
     </block>
+    <!-- 开场之后紧跟问答提示：贴合本文件夹资料，点了直接提问 -->
+    <view wx:if="{{!sending && messages.length === 1 && suggestions.length}}" class="qa-prompts">
+      <text class="qa-prompts-title">你可以这样问</text>
+      <button wx:for="{{suggestions}}" wx:key="*this" class="qa-prompt" bindtap="pickPrompt" data-text="{{item}}">{{item}}</button>
+    </view>
+    <view wx:elif="{{!sending && messages.length === 1 && suggestionsLoading}}" class="qa-prompts">
+      <text class="qa-prompts-hint">正在根据这个文件夹的资料生成提问建议…</text>
+    </view>
   </scroll-view>
-
   <view class="qa-footer">
     <view class="qa-composer">
       <view wx:if="{{pendingSkillName}}" class="qa-skill-chip">

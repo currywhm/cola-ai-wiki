@@ -95,7 +95,6 @@ Page({
         loadState: 'ready',
         readyForInput: true,
       }, () => {
-        this.seedGreeting()
         this.syncCanSend()
         this.consumeDraft()
       })
@@ -205,21 +204,8 @@ Page({
   goBack() {
     wx.navigateBack({ delta: 1, fail: () => { wx.switchTab({ url: '/pages/ask/index' }) } })
   },
-  // 冷启动进入问答页先给一句开场白：对话不再是一张空屏（本地消息，不写入历史）
-  seedGreeting() {
-    if (this.data.messages.length) return
-    const name = this.data.knowledgeName || DEFAULT_KNOWLEDGE_NAME
-    const greeting = {
-      id: `greeting-${Date.now()}`,
-      role: 'assistant',
-      local: true,
-      sources: [],
-      trace: [],
-      reason: '',
-      content: `我是 cola，已在「${name}」待命。可以直接提问、把资料整理成知识条目，或让我写报告、做 PPT 大纲。`,
-    }
-    this.setData({ messages: [greeting], lastMessageId: greeting.id })
-  },
+  // 问答页不预设开场白：进页时用户还没选「基于知识库问答 / 执行规划」，
+  // 发一条招呼等于替用户把范围说死，所以这里保持空对话，等用户第一句话进来。
   // 历史对话：拉取当前知识库根目录的会话列表（后端按 user_id + knowledge_id + folder_id 收窄）
   openHistory() {
     this.setData({ historyVisible: true, historyLoading: true })
@@ -237,10 +223,10 @@ Page({
         ? { ...message, html: renderMarkdown(message.content || ''), trace: [], reason: '', traceTitle: '', traceOpen: false, running: false }
         : message)
       this.setData({ messages: hydrated, lastMessageId: hydrated.length ? hydrated[hydrated.length - 1].id : '' }, () => this.syncCanSend())
-    }).catch(() => { this.seedGreeting(); wx.showToast({ title: '历史对话加载失败', icon: 'none' }) })
+    }).catch(() => wx.showToast({ title: '历史对话加载失败', icon: 'none' }))
   },
   newConversation() {
-    this.setData({ historyVisible: false, conversationId: '', messages: [], input: '', sending: false, canSend: false, readyForInput: true, lastMessageId: '' }, () => { this.seedGreeting(); this.syncCanSend() })
+    this.setData({ historyVisible: false, conversationId: '', messages: [], input: '', sending: false, canSend: false, readyForInput: true, lastMessageId: '' }, () => this.syncCanSend())
   },
   // 左滑出「删除」后二次确认再删。历史存在服务端，删除范围限定本用户。
   // 左滑「置顶 / 取消置顶」：只改当前用户自己的会话，置顶后排到列表最前。
@@ -268,7 +254,7 @@ Page({
           const items = this.data.historyItems.filter((item: any) => item.id !== id)
           const isCurrent = this.data.conversationId === id
           this.setData({ historyItems: items, conversationId: isCurrent ? '' : this.data.conversationId })
-          if (isCurrent) this.setData({ messages: [], lastMessageId: '' }, () => { this.seedGreeting(); this.syncCanSend() })
+          if (isCurrent) this.setData({ messages: [], lastMessageId: '' }, () => this.syncCanSend())
           wx.showToast({ title: '已删除', icon: 'success' })
         }).catch(() => wx.showToast({ title: '删除失败，请稍后重试', icon: 'none' }))
       },

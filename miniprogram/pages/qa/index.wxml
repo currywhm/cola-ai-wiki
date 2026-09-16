@@ -1,5 +1,8 @@
 <view class="qa-page" style="{{safeBottom ? 'padding-bottom:' + safeBottom + 'px;' : ''}}">
-  <app-nav back menu title="{{knowledgeName || '微信用户的知识库'}}" bind:menutap="openHistory" />
+  <!-- 参考设计：问答页不放标题栏，只保留返回与胶囊按钮的安全高度 -->
+  <view class="qa-nav" style="height:{{navHeight}}px;">
+    <button class="qa-back" bindtap="goBack" aria-label="返回"><ui-icon name="back" size="{{36}}" rpx /></button>
+  </view>
 
   <scroll-view class="qa-body" scroll-y scroll-with-animation enhanced show-scrollbar="{{false}}" scroll-into-view="{{lastMessageId}}">
     <view wx:if="{{loadState === 'error'}}" class="qa-state">
@@ -31,60 +34,86 @@
 
   <view class="qa-footer">
     <view class="qa-composer">
-      <view wx:if="{{modePickerVisible}}" class="qa-mode-picker">
-        <button class="qa-mode-option {{askMode === 'web' ? 'active' : ''}}" bindtap="selectAskMode" data-mode="web">
-          <view class="qa-mode-icon"><ui-icon name="web" size="{{22}}" /></view>
-          <view class="qa-mode-copy"><text class="qa-mode-name">问全网</text><text class="qa-mode-desc">检索公开网页给出答案</text></view>
-        </button>
-        <button class="qa-mode-option {{askMode === 'knowledge' ? 'active' : ''}}" bindtap="selectAskMode" data-mode="knowledge" disabled="{{!knowledgeId}}">
-          <view class="qa-mode-icon"><ui-icon name="knowledge-mode" size="{{22}}" /></view>
-          <view class="qa-mode-copy"><text class="qa-mode-name">问知识库</text><text class="qa-mode-desc">基于你的资料作答并给出来源</text></view>
-        </button>
-      </view>
-      <textarea class="qa-input" value="{{input}}" placeholder="{{askMode === 'web' ? '向全网提问，AI 会检索最新公开信息' : '基于全部知识，或 @指定知识进行提问'}}" placeholder-style="color:#b6bcc4;font-size:32rpx;" auto-height maxlength="8000" focus="{{autoFocus}}" adjust-position="{{true}}" show-confirm-bar="{{false}}" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
+      <textarea class="qa-input" value="{{input}}" placeholder="{{placeholder}}" placeholder-style="color:#8c8c8c;font-size:30rpx;line-height:1.32;" auto-height maxlength="8000" focus="{{autoFocus}}" adjust-position="{{true}}" show-confirm-bar="{{false}}" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
       <view class="qa-bar">
-        <button class="qa-agent" bindtap="chooseModel" disabled="{{sending}}" aria-label="选择模型与思考模式"><ui-icon name="robot" size="{{30}}" rpx /></button>
-        <button class="qa-model" bindtap="chooseModel" disabled="{{sending}}">
-          <text class="qa-model-name">{{modelShortLabel}}</text>
-          <text class="qa-model-mode">{{thinkingMode === 'deep' ? '深度' : '快速'}}</text>
-          <ui-icon name="chevron-down" size="{{13}}" rpx />
-        </button>
-        <button class="qa-scope" bindtap="toggleModePicker" disabled="{{sending}}" aria-label="选择提问范围">
-          <ui-icon name="{{askMode === 'web' ? 'web' : 'at'}}" size="{{26}}" rpx />
-          <ui-icon name="chevron-down" size="{{13}}" rpx />
+        <button class="qa-logic {{askMode}}" bindtap="toggleAskLogic" aria-label="切换问答逻辑"><ui-icon name="{{askMode === 'planner' ? 'robot-planner' : 'robot-knowledge'}}" size="{{34}}" rpx /></button>
+        <button class="qa-skill" bindtap="openSkillSheet" disabled="{{sending}}" aria-label="技能"><ui-icon name="skill" size="{{34}}" rpx /></button>
+        <button class="qa-scope {{askMode}}" bindtap="openKnowledgeSheet" disabled="{{sending}}" aria-label="选择知识库">
+          <ui-icon name="{{askMode === 'planner' ? 'at' : 'knowledge-pick'}}" size="{{30}}" rpx />
+          <ui-icon name="chevron-down" size="{{16}}" rpx />
         </button>
         <view class="qa-bar-spacer"></view>
-        <button class="qa-tune" bindtap="chooseModel" disabled="{{sending}}" aria-label="思考模式"><ui-icon name="sliders" size="{{30}}" rpx /></button>
-        <button wx:if="{{sending}}" class="qa-send stop" bindtap="stopSend" aria-label="停止"><ui-icon name="stop" size="{{44}}" rpx /></button>
-        <button wx:else class="qa-send {{canSend ? 'active' : ''}}" bindtap="send" disabled="{{!canSend}}" aria-label="发送"><ui-icon name="send-white" size="{{44}}" rpx /></button>
+        <button class="qa-model" bindtap="openModelSheet" disabled="{{sending}}" aria-label="模型与思考深度"><ui-icon name="model-depth" size="{{34}}" rpx /></button>
+        <button wx:if="{{sending}}" class="qa-send stop" bindtap="stopSend" aria-label="停止"><ui-icon name="stop" size="{{30}}" rpx /></button>
+        <button wx:else class="qa-send {{canSend ? 'active' : ''}}" bindtap="send" disabled="{{!canSend}}" aria-label="发送"><ui-icon name="send-white" size="{{28}}" rpx /></button>
       </view>
     </view>
   </view>
 
-  <view wx:if="{{modelPickerVisible}}" class="model-layer">
-    <view class="model-mask" bindtap="closeModelPicker"></view>
-    <view class="model-sheet" catchtap="stopModelPickerBubble">
-      <view class="sheet-grabber"></view>
-      <view class="model-sheet-title">选择模型</view>
-      <view class="thinking-card">
-        <view class="thinking-copy">
-          <view class="thinking-icon"><ui-icon name="atom" size="{{31}}" /></view>
-          <text class="thinking-title">思考模式</text>
-        </view>
-        <view class="thinking-switch">
-          <button class="thinking-tab {{thinkingMode === 'quick' ? 'active' : ''}}" bindtap="selectThinkingMode" data-mode="quick">快速</button>
-          <button class="thinking-tab {{thinkingMode === 'deep' ? 'active' : ''}}" bindtap="selectThinkingMode" data-mode="deep">深度</button>
-        </view>
+  <!-- 更多选项：模型与思考深度（只保留深度思考） -->
+  <view wx:if="{{modelSheetVisible}}" class="sheet-layer">
+    <view class="sheet-mask" bindtap="closeSheets"></view>
+    <view class="sheet-panel option-panel" catchtap="noop">
+      <view class="sheet-head">
+        <text class="sheet-title">更多选项</text>
+        <button class="sheet-close" bindtap="closeSheets" aria-label="关闭"><ui-icon name="close" size="{{28}}" rpx /></button>
       </view>
-      <text class="model-section-title">选择模型</text>
-      <view class="model-list">
-        <button wx:for="{{modelOptions}}" wx:key="id" class="model-row" bindtap="selectModel" data-id="{{item.id}}">
-          <view class="model-row-copy">
-            <text class="model-row-name">{{item.name}}</text>
-            <text wx:if="{{item.badge}}" class="model-new-badge">{{item.badge}}</text>
-          </view>
-          <text wx:if="{{item.id === selectedModelKey}}" class="model-check">✓</text>
-        </button>
+      <view class="option-card" bindtap="toggleDeepThinking">
+        <view class="option-icon"><ui-icon name="atom" size="{{52}}" rpx /></view>
+        <view class="option-copy">
+          <text class="option-name">深度思考</text>
+          <text class="option-desc">输出思考过程并回答</text>
+        </view>
+        <text class="option-pill {{deepThinking ? 'on' : ''}}">{{deepThinking ? '自动' : '已关闭'}}</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 技能：把常用任务写进输入框，随知识库资料执行 -->
+  <view wx:if="{{skillSheetVisible}}" class="sheet-layer">
+    <view class="sheet-mask" bindtap="closeSheets"></view>
+    <view class="sheet-panel option-panel" catchtap="noop">
+      <view class="sheet-head">
+        <text class="sheet-title">技能</text>
+        <button class="sheet-close" bindtap="closeSheets" aria-label="关闭"><ui-icon name="close" size="{{28}}" rpx /></button>
+      </view>
+      <button wx:for="{{skills}}" wx:key="id" class="skill-row" bindtap="useSkill" data-id="{{item.id}}">
+        <view class="skill-icon"><ui-icon name="{{item.icon}}" size="{{40}}" rpx /></view>
+        <view class="skill-copy">
+          <text class="skill-name">{{item.name}}</text>
+          <text class="skill-desc">{{item.desc}}</text>
+        </view>
+      </button>
+    </view>
+  </view>
+
+  <!-- 选择知识：与知识库页面同一份数据源 -->
+  <view wx:if="{{knowledgeSheetVisible}}" class="sheet-layer">
+    <view class="sheet-mask" bindtap="closeSheets"></view>
+    <view class="sheet-panel knowledge-panel" catchtap="noop">
+      <view class="sheet-head">
+        <text class="sheet-title">选择知识</text>
+        <button class="sheet-close" bindtap="closeSheets" aria-label="关闭"><ui-icon name="close" size="{{28}}" rpx /></button>
+      </view>
+      <view class="kb-search">
+        <ui-icon name="search" size="{{30}}" rpx />
+        <input class="kb-search-input" value="{{knowledgeQuery}}" placeholder="搜索知识库" placeholder-style="color:#9c9c9c;font-size:28rpx;" bindinput="onKnowledgeSearch" />
+      </view>
+      <button class="kb-dir" bindtap="openKnowledgeTab">
+        <text>在知识目录中选择</text>
+        <ui-icon name="chevron-right" size="{{28}}" rpx />
+      </button>
+      <text class="kb-section">知识库</text>
+      <scroll-view class="kb-list" scroll-y enhanced show-scrollbar="{{false}}">
+        <view wx:for="{{filteredKnowledge}}" wx:key="id" class="kb-row" bindtap="selectKnowledge" data-id="{{item.id}}">
+          <view class="kb-radio {{item.id === pendingKnowledgeId ? 'on' : ''}}"></view>
+          <ui-icon name="knowledge-pick" size="{{36}}" rpx />
+          <text class="kb-name">{{item.name}}</text>
+        </view>
+        <view wx:if="{{!filteredKnowledge.length}}" class="kb-empty">没有匹配的知识库</view>
+      </scroll-view>
+      <view class="kb-foot">
+        <button class="kb-confirm" bindtap="confirmKnowledge">确定</button>
       </view>
     </view>
   </view>

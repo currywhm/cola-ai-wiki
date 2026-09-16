@@ -20,10 +20,10 @@
 .recent-kb-name { display: block; color: #1f2227; font-size: 29rpx; font-weight: 700; line-height: 1.36; letter-spacing: -.3rpx; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recent-kb-time { display: block; margin-top: 8rpx; color: #98a2ac; font-size: 22rpx; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 最近知识 */
-.recent-doc-card { border-radius: 20rpx; background: #fff; overflow: hidden; }
-.recent-doc { display: flex; align-items: center; gap: 20rpx; padding: 20rpx 22rpx; }
-.recent-doc + .recent-doc { border-top: 1rpx solid #f2f3f4; }
+/* 最近知识：每行一张独立卡片，不画分隔线，避免出现「表格线」的观感 */
+.recent-doc-card { background: transparent; }
+.recent-doc { display: flex; align-items: center; gap: 20rpx; margin-bottom: 14rpx; padding: 22rpx; border: 0 none; border-radius: 20rpx; background: #fff; box-shadow: none; }
+.recent-doc:last-child { margin-bottom: 0; }
 .recent-doc-hover { background: #f6f8f7; }
 .recent-doc-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 64rpx; width: 64rpx; height: 64rpx; }
 .recent-doc-info { flex: 1; min-width: 0; }

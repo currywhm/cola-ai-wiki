@@ -82,7 +82,8 @@ button.dark-button { background:#18212e; color:#fff; }
 .conversation-mode .assistant-head { margin-bottom:10rpx; }
 .conversation-mode .assistant-body { padding-right:0; }
 .conversation-mode .user-bubble { max-width:90%; border-radius:20rpx; background:#1f1f1f; }
-.conversation-mode .answer-actions { display:flex; align-items:center; justify-content:flex-end; gap:14rpx; margin-top:6rpx; padding:2rpx 0 12rpx; border-top:0; border-bottom:1rpx solid #eceded; }
+/* 复制/分享行不画线：只靠右对齐与留白存在，避免看成表格行边框 */
+.conversation-mode .answer-actions { display:flex; align-items:center; justify-content:flex-end; gap:14rpx; margin-top:6rpx; padding:2rpx 0 12rpx; border:0 none; }
 .conversation-mode .answer-actions button.action-icon { flex:0 0 auto; width:40rpx; min-width:40rpx; height:44rpx; min-height:44rpx; margin:0; padding:0; border-radius:0; background:transparent; color:#878d95; }
 .conversation-mode .answer-actions button.action-icon:active { background:transparent; color:#5a6068; }
 .conversation-mode .send-button.active { background:transparent; box-shadow:none; }

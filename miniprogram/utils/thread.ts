@@ -3,6 +3,8 @@
 // 「问AI」独立问答页、知识库会话、文件夹会话共用这一份实现，
 // 避免三个入口各写一遍导致的表现不一致。
 
+import { renderMarkdown } from './markdown'
+
 export interface TraceNode {
   key: string
   kind: string
@@ -221,6 +223,45 @@ export function assistantMessage(id: string) {
     traceElapsed: '',
     // 计时起点：结束后用来显示「已深度思考 · 3 秒」，跟 harness 的耗时提示对齐
     traceStartedAt: Date.now(),
+  }
+}
+
+/** 服务端存下的耗时转成和实时结束一致的文案。 */
+function durationLabel(durationMs?: number): string {
+  const seconds = Math.round(Number(durationMs || 0) / 1000)
+  if (!seconds) return ''
+  if (seconds < 60) return `${seconds} 秒`
+  return `${Math.round(seconds / 60)} 分钟`
+}
+
+/**
+ * 历史对话回放：后端把思考全文、过程节点、耗时随消息一起落了库，
+ * 这里用与实时流完全相同的 appendTrace / settleTrace 还原，
+ * 保证「重新进入对话」和「刚回答完」看到的过程区、折叠状态、耗时、排版一致。
+ * 旧数据没有这些字段时降级为只有正文，不会多出空的过程区。
+ */
+export function hydrateAssistant(message: any): any {
+  const items: any[] = Array.isArray(message.trace) ? message.trace : []
+  let draft: any[] = [{
+    ...message,
+    trace: [],
+    reason: String(message.reason || ''),
+    running: true,
+    traceOpen: true,
+    traceTitle: '思考中',
+    traceSummary: '',
+    traceElapsed: '',
+  }]
+  items.forEach((item) => {
+    const result = appendTrace(draft, message.id, item)
+    if (result.changed) draft = result.messages
+  })
+  const restored = settleTrace(draft, message.id)[0]
+  return {
+    ...restored,
+    html: renderMarkdown(message.content || ''),
+    sources: decorateSources(message.sources),
+    traceElapsed: durationLabel(message.duration_ms),
   }
 }
 

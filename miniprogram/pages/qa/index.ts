@@ -1,5 +1,5 @@
 import { renderMarkdown } from '../../utils/markdown'
-import { appendTrace, assistantMessage, createFlusher, decorateSources, settleTrace } from '../../utils/thread'
+import { appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, settleTrace } from '../../utils/thread'
 import { deleteConversation, getConversation, getConversations, getKnowledge, getModels, pinConversation, Knowledge, Source, streamChat } from '../../services/api'
 import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER } from '../../utils/skills'
 import { buildSharePayload, homePayload, questionFor } from '../../utils/share'
@@ -222,7 +222,7 @@ Page({
     this.setData({ historyVisible: false, conversationId: id, messages: [], sending: false, canSend: false }, () => this.syncCanSend())
     getConversation(id).then((messages) => {
       const hydrated = (messages || []).map((message: any) => message.role === 'assistant'
-        ? { ...message, html: renderMarkdown(message.content || ''), sources: decorateSources(message.sources), trace: [], reason: '', traceTitle: '', traceOpen: false, running: false }
+        ? hydrateAssistant(message)
         : message)
       this.setData({ messages: hydrated, lastMessageId: hydrated.length ? hydrated[hydrated.length - 1].id : '' }, () => this.syncCanSend())
     }).catch(() => wx.showToast({ title: '历史对话加载失败', icon: 'none' }))

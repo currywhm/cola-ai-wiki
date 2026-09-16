@@ -3,6 +3,7 @@ import hashlib
 import json
 import mimetypes
 import secrets
+import time
 import uuid
 import xml.etree.ElementTree as ET
 from urllib.parse import unquote
@@ -1030,6 +1031,11 @@ async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)
         await db.commit()
     async def events():
         answer = ""
+        # 过程区随正文一起落库：思考文字单独累积（增量太多，不入过程节点列表），
+        # 步骤 / 工具 / 技能 / 子智能体 / 提示 按原顺序留存，重进对话时才能复原。
+        started_at = time.monotonic()
+        trace_items: list[dict] = []
+        reason_parts: list[str] = []
         yield f"data: {json.dumps({'type':'meta','conversation_id':conversation_id,'sources':sources}, ensure_ascii=False)}\n\n"
         try:
             # harness 模型统一取后端配置（深度思考即 deepseek-flash，见 HARNESS_MODEL）
@@ -1053,6 +1059,10 @@ async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)
                     # 过程节点：思考 / 步骤 / 工具 / 技能 / 子智能体 / 提示
                     item = event.get('item') or {}
                     if item:
+                        if item.get('kind') == 'reason':
+                            reason_parts.append(str(item.get('text') or ''))
+                        else:
+                            trace_items.append(item)
                         yield f"data: {json.dumps({'type':'trace', **item}, ensure_ascii=False)}\n\n"
                     continue
                 piece = event['text']
@@ -1062,7 +1072,17 @@ async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)
                 # 发 error 让前端提示重试
                 yield f"data: {json.dumps({'type':'error','message':'网络波动，本次回答未完成，请重新发送。'}, ensure_ascii=False)}\n\n"
                 return
-            await db.execute("INSERT INTO messages(id,conversation_id,role,content,sources_json,created_at) VALUES(?,?,?,?,?,?)", (uuid.uuid4().hex, conversation_id, "assistant", answer, json.dumps(sources, ensure_ascii=False), now())); await db.commit()
+            await db.execute(
+                "INSERT INTO messages(id,conversation_id,role,content,sources_json,trace_json,reason,duration_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex, conversation_id, "assistant", answer,
+                    json.dumps(sources, ensure_ascii=False),
+                    json.dumps(trace_items, ensure_ascii=False),
+                    "".join(reason_parts).strip(),
+                    int((time.monotonic() - started_at) * 1000),
+                    now(),
+                ),
+            ); await db.commit()
             await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now(), conversation_id)); await db.commit()
             yield f"data: {json.dumps({'type':'done'}, ensure_ascii=False)}\n\n"
             # 滚动压缩旧轮次（done 已发出，压缩不阻塞正文流；失败下轮重试）
@@ -1137,7 +1157,24 @@ async def delete_conversation(conversation_id: str, user_id: str = Depends(curre
 
 @app.get("/api/conversations/{conversation_id}")
 async def conversation_detail(conversation_id: str, user_id: str = Depends(current_user)) -> list[dict]:
-    db = await connect(); rows = await fetchall(db, "SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.conversation_id=? AND c.user_id=? ORDER BY m.created_at", (conversation_id, user_id)); await db.close(); return [{**row_dict(r), "sources": decode_sources(r["sources_json"])} for r in rows]
+    db = await connect(); rows = await fetchall(db, "SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.conversation_id=? AND c.user_id=? ORDER BY m.created_at", (conversation_id, user_id)); await db.close()
+    # 一并回放过程区（思考 / 步骤 / 工具 / 技能 / 子智能体）与耗时：不返回这些字段，
+    # 前端重新进入对话时就只剩正文了。
+    messages = []
+    for row in rows:
+        view = row_dict(row)
+        try:
+            trace = json.loads(view.get("trace_json") or "[]")
+        except json.JSONDecodeError:
+            trace = []
+        messages.append({
+            **view,
+            "sources": decode_sources(row["sources_json"]),
+            "trace": trace if isinstance(trace, list) else [],
+            "reason": view.get("reason") or "",
+            "duration_ms": int(view.get("duration_ms") or 0),
+        })
+    return messages
 
 
 @app.post('/api/shares')

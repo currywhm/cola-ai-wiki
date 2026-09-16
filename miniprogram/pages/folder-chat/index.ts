@@ -1,7 +1,7 @@
 // 文件夹会话页：与「问AI」的独立问答页共用同一套结构、样式与过程区实现，
 // 差别只有两点——顶部显示「文件夹 / 知识库」上下文，问答范围由后端锁定在该文件夹内。
 import { renderMarkdown } from '../../utils/markdown'
-import { appendTrace, assistantMessage, createFlusher, decorateSources, settleTrace } from '../../utils/thread'
+import { appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, settleTrace } from '../../utils/thread'
 import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER } from '../../utils/skills'
 import { buildSharePayload, homePayload, questionFor } from '../../utils/share'
 import { deleteConversation, getConversation, getConversations, getKnowledgeDetail, getModels, getSuggestions, pinConversation, Source, streamChat } from '../../services/api'
@@ -133,7 +133,7 @@ Page({
   loadConversation(id: string) {
     getConversation(id).then((messages) => {
       const hydrated = (messages || []).map((message: any) => message.role === 'assistant'
-        ? { ...message, html: renderMarkdown(message.content || ''), sources: decorateSources(message.sources), trace: [], reason: '', traceTitle: '', traceOpen: false, running: false }
+        ? hydrateAssistant(message)
         : message)
       this.setData({ messages: hydrated, lastMessageId: hydrated.length ? hydrated[hydrated.length - 1].id : '' }, () => this.syncCanSend())
     }).catch(() => undefined)
@@ -315,7 +315,7 @@ Page({
     this.setData({ historyVisible: false, conversationId: id, messages: [], sending: false, canSend: false }, () => this.syncCanSend())
     getConversation(id).then((messages) => {
       const hydrated = (messages || []).map((message: any) => message.role === 'assistant'
-        ? { ...message, html: renderMarkdown(message.content || ''), sources: decorateSources(message.sources), trace: [], reason: '', traceTitle: '', traceOpen: false, running: false }
+        ? hydrateAssistant(message)
         : message)
       this.setData({ messages: hydrated, lastMessageId: hydrated.length ? hydrated[hydrated.length - 1].id : '' }, () => this.syncCanSend())
     }).catch(() => { this.seedGreeting(); wx.showToast({ title: '历史对话加载失败', icon: 'none' }) })

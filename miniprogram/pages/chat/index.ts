@@ -1,5 +1,5 @@
 import { consumeChatTarget } from '../../services/navigation'
-import { appendTrace, assistantMessage, createFlusher, decorateSources, settleTrace } from '../../utils/thread'
+import { appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, settleTrace } from '../../utils/thread'
 import { renderMarkdown } from '../../utils/markdown'
 import { deleteConversation, getConversation, getConversations, getKnowledge, getKnowledgeDetail, deleteDocument, deleteKnowledge, getModels, getFolders, getSuggestions, createFolder, deleteFolder, importArticle, moveDocument, pinConversation, uploadLocalFile, Knowledge, ModelOption, Folder, resumeWechatLogin, Source, streamChat, uploadDocument, UploadSource } from '../../services/api'
 import { buildSharePayload, homePayload, questionFor } from '../../utils/share'
@@ -576,7 +576,8 @@ Page({
     })
     this.syncCanSend()
   },
-  loadConversation() { getConversation(this.data.conversationId).then((messages) => { const hydrated = messages.map((m: any) => m.role === 'assistant' ? { ...m, html: renderMarkdown(m.content || ''), sources: decorateSources(m.sources), progress: '' } : m); this.setData({ messages: hydrated, lastMessageId: hydrated.length ? hydrated[hydrated.length - 1].id : '' }) }).catch(() => undefined) },
+  // 历史回放走 hydrateAssistant：思考全文、过程节点、耗时都从服务端复原，与实时流一致
+  loadConversation() { getConversation(this.data.conversationId).then((messages) => { const hydrated = messages.map((m: any) => m.role === 'assistant' ? { ...hydrateAssistant(m), progress: '' } : m); this.setData({ messages: hydrated, lastMessageId: hydrated.length ? hydrated[hydrated.length - 1].id : '' }) }).catch(() => undefined) },
   // 恢复当前知识库最近一次会话；异步返回时用户可能已切库/已输入/已主动离开，恢复前需再校验。
   // 文件夹会话在独立文件夹页内恢复，这里只挑根目录（folder_id 为空）的会话，保证隔离
   restoreLatestConversation(knowledgeId: string, onNoHistory?: () => void) {

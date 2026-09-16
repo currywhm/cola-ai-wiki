@@ -1,6 +1,6 @@
 import { renderMarkdown } from '../../utils/markdown'
 import { appendTrace, assistantMessage, createFlusher, settleTrace } from '../../utils/thread'
-import { deleteConversation, getConversation, getConversations, getKnowledge, getModels, Knowledge, Source, streamChat } from '../../services/api'
+import { deleteConversation, getConversation, getConversations, getKnowledge, getModels, pinConversation, Knowledge, Source, streamChat } from '../../services/api'
 import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER, SKILLS } from '../../utils/skills'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
@@ -242,7 +242,18 @@ Page({
   newConversation() {
     this.setData({ historyVisible: false, conversationId: '', messages: [], input: '', sending: false, canSend: false, readyForInput: true, lastMessageId: '' }, () => { this.seedGreeting(); this.syncCanSend() })
   },
-  // 长按历史对话 = 删除。历史存在服务端，必须二次确认后再删，且删除范围限定本用户。
+  // 左滑出「删除」后二次确认再删。历史存在服务端，删除范围限定本用户。
+  // 左滑「置顶 / 取消置顶」：只改当前用户自己的会话，置顶后排到列表最前。
+  pinHistory(e: any) {
+    const id = String((e.detail && e.detail.id) || '')
+    const pinned = !!(e.detail && e.detail.pinned)
+    if (!id) return
+    pinConversation(id, pinned).then(() => {
+      const items = this.data.historyItems.map((item: any) => item.id === id ? { ...item, pinned: pinned ? 1 : 0 } : item)
+      this.setData({ historyItems: items })
+      wx.showToast({ title: pinned ? '已置顶' : '已取消置顶', icon: 'none' })
+    }).catch(() => wx.showToast({ title: '操作失败，请稍后重试', icon: 'none' }))
+  },
   removeHistory(e: any) {
     const id = String((e.detail && e.detail.id) || '')
     if (!id) return

@@ -150,5 +150,5 @@
   </view>
 
   <!-- 历史对话抽屉：/api/conversations 按用户 + 知识库 + 根目录收窄 -->
-  <history-drawer visible="{{historyVisible}}" loading="{{historyLoading}}" active-id="{{conversationId}}" items="{{historyItems}}" bind:close="closeHistory" bind:pick="pickHistory" bind:create="newConversation" bind:remove="removeHistory" />
+  <history-drawer visible="{{historyVisible}}" loading="{{historyLoading}}" active-id="{{conversationId}}" items="{{historyItems}}" bind:close="closeHistory" bind:pick="pickHistory" bind:create="newConversation" bind:pin="pinHistory" bind:remove="removeHistory" />
 </view>

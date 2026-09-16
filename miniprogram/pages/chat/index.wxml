@@ -316,5 +316,5 @@
     </view>
   </view>
   <!-- 历史对话：后端持久化，按用户 + 知识库收窄，长按可删 -->
-  <history-drawer visible="{{historyVisible}}" loading="{{historyLoading}}" activeId="{{conversationId}}" items="{{historyItems}}" bind:pick="pickHistory" bind:create="newConversation" bind:close="closeHistory" bind:remove="removeHistory" />
+  <history-drawer visible="{{historyVisible}}" loading="{{historyLoading}}" activeId="{{conversationId}}" items="{{historyItems}}" bind:pick="pickHistory" bind:create="newConversation" bind:close="closeHistory" bind:pin="pinHistory" bind:remove="removeHistory" />
 </view>

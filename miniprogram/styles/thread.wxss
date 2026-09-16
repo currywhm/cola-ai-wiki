@@ -8,7 +8,7 @@
 button.qa-back { position: absolute; left: 6rpx; bottom: 0; display: flex; align-items: center; justify-content: center; width: 88rpx; height: 88rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; }
 button.qa-back::after { border: 0; }
 /* 返回右侧的折叠图标：拉出历史对话抽屉 */
-button.qa-history { position: absolute; left: 96rpx; bottom: 0; display: flex; align-items: center; justify-content: center; width: 88rpx; height: 88rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; }
+button.qa-history { position: absolute; left: 76rpx; bottom: 0; display: flex; align-items: center; justify-content: center; width: 88rpx; height: 88rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; }
 button.qa-history::after { border: 0; }
 button.qa-history:active { background: #f2f2f2; }
 /* 会话页的上下文（知识库名 / 文件夹名）：居中、小字、弱对比，不与标题栏抢位置 */

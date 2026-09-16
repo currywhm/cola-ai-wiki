@@ -24,7 +24,7 @@ async def init_db() -> None:
     CREATE TABLE IF NOT EXISTS chunks (id TEXT PRIMARY KEY, document_id TEXT NOT NULL, knowledge_id TEXT NOT NULL, content TEXT NOT NULL, page_number INTEGER DEFAULT 1, chunk_index INTEGER DEFAULT 0, created_at TEXT NOT NULL, FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE);
     CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(content, chunk_id UNINDEXED, knowledge_id UNINDEXED, filename UNINDEXED, page_number UNINDEXED);
     CREATE TABLE IF NOT EXISTS folders (id TEXT PRIMARY KEY, knowledge_id TEXT NOT NULL, user_id TEXT NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(knowledge_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, knowledge_id TEXT NOT NULL, folder_id TEXT DEFAULT '', title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, knowledge_id TEXT NOT NULL, folder_id TEXT DEFAULT '', title TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, pinned_at TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, sources_json TEXT DEFAULT '[]', created_at TEXT NOT NULL, FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS knowledge_suggestions (knowledge_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, questions_json TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(knowledge_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS pay_orders (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, out_trade_no TEXT UNIQUE NOT NULL, plan TEXT NOT NULL, amount INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', transaction_id TEXT DEFAULT '', prepay_id TEXT DEFAULT '', created_at TEXT NOT NULL, paid_at TEXT DEFAULT '', offer_id TEXT DEFAULT '', product_id TEXT DEFAULT '', wx_order_id TEXT DEFAULT '', attach TEXT DEFAULT '', quantity INTEGER DEFAULT 1, deliver_status TEXT DEFAULT 'pending', delivered_at TEXT DEFAULT '', FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
@@ -49,6 +49,8 @@ async def init_db() -> None:
         'conversations': {
             'memory_summary': "TEXT NOT NULL DEFAULT ''",
             'folder_id': "TEXT DEFAULT ''",
+            'pinned': "INTEGER NOT NULL DEFAULT 0",
+            'pinned_at': "TEXT DEFAULT ''",
         },
     }.items():
         existing = {row[1] for row in await (await db.execute(f'PRAGMA table_info({table})')).fetchall()}

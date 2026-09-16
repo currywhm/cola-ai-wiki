@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from .config import settings
 from .db import connect, decode_sources, fetchall, fetchone, init_db, row_dict
-from .schemas import ArticleImportRequest, ChatRequest, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, ProfileUpdate
+from .schemas import ArticleImportRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, ProfileUpdate
 from .security import create_token, current_user, rate_limit
 from .services.documents import extract_text, split_chunks
 from .services.wechat_article import ArticleFetchError, build_document_html, fetch_wechat_article
@@ -1066,8 +1066,27 @@ async def conversations(
     if q.strip():
         clauses.append("title LIKE ?")
         params.append(f"%{q.strip()}%")
-    db = await connect(); rows = await fetchall(db, f"SELECT * FROM conversations WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT 100", tuple(params)); await db.close()
+    # 置顶的会话排在最前，其余仍按最近更新排序
+    db = await connect(); rows = await fetchall(db, f"SELECT * FROM conversations WHERE {' AND '.join(clauses)} ORDER BY pinned DESC, updated_at DESC LIMIT 100", tuple(params)); await db.close()
     return [row_dict(r) for r in rows]
+
+
+@app.post("/api/conversations/{conversation_id}/pin")
+async def pin_conversation(conversation_id: str, payload: ConversationPinUpdate, user_id: str = Depends(current_user)) -> dict:
+    """置顶 / 取消置顶历史对话：范围严格限定在当前用户名下。"""
+    db = await connect()
+    owner = await fetchone(db, "SELECT id FROM conversations WHERE id=? AND user_id=?", (conversation_id, user_id))
+    if not owner:
+        await db.close(); raise HTTPException(404, '对话不存在')
+    stamp = now()
+    await db.execute(
+        "UPDATE conversations SET pinned=?, pinned_at=? WHERE id=? AND user_id=?",
+        (1 if payload.pinned else 0, stamp if payload.pinned else '', conversation_id, user_id),
+    )
+    await db.commit()
+    row = await fetchone(db, "SELECT id,pinned FROM conversations WHERE id=? AND user_id=?", (conversation_id, user_id))
+    await db.close()
+    return {'id': conversation_id, 'pinned': bool(row['pinned']) if row else payload.pinned}
 
 
 @app.delete("/api/conversations/{conversation_id}")

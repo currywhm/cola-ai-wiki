@@ -49,3 +49,9 @@ class FolderCreate(BaseModel):
 
 class DocumentMove(BaseModel):
     folder_id: str = Field(default="", max_length=64)
+
+
+class ConversationPinUpdate(BaseModel):
+    """历史对话的置顶开关：只改当前用户名下的会话。"""
+
+    pinned: bool = True

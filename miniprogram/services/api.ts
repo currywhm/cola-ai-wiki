@@ -74,6 +74,7 @@ export const getConversations = (params: { knowledgeId?: string; folderId?: stri
 }
 export const getConversation = (id: string) => request<any[]>(`/api/conversations/${id}`)
 export const deleteConversation = (id: string) => request<any>(`/api/conversations/${id}`, 'DELETE')
+export const pinConversation = (id: string, pinned: boolean) => request<any>(`/api/conversations/${id}/pin`, 'POST', { pinned })
 export const logout = () => request<any>('/api/auth/logout', 'POST').catch(() => ({ ok: false }))
 export type Folder = { id: string; name: string; document_count: number }
 export const getFolders = (knowledgeId: string) => request<Folder[]>(`/api/knowledge/${knowledgeId}/folders`)

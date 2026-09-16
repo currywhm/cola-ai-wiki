@@ -3,7 +3,7 @@
 import { renderMarkdown } from '../../utils/markdown'
 import { appendTrace, assistantMessage, createFlusher, settleTrace } from '../../utils/thread'
 import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER, SKILLS } from '../../utils/skills'
-import { deleteConversation, getConversation, getConversations, getKnowledgeDetail, getModels, Source, streamChat } from '../../services/api'
+import { deleteConversation, getConversation, getConversations, getKnowledgeDetail, getModels, pinConversation, Source, streamChat } from '../../services/api'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
 
@@ -302,7 +302,7 @@ Page({
   newConversation() {
     this.setData({ historyVisible: false, conversationId: '', messages: [], input: '', sending: false, canSend: false, readyForInput: true, lastMessageId: '' }, () => { this.seedGreeting(); this.syncCanSend() })
   },
-  // 长按历史对话 = 删除，二次确认后再删（服务端按用户名下校验）
+  // 左滑出「删除」，二次确认后再删（服务端按用户名下校验）
   removeHistory(e: any) {
     const id = String((e.detail && e.detail.id) || '')
     if (!id) return
@@ -317,11 +317,22 @@ Page({
           const items = this.data.historyItems.filter((item: any) => item.id !== id)
           const isCurrent = this.data.conversationId === id
           this.setData({ historyItems: items, conversationId: isCurrent ? '' : this.data.conversationId })
-          if (isCurrent) this.setData({ messages: [], lastMessageId: '' }, () => { this.seedGreeting(); this.syncCanSend() })
+          if (isCurrent) this.setData({ messages: [], lastMessageId: '' }, () => this.seedGreeting())
           wx.showToast({ title: '已删除', icon: 'success' })
         }).catch(() => wx.showToast({ title: '删除失败，请稍后重试', icon: 'none' }))
       },
     })
+  },
+  // 左滑「置顶 / 取消置顶」：只改当前用户自己的会话，置顶后排到列表最前。
+  pinHistory(e: any) {
+    const id = String((e.detail && e.detail.id) || '')
+    const pinned = !!(e.detail && e.detail.pinned)
+    if (!id) return
+    pinConversation(id, pinned).then(() => {
+      const items = this.data.historyItems.map((item: any) => item.id === id ? { ...item, pinned: pinned ? 1 : 0 } : item)
+      this.setData({ historyItems: items })
+      wx.showToast({ title: pinned ? '已置顶' : '已取消置顶', icon: 'none' })
+    }).catch(() => wx.showToast({ title: '操作失败，请稍后重试', icon: 'none' }))
   },
   copyAnswer(e: any) {
     const content = String(e.currentTarget.dataset.content || '')

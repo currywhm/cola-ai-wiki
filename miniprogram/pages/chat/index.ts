@@ -1,7 +1,7 @@
 import { consumeChatTarget } from '../../services/navigation'
 import { appendTrace, assistantMessage, createFlusher, settleTrace } from '../../utils/thread'
 import { renderMarkdown } from '../../utils/markdown'
-import { deleteConversation, getConversation, getConversations, getKnowledge, getKnowledgeDetail, deleteDocument, deleteKnowledge, getModels, getFolders, getSuggestions, createFolder, deleteFolder, importArticle, moveDocument, uploadLocalFile, Knowledge, ModelOption, Folder, resumeWechatLogin, Source, streamChat, uploadDocument, UploadSource } from '../../services/api'
+import { deleteConversation, getConversation, getConversations, getKnowledge, getKnowledgeDetail, deleteDocument, deleteKnowledge, getModels, getFolders, getSuggestions, createFolder, deleteFolder, importArticle, moveDocument, pinConversation, uploadLocalFile, Knowledge, ModelOption, Folder, resumeWechatLogin, Source, streamChat, uploadDocument, UploadSource } from '../../services/api'
 import { SKILLS } from '../../utils/skills'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
@@ -721,6 +721,17 @@ Page({
     }).catch(() => this.setData({ historyItems: [], historyLoading: false }))
   },
   closeHistory() { this.setData({ historyVisible: false }) },
+  // 左滑「置顶 / 取消置顶」：只改当前用户自己的会话，置顶后排到列表最前。
+  pinHistory(e: any) {
+    const id = String((e.detail && e.detail.id) || '')
+    const pinned = !!(e.detail && e.detail.pinned)
+    if (!id) return
+    pinConversation(id, pinned).then(() => {
+      const items = (this.data as any).historyItems.map((item: any) => item.id === id ? { ...item, pinned: pinned ? 1 : 0 } : item)
+      this.setData({ historyItems: items })
+      wx.showToast({ title: pinned ? '已置顶' : '已取消置顶', icon: 'none' })
+    }).catch(() => wx.showToast({ title: '操作失败，请稍后重试', icon: 'none' }))
+  },
   pickHistory(e: any) {
     const id = String((e.detail && e.detail.id) || '')
     if (!id) return
@@ -728,7 +739,7 @@ Page({
     this.setData({ historyVisible: false, conversationId: id, conversationActive: true, messages: [], sending: false, canSend: false })
     this.loadConversation()
   },
-  // 长按历史对话 = 删除；会话在服务端，删前必须二次确认
+  // 左滑出「删除」；会话在服务端，删前必须二次确认
   removeHistory(e: any) {
     const id = String((e.detail && e.detail.id) || '')
     if (!id) return

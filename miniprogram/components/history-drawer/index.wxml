@@ -14,11 +14,30 @@
       <ui-icon name="plus" size="{{22}}" />
       <text>新建对话</text>
     </button>
-    <scroll-view class="hd-list" scroll-y enhanced show-scrollbar="{{false}}">
+    <scroll-view class="hd-list" scroll-y enhanced show-scrollbar="{{false}}" bindscroll="closeSwipe">
       <view wx:if="{{loading && !groups.length}}" class="hd-empty">正在加载历史对话…</view>
       <block wx:for="{{groups}}" wx:key="key" wx:for-item="group">
         <text class="hd-group">{{group.label}}</text>
-        <button wx:for="{{group.items}}" wx:key="id" wx:for-item="entry" class="hd-item {{entry.id === activeId ? 'on' : ''}}" bindtap="pick" bindlongpress="remove" data-id="{{entry.id}}">{{entry.title}}</button>
+        <view wx:for="{{group.items}}" wx:key="id" wx:for-item="entry" class="hd-row">
+          <!-- 左滑露出的操作：置顶 / 删除，删除前由页面弹窗二次确认 -->
+          <view class="hd-actions">
+            <button class="hd-action hd-pin {{entry.pinned ? 'is-on' : ''}}" catchtap="pin" data-id="{{entry.id}}" data-pinned="{{entry.pinned ? 1 : 0}}">{{entry.pinned ? '取消置顶' : '置顶'}}</button>
+            <button class="hd-action hd-del" catchtap="remove" data-id="{{entry.id}}">删除</button>
+          </view>
+          <button
+            class="hd-item {{entry.id === activeId ? 'on' : ''}} {{openId === entry.id ? 'swiped' : ''}}"
+            style="{{openId === entry.id ? 'transform:translateX(-240rpx);' : ''}}"
+            bindtouchstart="onTouchStart"
+            bindtouchmove="onTouchMove"
+            bindtouchend="onTouchEnd"
+            bindtouchcancel="onTouchEnd"
+            bindtap="pick"
+            data-id="{{entry.id}}"
+          >
+            <ui-icon wx:if="{{entry.pinned}}" name="pin" size="{{22}}" rpx />
+            <text class="hd-item-text">{{entry.title}}</text>
+          </button>
+        </view>
       </block>
       <view wx:if="{{!loading && !groups.length}}" class="hd-empty">{{query ? '没有匹配的历史对话' : '还没有历史对话'}}</view>
     </scroll-view>

@@ -94,6 +94,12 @@ button.qa-prompt::after { border: 0; }
 .qa-answer-text .md-li { margin: 6rpx 0; }
 .qa-answer-text .md-quote { margin: 10rpx 0; padding-left: 16rpx; border-left: 4rpx solid #d8dce2; color: #6b7280; }
 .qa-answer-text .md-link { color: #2f6fdd; text-decoration: underline; }
+.qa-answer-text .md-del { color: #9aa1a9; text-decoration: line-through; }
+.qa-answer-text .md-hr { height: 0; margin: 22rpx 0; border: 0; border-top: 1rpx solid #eceef0; }
+/* 表格：窄屏用固定布局等分列宽并自动换行，避免横向溢出 */
+.qa-answer-text .md-table { width: 100%; margin: 18rpx 0; border: 1rpx solid #e6e9ec; border-collapse: collapse; table-layout: fixed; }
+.qa-answer-text .md-th, .qa-answer-text .md-td { padding: 14rpx 12rpx; border: 1rpx solid #e6e9ec; color: #33383e; font-size: 24rpx; line-height: 1.5; text-align: left; word-break: break-word; }
+.qa-answer-text .md-th { background: #f6f7f8; font-weight: 600; }
 .qa-progress { display: inline-flex; align-items: center; gap: 10rpx; padding: 12rpx 22rpx 12rpx 16rpx; border-radius: 999rpx; background: #f4f5f6; }
 .qa-progress-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 32rpx; width: 32rpx; height: 32rpx; animation: qa-breathe 1.6s ease-in-out infinite; }
 .qa-progress-text { color: #8b98a5; font-size: 26rpx; line-height: 1.5; }

@@ -1,6 +1,7 @@
 import { consumeChatTarget } from '../../services/navigation'
 import { appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, settleTrace } from '../../utils/thread'
 import { renderMarkdown } from '../../utils/markdown'
+import { fileTypeKind, fileTypeLabel } from '../../utils/file-type'
 import { deleteConversation, getConversation, getConversations, getKnowledge, getKnowledgeDetail, deleteDocument, deleteKnowledge, getModels, getFolders, getSuggestions, createFolder, deleteFolder, importArticle, moveDocument, pinConversation, uploadLocalFile, Knowledge, ModelOption, Folder, resumeWechatLogin, Source, streamChat, uploadDocument, UploadSource } from '../../services/api'
 import { buildSharePayload, homePayload, questionFor } from '../../utils/share'
 
@@ -12,6 +13,7 @@ const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
 ]
 // 启动页已上移到小程序入口（问AI tab）：知识库页面不再拦截首屏，这里保留空标记保证旧调用安全
 let bootSplashShown = true
+
 
 Page({
   data: { safeBottom: 0, dirTouchStartX: 0, dirTouchStartY: 0, booting: !bootSplashShown, knowledgeId: '', knowledgeName: '', knowledgeDesc: '', conversationId: '', conversationActive: false, selectedIndex: 0, input: '', canSend: false, sending: false, readyForInput: false, lastMessageId: '', model: 'deepseek-flash', selectedModelKey: 'deepseek-flash', modelLabel: '云枢', modelShortLabel: '云枢', thinkingMode: 'quick' as 'quick' | 'deep', modelOptions: FALLBACK_MODEL_OPTIONS, modelPickerVisible: false, askMode: 'knowledge' as 'knowledge' | 'web', modePickerVisible: false, pinned: false, uploadSheetVisible: false, uploadUsedLabel: '0.00GB', uploadLimitLabel: '300MB', loadState:'loading', knowledge:[] as Knowledge[], filteredKnowledge:[] as Knowledge[], pickerQuery:'', pickerVisible:false, documents:[] as any[], documentsLoading:false, documentsError:false, folders:[] as Folder[], documentGroups:[] as any[], visibleDocuments:[] as any[], currentFolderId:'', currentFolderName:'', articleSheetVisible:false, articleUrl:'', articleImporting:false, importMode:false, pendingFileName:'', askLayerVisible:false, askFocus:false, askGreeting:'', suggestions:[] as string[], suggestionsFor:'', suggestionsLoading:false, messages: [] as any[] },
@@ -141,8 +143,8 @@ Page({
     Promise.all([getKnowledgeDetail(knowledgeId), getFolders(knowledgeId).catch(() => [] as Folder[])]).then(([result, folders]) => {
       const documents = ((result as any).documents || []).map((item: any) => ({
         ...item,
-        typeKind: /^\.?(png|jpe?g|gif|webp|bmp|heic)$/i.test(String(item.file_type || '')) ? 'image' : item.file_type === '.pdf' ? 'pdf' : 'other',
-        typeLabel: /^\.?(png|jpe?g|gif|webp|bmp|heic)$/i.test(String(item.file_type || '')) ? '图片' : item.file_type === '.pdf' ? 'PDF' : item.file_type === '.docx' ? 'DOC' : item.file_type === '.doc' ? 'DOC' : item.file_type === '.md' || item.file_type === '.markdown' ? 'MD' : item.file_type === '.txt' ? 'TXT' : item.file_type === '.html' ? '推文' : 'FILE',
+        typeKind: fileTypeKind(item.file_type),
+        typeLabel: fileTypeLabel(item.file_type),
         displaySize: this.formatSize(item.file_size),
         displayTime: this.displayTime(item.created_at || item.updated_at),
         swipeX: 0,

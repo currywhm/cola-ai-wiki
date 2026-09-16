@@ -21,3 +21,15 @@
 .reader-bottom button.ghost-btn[disabled] { color: #aeb5c3; background: #edf0f5; }
 .page-count { white-space: nowrap; font-size: 23rpx; }
 .reader-bottom button.ghost-btn ui-icon { flex:0 0 auto; }
+
+/* 原文预览入口：沿用卡片语言（白底 + 1rpx 描边 + 20rpx 圆角），不加重底色 */
+button.preview-entry { display:flex; justify-content:flex-start; align-items:center; gap:18rpx; width:100%; margin:0 0 20rpx; padding:22rpx 24rpx; text-align:left; background:#fff; border:1rpx solid #e6e2da; border-radius:20rpx; box-shadow:0 4rpx 16rpx rgba(31,38,55,.035); }
+button.preview-entry.busy { opacity:.6; }
+.preview-entry-icon { flex:0 0 auto; display:flex; align-items:center; justify-content:center; width:68rpx; height:68rpx; border-radius:18rpx; background:#f2f0eb; }
+.preview-entry-copy { display:flex; flex-direction:column; gap:4rpx; min-width:0; }
+.preview-entry-title { color:#202a38; font-size:29rpx; font-weight:600; line-height:1.35; }
+.preview-entry-desc { color:#737b8c; font-size:22rpx; line-height:1.45; white-space:normal; }
+/* 无正文时的说明卡：不要继承 document-content 的行高与最小高度，否则中间空一大块 */
+.reader-empty { display:flex; flex-direction:column; gap:10rpx; min-height:0; padding:40rpx 30rpx; white-space:normal; }
+.reader-empty-title { color:#202a38; font-size:28rpx; font-weight:600; line-height:1.4; }
+.reader-empty-desc { color:#737b8c; font-size:24rpx; line-height:1.7; }

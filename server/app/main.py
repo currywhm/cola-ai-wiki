@@ -19,7 +19,7 @@ from .config import settings
 from .db import connect, decode_sources, fetchall, fetchone, init_db, row_dict
 from .schemas import ArticleImportRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, ProfileUpdate, ShareCreate, SkillFlagUpdate, SkillForm, SkillPublishUpdate
 from .security import create_token, current_user, rate_limit
-from .services.documents import extract_text, split_chunks
+from .services.documents import ALLOWED_SUFFIXES, extract_text, split_chunks
 from .services.wechat_article import ArticleFetchError, build_document_html, fetch_wechat_article
 from .services.llm import stream_answer
 from .services.memory import load_history, maybe_compress, recent_context
@@ -675,7 +675,7 @@ async def upload_document(background_tasks: BackgroundTasks, knowledge_id: str, 
     client_name = unquote(x_upload_filename) if x_upload_filename else file.filename
     safe_name = Path(client_name or "upload").name; document_id = uuid.uuid4().hex; destination = settings.upload_path / f"{document_id}_{safe_name}"
     suffix = destination.suffix.lower()
-    if suffix not in {".pdf", ".docx", ".txt", ".md", ".markdown", ".csv", ".jpg", ".jpeg", ".png", ".webp"}:
+    if suffix not in ALLOWED_SUFFIXES:
         await db.close(); raise HTTPException(415, "暂不支持该文件类型")
     data = await file.read()
     if len(data) > 50 * 1024 * 1024:
@@ -688,8 +688,10 @@ async def upload_document(background_tasks: BackgroundTasks, knowledge_id: str, 
     await db.execute("INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (document_id, knowledge_id, user_id, safe_name, suffix, len(data), str(destination), "processing", 15, folder_id, timestamp, timestamp)); await db.commit(); await db.close()
     status = "completed"
     error_message = ""
+    extracted = ""
     try:
         text, pages = extract_text(destination, suffix); chunks = split_chunks(text)
+        extracted = text
         db = await connect(); await db.execute("UPDATE documents SET page_count=?,status='embedding',progress=70,extracted_text=?,updated_at=? WHERE id=?", (pages, text, now(), document_id))
         for index, content in enumerate(chunks):
             chunk_id = uuid.uuid4().hex; await db.execute("INSERT INTO chunks(id,document_id,knowledge_id,content,page_number,chunk_index,created_at) VALUES(?,?,?,?,?,?,?)", (chunk_id, document_id, knowledge_id, content, min(pages, index + 1), index, now())); await db.execute("INSERT INTO chunks_fts(rowid,content,chunk_id,knowledge_id,filename,page_number) VALUES((SELECT COALESCE(MAX(rowid),0)+1 FROM chunks_fts),?,?,?,?,?)", (content, chunk_id, knowledge_id, safe_name, min(pages, index + 1)))
@@ -697,9 +699,14 @@ async def upload_document(background_tasks: BackgroundTasks, knowledge_id: str, 
     except Exception as exc:
         status = "failed"; error_message = str(exc)
         db = await connect(); await db.execute("UPDATE documents SET status='failed',error_message=?,updated_at=? WHERE id=?", (error_message, now(), document_id)); await db.commit(); await db.close()
-    if status == 'completed' and background_tasks is not None:
+    # 没有可抽取正文（旧版 Office 格式、无文字图片）时不排整理任务，避免落一条空摘要；
+    # 这类文件仍可正常打开原文预览。
+    if status == 'completed' and extracted.strip() and background_tasks is not None:
         background_tasks.add_task(organize_document, document_id)
-    return {"id": document_id, "filename": safe_name, "status": status, "progress": 100 if status == "completed" else 0, "error_message": error_message, "organize_status": 'processing' if status == 'completed' else 'pending'}
+    # organize_status 按实际有没有排整理任务回报：旧版 Office 格式正文为空，不会排整理，
+    # 报 processing 会让调用方一直等一个永远不会到来的摘要。
+    organized = status == 'completed' and bool(extracted.strip())
+    return {"id": document_id, "filename": safe_name, "status": status, "progress": 100 if status == "completed" else 0, "error_message": error_message, "organize_status": 'processing' if organized else 'pending'}
 
 
 @app.post("/api/knowledge/{knowledge_id}/import-article")
@@ -784,7 +791,8 @@ async def retry_document(document_id: str, background_tasks: BackgroundTasks, us
             await db.execute("INSERT INTO chunks(id,document_id,knowledge_id,content,page_number,chunk_index,created_at) VALUES(?,?,?,?,?,?,?)", (chunk_id, document_id, row["knowledge_id"], content, page, index, now()))
             await db.execute("INSERT INTO chunks_fts(rowid,content,chunk_id,knowledge_id,filename,page_number) VALUES((SELECT COALESCE(MAX(rowid),0)+1 FROM chunks_fts),?,?,?,?,?)", (content, chunk_id, row["knowledge_id"], row["filename"], page))
         await db.execute("UPDATE documents SET status='completed',progress=100,updated_at=? WHERE id=?", (now(), document_id)); await db.execute("UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?", (row["knowledge_id"], now(), row["knowledge_id"])); await db.commit(); await db.close()
-        background_tasks.add_task(organize_document, document_id)
+        if text.strip():
+            background_tasks.add_task(organize_document, document_id)
         return {"id": document_id, "status": "completed", "progress": 100, "organize_status": "processing"}
     except Exception as exc:
         db = await connect(); await db.execute("UPDATE documents SET status='failed',progress=0,error_message=?,updated_at=? WHERE id=?", (str(exc), now(), document_id)); await db.commit(); await db.close()

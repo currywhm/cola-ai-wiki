@@ -5,6 +5,9 @@ httpx==0.28.1
 pydantic-settings==2.7.1
 PyJWT==2.10.1
 python-docx==1.1.2
+# PPT / Excel 正文抽取（PDF 与 Office 的原文预览由微信内置渲染器负责，见 wx.openDocument）
+python-pptx==1.0.2
+openpyxl==3.1.5
 pypdf==5.1.0
 Pillow==11.1.0
 pytesseract==0.3.13

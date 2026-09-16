@@ -1,5 +1,6 @@
 import { openChat } from '../../services/navigation'
 import { deleteDocument, deleteKnowledge, getKnowledge, getKnowledgeDetail, retryDocument, updateDocumentTags, uploadDocument, UploadSource } from '../../services/api'
+import { fileTypeKind, fileTypeLabel } from '../../utils/file-type'
 
 Page({
   data: {
@@ -28,8 +29,8 @@ Page({
       const documents = data.documents.map((doc: any) => ({
         ...doc,
         swipeX: 0,
-        typeKind: /^\.?(png|jpe?g|gif|webp|bmp|heic)$/i.test(String(doc.file_type || '')) ? 'image' : doc.file_type === '.pdf' ? 'pdf' : 'other',
-        typeLabel: /^\.?(png|jpe?g|gif|webp|bmp|heic)$/i.test(String(doc.file_type || '')) ? '图片' : doc.file_type === '.pdf' ? 'PDF' : doc.file_type === '.docx' || doc.file_type === '.doc' ? 'DOC' : doc.file_type === '.md' || doc.file_type === '.markdown' ? 'MD' : doc.file_type === '.html' ? '推文' : 'TXT',
+        typeKind: fileTypeKind(doc.file_type),
+        typeLabel: fileTypeLabel(doc.file_type),
         displaySize: this.formatSize(doc.file_size),
         displayTime: this.displayTime(doc.created_at || doc.updated_at),
       }))

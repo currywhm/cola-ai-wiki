@@ -1,4 +1,5 @@
 import { EventStream } from './event-stream'
+import { PREVIEW_FILE_TYPES } from '../utils/file-type'
 
 function appInstance() { return getApp<IAppOption>() }
 function base() { return appInstance()?.globalData?.apiBase || 'http://127.0.0.1:8765' }
@@ -57,6 +58,38 @@ export const createKnowledge = (data: { name: string; description: string }) => 
 export const deleteKnowledge = (id: string) => request<any>(`/api/knowledge/${id}`, 'DELETE')
 export const getKnowledgeDetail = (id: string) => request<{ knowledge: Knowledge; documents: Document[] }>(`/api/knowledge/${id}`)
 export const getDocument = (id: string) => request<any>(`/api/documents/${id}`)
+
+
+/**
+ * 原文预览：先把原文件下到本地临时文件，再交给微信内置文档渲染器打开。
+ * 这是微信生态里唯一能 1:1 还原 PDF / Word / Excel / PPT 版式的路径；
+ * 站内阅读只负责展示供检索用的正文，不看版式。
+ */
+export function previewDocument(id: string, fileType: string): Promise<void> {
+  const type = String(fileType || '').replace(/^\./, '').toLowerCase()
+  if (PREVIEW_FILE_TYPES.indexOf(type) < 0) return Promise.reject(new Error('该格式暂不支持原文预览'))
+  return ensureAuth().then(() => new Promise<void>((resolve, reject) => {
+    wx.showLoading({ title: '正在打开原文', mask: true })
+    const done = () => wx.hideLoading()
+    wx.downloadFile({
+      url: `${base()}/api/documents/${id}/download`,
+      header: { Authorization: `Bearer ${token()}` },
+      timeout: 120000,
+      success: (res: any) => {
+        if (res.statusCode !== 200) { done(); reject(new Error(`原文下载失败（${res.statusCode}）`)); return }
+        // 临时文件路径通常不带扩展名，必须显式告诉渲染器按哪种格式打开，否则会报格式不支持
+        wx.openDocument({
+          filePath: res.tempFilePath,
+          fileType: type as any,
+          showMenu: true,
+          success: () => { done(); resolve() },
+          fail: (error: any) => { done(); reject(new Error((error && error.errMsg) || '该文件暂时无法打开')) },
+        })
+      },
+      fail: () => { done(); reject(new Error('原文下载失败，请检查网络后重试')) },
+    })
+  }))
+}
 export const deleteDocument = (id: string) => request<any>(`/api/documents/${id}`, 'DELETE')
 export const updateDocumentTags = (id: string, tags: string[]) => request<any>(`/api/documents/${id}/tags`, 'PATCH', { tags })
 export const retryDocument = (id: string) => request<any>(`/api/documents/${id}/retry`, 'POST')
@@ -161,7 +194,7 @@ function timestampName(prefix: string) {
 
 function chooseLocalUpload(source: UploadSource): Promise<LocalUpload> {
   if (source === 'file') return new Promise((resolve, reject) => wx.chooseMessageFile({
-    count: 1, type: 'file', extension: ['pdf', 'docx', 'txt', 'md', 'markdown', 'csv', 'jpg', 'jpeg', 'png', 'webp'],
+    count: 1, type: 'file', extension: ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'txt', 'md', 'markdown', 'csv', 'jpg', 'jpeg', 'png', 'webp'],
     success: pick => { const item = pick.tempFiles[0]; if (!item) { reject(new Error('没有选择文件')); return }; resolve({ path: item.path, filename: item.name || '未命名文件' }) }, fail: reject,
   })).catch(error => Promise.reject(pickerError(error, source))) as Promise<LocalUpload>
   const sourceType: ('album' | 'camera')[] = source === 'camera' ? ['camera'] : ['album']

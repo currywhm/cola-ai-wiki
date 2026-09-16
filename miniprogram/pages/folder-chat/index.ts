@@ -4,22 +4,10 @@ import { renderMarkdown } from '../../utils/markdown'
 import { appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, settleTrace } from '../../utils/thread'
 import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER } from '../../utils/skills'
 import { buildSharePayload, homePayload, questionFor } from '../../utils/share'
+import { fileTypeLabel } from '../../utils/file-type'
 import { deleteConversation, getConversation, getConversations, getKnowledgeDetail, getModels, getSuggestions, pinConversation, Source, streamChat } from '../../services/api'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
-
-function typeLabelOf(fileType: string): string {
-  const suffix = String(fileType || '').toLowerCase()
-  if (/^\.?(png|jpe?g|gif|webp|bmp|heic)$/.test(suffix)) return '图片'
-  if (suffix === '.pdf') return 'PDF'
-  if (suffix === '.doc' || suffix === '.docx') return 'DOC'
-  if (suffix === '.md' || suffix === '.markdown') return 'MD'
-  if (suffix === '.txt') return 'TXT'
-  if (suffix === '.html') return '推文'
-  if (suffix === '.ppt' || suffix === '.pptx') return 'PPT'
-  if (suffix === '.xls' || suffix === '.xlsx' || suffix === '.csv') return '表格'
-  return '文件'
-}
 
 Page({
   data: {
@@ -110,7 +98,7 @@ Page({
     getKnowledgeDetail(this.data.knowledgeId).then((result: any) => {
       const documents = (((result && result.documents) || []) as any[])
         .filter((item: any) => String(item.folder_id || '') === this.data.folderId)
-        .map((item: any) => ({ ...item, typeLabel: typeLabelOf(item.file_type) }))
+        .map((item: any) => ({ ...item, typeLabel: fileTypeLabel(item.file_type) }))
       this.setData({ documents, loadState: 'ready', readyForInput: true }, () => {
         this.seedGreeting()
         this.loadSuggestions()

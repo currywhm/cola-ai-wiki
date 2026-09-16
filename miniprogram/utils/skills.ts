@@ -3,4 +3,5 @@
 
 export const PLANNER_PLACEHOLDER = '告诉我想做什么，我来规划执行——查询知识、生成PPT、撰写报告、整理知识库……'
 export const KNOWLEDGE_PLACEHOLDER = '基于全部知识，或@指定知识进行提问'
-
+// 从文件夹进入的会话只吃这个文件夹里的资料，输入框提示要跟范围保持一致
+export const FOLDER_PLACEHOLDER = '基于当前文件夹里的资料提问'

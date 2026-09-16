@@ -1,6 +1,5 @@
 /* 问AI：极简版式——一个吉祥物、一句标题、几个胶囊入口、一个输入框，其余全部留白 */
 .ask-page { display: flex; flex-direction: column; width: 100%; max-width: 750rpx; min-height: 100vh; margin: 0 auto; overflow-x: hidden; background: #f5f6f6; box-sizing: border-box; }
-.ask-navspace { flex: none; width: 100%; }
 .ask-body { flex: 1; padding: 0 44rpx; box-sizing: border-box; }
 
 .ask-hero-icon { display: flex; align-items: center; justify-content: flex-start; width: 108rpx; height: 108rpx; margin-top: 26rpx; }

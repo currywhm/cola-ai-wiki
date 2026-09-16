@@ -1,19 +1,19 @@
 <view class="page chat-page {{conversationActive ? 'conversation-mode' : ''}}{{!conversationActive && currentFolderId ? ' folder-mode' : ''}}" style="{{safeBottom ? 'padding-bottom:calc(' + (conversationActive ? 0 : (currentFolderId ? 16 : 10)) + 'rpx + ' + safeBottom + 'px)' : ''}}">
   <view wx:if="{{conversationActive}}" class="qa-nav" style="height:{{navHeight}}px;">
     <button class="qa-back" bindtap="leaveConversation" aria-label="返回"><ui-icon name="back" size="{{36}}" rpx /></button>
-    <button class="qa-history" bindtap="openHistory" aria-label="历史对话"><ui-icon name="menu" size="{{34}}" rpx /></button>
+    <button class="qa-history" bindtap="openHistory" aria-label="历史对话"><ui-icon name="menu" size="{{41}}" rpx /></button>
     <view class="qa-context"><text class="qa-context-title">{{knowledgeName || '微信用户的知识库'}}</text></view>
   </view>
   <app-nav wx:else title="cola知识库" center />
   <view wx:if="{{!conversationActive}}" class="library-toolbar">
     <button class="library-title-wrap" bindtap="openKnowledgePicker" disabled="{{sending}}" aria-label="切换知识库">
       <text>{{knowledgeName || '微信用户的知识库'}}</text>
-      <view class="library-switch"><ui-icon name="chevron-down" size="{{15}}" /></view>
+      <view class="library-switch"><ui-icon name="chevron-down" size="{{30}}" rpx /></view>
     </button>
     <view class="toolbar-actions">
-      <button class="toolbar-button" bindtap="goSearch" disabled="{{!knowledgeId}}" aria-label="搜索知识库"><ui-icon name="search" size="{{23}}" /></button>
-      <button class="toolbar-button add-button" bindtap="openUpload" disabled="{{!knowledgeId || sending}}" aria-label="导入文件"><ui-icon name="upload" size="{{22}}" /></button>
-      <button class="toolbar-button" bindtap="openKnowledgeActions" disabled="{{!knowledgeId || sending}}" aria-label="知识库管理"><ui-icon name="menu" size="{{21}}" /></button>
+      <button class="toolbar-button" bindtap="goSearch" disabled="{{!knowledgeId}}" aria-label="搜索知识库"><ui-icon name="search" size="{{46}}" rpx /></button>
+      <button class="toolbar-button add-button" bindtap="openUpload" disabled="{{!knowledgeId || sending}}" aria-label="导入文件"><ui-icon name="upload" size="{{44}}" rpx /></button>
+      <button class="toolbar-button" bindtap="openKnowledgeActions" disabled="{{!knowledgeId || sending}}" aria-label="知识库管理"><ui-icon name="menu" size="{{44}}" rpx /></button>
     </view>
   </view>
   <view wx:if="{{!conversationActive && knowledgeDesc}}" class="library-desc">{{knowledgeDesc}}</view>
@@ -122,32 +122,48 @@
           </view>
         </view>
         <view wx:else class="qa-answer">
-          <view wx:if="{{item.trace.length || item.reason}}" class="qa-trace">
+          <!-- 思维链折叠成一行摘要（点开才看全文）；执行步骤独立成一区、始终可见 -->
+          <view wx:if="{{item.reason}}" class="qa-trace">
             <view class="qa-trace-head {{item.running ? 'live' : ''}}" bindtap="toggleTrace" data-id="{{item.id}}">
               <view class="qa-trace-icon"><ui-icon name="{{item.traceIcon || 'dengpao'}}" size="{{30}}" rpx /></view>
               <text class="qa-trace-title">{{item.traceTitle || '思考中'}}</text>
-              <text wx:if="{{item.traceSummary && (!item.traceOpen || item.running)}}" class="qa-trace-summary">{{item.traceSummary}}</text>
+              <text wx:if="{{item.traceSummary}}" class="qa-trace-summary">{{item.traceSummary}}</text>
               <view wx:else class="qa-trace-spacer"></view>
               <text wx:if="{{item.traceElapsed}}" class="qa-trace-elapsed">{{item.traceElapsed}}</text>
-              <view class="qa-trace-chevron"><ui-icon name="{{item.traceOpen ? 'chevron-up' : 'chevron-down'}}" size="{{22}}" rpx /></view>
+              <view class="qa-trace-chevron"><ui-icon name="{{item.reasonOpen ? 'chevron-up' : 'chevron-down'}}" size="{{22}}" rpx /></view>
             </view>
-            <view wx:if="{{item.traceOpen}}" class="qa-trace-body">
-              <text wx:if="{{item.reason}}" class="qa-reason">{{item.reason}}</text>
-              <view wx:for="{{item.trace}}" wx:for-item="node" wx:key="key" class="qa-node {{node.kind}} {{node.state}}">
-                <view class="qa-node-icon"><ui-icon name="{{node.icon || 'atom'}}" size="{{28}}" rpx /></view>
-                <view class="qa-node-copy">
-                  <text class="qa-node-title">{{node.title}}</text>
-                  <text wx:if="{{node.detail}}" class="qa-node-detail">{{node.detail}}</text>
-                </view>
-                <text wx:if="{{node.stateLabel}}" class="qa-node-state {{node.state}}">{{node.stateLabel}}</text>
-              </view>
+            <view wx:if="{{item.reasonOpen}}" class="qa-trace-body">
+              <text class="qa-reason">{{item.reason}}</text>
             </view>
           </view>
+          <view wx:if="{{item.trace.length}}" class="qa-process">
+            <view wx:for="{{item.trace}}" wx:for-item="node" wx:key="key" class="qa-node {{node.kind}} {{node.state}} {{node.depth ? 'nested' : ''}}">
+              <view class="qa-node-icon"><ui-icon name="{{node.icon || 'atom'}}" size="{{28}}" rpx /></view>
+              <view class="qa-node-copy">
+                <text class="qa-node-title">{{node.title}}</text>
+                <text wx:if="{{node.detail}}" class="qa-node-detail">{{node.detail}}</text>
+              </view>
+              <text wx:if="{{node.stateLabel}}" class="qa-node-state {{node.state}}">{{node.stateLabel}}</text>
+            </view>
+          </view>
+          <plan-card wx:if="{{item.planNode}}" node="{{item.planNode}}" message-id="{{item.id}}" open="{{item.planOpen}}" bind:review="onPlanReview" bind:toggle="onPlanToggle" />
           <view wx:if="{{!item.content && !item.trace.length && !item.reason}}" class="qa-progress">
             <view class="qa-progress-icon"><ui-icon name="dengpao" size="{{26}}" rpx /></view>
             <text class="qa-progress-text">{{item.progress || '正在思考…'}}</text>
           </view>
           <rich-text wx:if="{{item.content}}" class="qa-answer-text" nodes="{{item.html || item.content}}"></rich-text>
+          <!-- 生成的文件：agent 本轮真的写出来的文件。点卡片预览，右侧按钮保存到微信 -->
+          <view wx:if="{{item.artifacts.length}}" class="qa-files">
+            <text class="qa-files-title">生成的文件 · {{item.artifacts.length}}</text>
+            <view wx:for="{{item.artifacts}}" wx:for-item="file" wx:key="id" class="qa-file" hover-class="qa-file-hover" hover-stay-time="60" bindtap="openArtifact" data-id="{{file.id}}">
+              <view class="qa-file-icon"><ui-icon name="{{file.icon || 'recent-text'}}" size="{{52}}" rpx /></view>
+              <view class="qa-file-copy">
+                <text class="qa-file-name">{{file.name}}</text>
+                <text class="qa-file-meta">{{file.meta}}</text>
+              </view>
+              <button class="qa-file-save" catchtap="saveArtifact" data-id="{{file.id}}" aria-label="保存到微信"><ui-icon name="download" size="{{30}}" rpx /></button>
+            </view>
+          </view>
           <view wx:if="{{item.sources.length}}" class="qa-sources">
             <text class="qa-source-title">参考出处 · {{item.sources.length}} 条</text>
             <view wx:for="{{item.sources}}" wx:for-item="source" wx:key="id" class="qa-source" bindtap="openSource" data-id="{{source.document_id || source.id}}" data-url="{{source.url || ''}}">
@@ -181,10 +197,7 @@
       <text class="dir-composer-placeholder">{{currentFolderId ? '基于本文件夹提问' : '基于知识库提问'}}</text>
     </view>
     <view wx:if="{{conversationActive}}" class="qa-composer">
-      <view wx:if="{{pendingSkillName}}" class="qa-skill-chip">
-        <text class="qa-skill-chip-text">技能 · {{pendingSkillName}}</text>
-        <button class="qa-skill-chip-close" bindtap="clearSkill" aria-label="取消技能"><ui-icon name="close" size="{{20}}" rpx /></button>
-      </view>
+      <!-- 选中的技能不显示在对话里：技能图标线条变蓝即表示本轮已启用 -->
       <textarea class="qa-input" value="{{input}}" placeholder="{{askMode === 'web' ? '向全网提问' : '基于知识库提问'}}" placeholder-style="color:#8c8c8c;font-size:30rpx;line-height:1.32;" auto-height maxlength="8000" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
       <view class="qa-bar">
         <button class="qa-logic {{askMode === 'web' ? 'planner' : 'knowledge'}}" bindtap="toggleAskLogic" aria-label="切换问答逻辑">
@@ -192,7 +205,7 @@
           <ui-icon name="chevron-down" size="{{16}}" rpx />
         </button>
         <button class="qa-skill" bindtap="openSkillSheet" disabled="{{sending}}" aria-label="技能">
-          <ui-icon name="skill" size="{{34}}" rpx />
+          <ui-icon name="{{selectedSkillIds.length ? 'skill-blue' : 'skill'}}" size="{{34}}" rpx />
           <ui-icon name="chevron-down" size="{{15}}" rpx />
         </button>
         <button class="qa-scope" bindtap="openKnowledgePicker" disabled="{{sending}}" aria-label="选择知识库">
@@ -265,23 +278,24 @@
   <view wx:if="{{pickerVisible}}" class="picker-layer">
     <view class="picker-mask" bindtap="closeKnowledgePicker"></view>
     <view class="knowledge-sheet">
-      <view class="picker-head"><button class="picker-close" bindtap="closeKnowledgePicker" aria-label="关闭"><ui-icon name="close" size="{{21}}" /></button><text class="picker-title">{{importMode ? '请选择要上传的目标知识库' : '选择知识库'}}</text><button class="picker-market" bindtap="openDiscover"><ui-icon name="compass" size="{{16}}" /><text>发现</text></button></view>
-      <view class="search-bar picker-search"><ui-icon name="search" size="{{18}}" /><input value="{{pickerQuery}}" placeholder="搜索知识库" bindinput="filterPicker" /></view>
+      <view class="picker-head"><button class="picker-close" bindtap="closeKnowledgePicker" aria-label="关闭"><ui-icon name="close" size="{{48}}" rpx /></button><text class="picker-title">{{importMode ? '请选择要上传的目标知识库' : '选择知识库'}}</text><button class="picker-market" bindtap="openDiscover"><ui-icon name="compass" size="{{40}}" rpx /><text>发现</text></button></view>
+      <view class="search-bar picker-search"><ui-icon name="search" size="{{40}}" rpx /><input value="{{pickerQuery}}" placeholder="搜索知识库" bindinput="filterPicker" /></view>
       <scroll-view class="picker-list" scroll-y>
         <view class="picker-group">
-          <view class="picker-group-head"><view class="picker-group-title"><text>个人知识库</text><ui-icon name="chevron-down" size="{{13}}" /></view><button class="picker-add" bindtap="createFromPicker" aria-label="创建知识库"><ui-icon name="plus" size="{{20}}" /></button></view>
-          <view wx:for="{{filteredKnowledge}}" wx:key="id" class="picker-item {{item.id === knowledgeId ? 'selected' : ''}}" bindtap="selectKnowledge" data-id="{{item.id}}"><view class="picker-folder"><ui-icon name="knowledge" size="{{20}}" /></view><view class="grow"><text class="picker-name">{{item.name}}</text><text class="picker-meta">{{item.document_count || 0}} 份文档</text></view><ui-icon wx:if="{{item.id === knowledgeId}}" name="check" size="{{18}}" /></view>
+          <view class="picker-group-head"><view class="picker-group-title"><text>个人知识库</text><ui-icon name="chevron-down" size="{{28}}" rpx /></view><button class="picker-add" bindtap="createFromPicker" aria-label="创建知识库"><ui-icon name="plus" size="{{42}}" rpx /></button></view>
+          <view wx:for="{{filteredKnowledge}}" wx:key="id" class="picker-item {{item.id === knowledgeId ? 'selected' : ''}}" bindtap="selectKnowledge" data-id="{{item.id}}"><view class="picker-folder"><ui-icon name="knowledge" size="{{48}}" rpx /></view><view class="grow"><text class="picker-name">{{item.name}}</text><text class="picker-meta">{{item.document_count || 0}} 份文档</text></view><view wx:if="{{item.id === knowledgeId}}" class="picker-check"><ui-icon name="check" size="{{34}}" rpx /></view></view>
           <view wx:if="{{!filteredKnowledge.length}}" class="picker-empty">没有找到匹配的知识库</view>
         </view>
         <view class="picker-group">
-          <view class="picker-group-head"><view class="picker-group-title"><text>共享知识库</text><ui-icon name="chevron-down" size="{{13}}" /></view></view>
+          <view class="picker-group-head"><view class="picker-group-title"><text>共享知识库</text><ui-icon name="chevron-down" size="{{28}}" rpx /></view></view>
           <view class="picker-empty-row">暂无共享知识库</view>
         </view>
         <view class="picker-group">
-          <view class="picker-group-head"><view class="picker-group-title"><text>订阅知识库</text><ui-icon name="chevron-down" size="{{13}}" /></view></view>
+          <view class="picker-group-head"><view class="picker-group-title"><text>订阅知识库</text><ui-icon name="chevron-down" size="{{28}}" rpx /></view></view>
           <view class="picker-empty-row">暂无订阅知识库</view>
         </view>
-        <view class="picker-footer"><text class="picker-footer-dash">- </text><button bindtap="openAgreement">服务协议</button><text> · </text><button bindtap="openPrivacy">隐私政策</button><text class="picker-footer-dash"> -</text></view>
+        <!-- 两个链接挨着居中：button 自带 auto 左右外边距，在 flex 里会被拉开，必须清零 -->
+        <view class="picker-footer"><button bindtap="openAgreement">服务协议</button><text class="picker-footer-dot">·</text><button bindtap="openPrivacy">隐私政策</button></view>
       </scroll-view>
     </view>
   </view>
@@ -337,7 +351,7 @@
   </view>
   <!-- 技能：把常用任务写进输入框，随知识库资料执行；与问AI问答页共用同一套技能包 -->
   <!-- 技能：与问AI问答页共用同一份数据源（技能广场 + 我的技能），只有选中的才会注入后端 -->
-  <skill-picker visible="{{skillSheetVisible}}" selected="{{selectedSkillId}}" bind:close="closeSheets" bind:select="onSkillSelect" bind:create="onSkillCreate" bind:edit="onSkillEdit" />
+  <skill-picker visible="{{skillSheetVisible}}" selected="{{selectedSkillIds}}" bind:close="closeSheets" bind:select="onSkillSelect" bind:create="onSkillCreate" bind:edit="onSkillEdit" />
   <!-- 历史对话：后端持久化，按用户 + 知识库收窄，长按可删 -->
   <history-drawer visible="{{historyVisible}}" loading="{{historyLoading}}" activeId="{{conversationId}}" items="{{historyItems}}" bind:pick="pickHistory" bind:create="newConversation" bind:close="closeHistory" bind:pin="pinHistory" bind:remove="removeHistory" />
 </view>

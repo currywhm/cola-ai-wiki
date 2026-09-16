@@ -1,8 +1,11 @@
 import { renderMarkdown } from '../../utils/markdown'
-import { appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, settleTrace } from '../../utils/thread'
-import { deleteConversation, getConversation, getConversations, getKnowledge, getModels, pinConversation, Knowledge, Source, streamChat } from '../../services/api'
+import { addArtifact, appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, markPlanReviewed, settleTrace, togglePlan } from '../../utils/thread'
+// 生成的文件：卡片打开 / 保存到微信都在 utils/artifact 里统一实现，三个会话页共用同一份
+import { openArtifact as openArtifactFile, saveArtifact as saveArtifactFile } from '../../utils/artifact'
+import { deleteConversation, getConversation, getConversations, getKnowledge, getModels, pinConversation, Knowledge, Source, reviewPlan, streamChat } from '../../services/api'
 import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER } from '../../utils/skills'
 import { buildSharePayload, homePayload, questionFor } from '../../utils/share'
+import { persistSkills, restoreSkills } from '../../utils/skill-prefs'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
 
@@ -35,10 +38,9 @@ Page({
     skillSheetVisible: false,
     knowledgeSheetVisible: false,
     deepThinking: true,
-    // 本轮选中的技能 id（技能广场或我的技能，发送后清空，避免后续问题被旧技能影响）
-    pendingSkill: '',
-    pendingSkillName: '',
-    selectedSkillId: '',
+    // 已启用的技能 id（可多选）。长期生效：只要用户不主动修改就一直沿用，
+    // 发送后不移除、进入新对话也不重置；只在技能图标上以蓝色线条提示。
+    selectedSkillIds: [] as string[],
     model: 'deepseek-flash',
     selectedModelKey: 'deepseek-flash',
   },
@@ -47,6 +49,7 @@ Page({
     this.measureSafeArea()
     this.loadModels()
     this.load()
+    this.restoreSkillPrefs()
   },
   onShow() { this.measureSafeArea() },
   onUnload() {
@@ -84,20 +87,28 @@ Page({
   },
   load() {
     this.setData({ loadState: 'loading' })
+    // 从「问AI」首页的历史对话进来时，带的是要恢复的会话与它所属的知识库
+    const requestedConversation = String(wx.getStorageSync('qa_conversation_id') || '')
+    const requestedKnowledge = String(wx.getStorageSync('qa_knowledge_id') || '')
+    wx.removeStorageSync('qa_conversation_id')
+    wx.removeStorageSync('qa_knowledge_id')
     getKnowledge().then((list) => {
       const items = list || []
-      const current = items.find((item) => item.name === DEFAULT_KNOWLEDGE_NAME) || items[0]
+      const current = (requestedKnowledge ? items.find((item) => item.id === requestedKnowledge) : undefined)
+        || items.find((item) => item.name === DEFAULT_KNOWLEDGE_NAME) || items[0]
       this.setData({
         knowledgeList: items,
         filteredKnowledge: items,
         knowledgeId: current ? current.id : '',
         knowledgeName: current ? current.name : '',
         pendingKnowledgeId: current ? current.id : '',
+        conversationId: requestedConversation,
         loadState: 'ready',
         readyForInput: true,
       }, () => {
         this.syncCanSend()
-        this.consumeDraft()
+        if (requestedConversation) this.openConversation(requestedConversation)
+        else this.consumeDraft()
       })
     }).catch(() => this.setData({ loadState: 'error', readyForInput: false, canSend: false }))
   },
@@ -122,7 +133,7 @@ Page({
     this.setData({ input: e.detail.value, readyForInput: true }, () => this.syncCanSend())
   },
   clearSkill() {
-    this.setData({ pendingSkill: '', pendingSkillName: '', selectedSkillId: '' }, () => this.syncCanSend())
+    this.applySkills([])
   },
   syncCanSend() {
     const scoped = this.data.askMode === 'planner' || !!this.data.knowledgeId
@@ -154,12 +165,23 @@ Page({
   // 弹层内部点击不穿透到遮罩
   noop() { return },
   toggleDeepThinking() { this.setData({ deepThinking: !this.data.deepThinking }) },
-  // 选中即把技能 id 绑定到本轮对话：发送时随请求下发，后端按 id 解析
-  // （内置技能走仓库内的技能包，我的技能走技能指令），不选就不注入。
+  // 多选：点一下切换一个技能，面板不关闭；选择结果持久化，发送后与新建对话都不会重置。
+  // 后端按 id 解析（内置技能走仓库内的技能包，我的技能走技能指令），没选就不注入。
   onSkillSelect(e: any) {
-    const skill = (e && e.detail) || {}
+    const skill = ((e && e.detail && e.detail.skill) || {})
     if (!skill.id) return
-    this.setData({ skillSheetVisible: false, readyForInput: true, pendingSkill: skill.id, pendingSkillName: skill.name || '', selectedSkillId: skill.id }, () => this.syncCanSend())
+    const ids = this.data.selectedSkillIds.slice()
+    const index = ids.indexOf(skill.id)
+    if (index === -1) ids.push(skill.id)
+    else ids.splice(index, 1)
+    this.applySkills(ids)
+  },
+  applySkills(ids: string[]) {
+    this.setData({ selectedSkillIds: ids, readyForInput: true }, () => this.syncCanSend())
+    persistSkills(ids)
+  },
+  restoreSkillPrefs() {
+    restoreSkills().then((ids) => { if (ids.length) this.setData({ selectedSkillIds: ids }) }).catch(() => undefined)
   },
   // 新建 / 编辑技能：先收起面板，回来时重新打开就是最新列表
   onSkillCreate() { this.setData({ skillSheetVisible: false }, () => wx.navigateTo({ url: '/pages/skill-edit/index' })) },
@@ -219,7 +241,12 @@ Page({
   pickHistory(e: any) {
     const id = String((e.detail && e.detail.id) || '')
     if (!id) return
-    this.setData({ historyVisible: false, conversationId: id, messages: [], sending: false, canSend: false }, () => this.syncCanSend())
+    this.setData({ historyVisible: false })
+    this.openConversation(id)
+  },
+  // 恢复一条历史会话：正文、思考过程、工具执行都由后端持久化，这里整条拉回来
+  openConversation(id: string) {
+    this.setData({ conversationId: id, messages: [], sending: false, canSend: false }, () => this.syncCanSend())
     getConversation(id).then((messages) => {
       const hydrated = (messages || []).map((message: any) => message.role === 'assistant'
         ? hydrateAssistant(message)
@@ -228,7 +255,7 @@ Page({
     }).catch(() => wx.showToast({ title: '历史对话加载失败', icon: 'none' }))
   },
   newConversation() {
-    this.setData({ historyVisible: false, conversationId: '', messages: [], input: '', sending: false, canSend: false, readyForInput: true, lastMessageId: '', pendingSkill: '', pendingSkillName: '', selectedSkillId: '' }, () => this.syncCanSend())
+    this.setData({ historyVisible: false, conversationId: '', messages: [], input: '', sending: false, canSend: false, readyForInput: true, lastMessageId: '' }, () => this.syncCanSend())
   },
   // 左滑出「删除」后二次确认再删。历史存在服务端，删除范围限定本用户。
   // 左滑「置顶 / 取消置顶」：只改当前用户自己的会话，置顶后排到列表最前。
@@ -262,6 +289,32 @@ Page({
       },
     })
   },
+  // 计划模式（plan mode）：用户在计划卡片上的结论回写后端，后端转交运行时
+  // 交回被阻塞的 exit_plan_mode；批准即开始执行，继续规划则由模型修订后再次呈交。
+  onPlanReview(e: any) {
+    const detail = e.detail || {}
+    const messageId = String(detail.messageId || '')
+    const reviewId = String(detail.reviewId || '')
+    const approved = !!detail.approved
+    if (!reviewId || !messageId) return
+    this.setData({ messages: markPlanReviewed(this.data.messages, messageId, approved ? 'approved' : 'revising') })
+    reviewPlan(reviewId, approved).then((result: any) => {
+      if (!result || result.accepted === false) {
+        this.setData({ messages: markPlanReviewed(this.data.messages, messageId, 'review') })
+        wx.showToast({ title: '计划评审已超时，请重新提问', icon: 'none' })
+        return
+      }
+      wx.showToast({ title: approved ? '已批准，开始执行' : '已提交，继续规划', icon: 'none' })
+    }).catch(() => {
+      this.setData({ messages: markPlanReviewed(this.data.messages, messageId, 'review') })
+      wx.showToast({ title: '提交失败，请稍后重试', icon: 'none' })
+    })
+  },
+  onPlanToggle(e: any) {
+    const messageId = String((e.detail || {}).messageId || '')
+    if (!messageId) return
+    this.setData({ messages: togglePlan(this.data.messages, messageId) })
+  },
   send() {
     const content = this.data.input.trim()
     if (!this.data.readyForInput || this.data.loadState !== 'ready' || !content || this.data.sending) return
@@ -272,14 +325,13 @@ Page({
   doSend(askMode: 'knowledge' | 'planner', content: string) {
     const userId = `m${Date.now()}`
     const assistantId = `m${Date.now() + 1}`
-    const skill = this.data.pendingSkill
+    // 技能不再随发送清空：它是一段长期设定，只有用户在面板里改动才会变
+    const skills = this.data.selectedSkillIds
     this.setData({
       input: '',
       sending: true,
       canSend: false,
-      pendingSkill: '',
-      pendingSkillName: '',
-      selectedSkillId: '',
+      // 技能选中态保留在 selectedSkillIds 中，不在这里重置
       messages: [...this.data.messages, { id: userId, role: 'user', content, sources: [] }, assistantMessage(assistantId)],
       lastMessageId: assistantId,
     })
@@ -291,7 +343,7 @@ Page({
       model: this.data.model,
       thinking: this.data.deepThinking ? 'deep' : 'quick',
     }
-    if (skill) payload.skill = skill
+    if (skills.length) payload.skills = skills
     if (this.data.knowledgeId) payload.knowledge_id = this.data.knowledgeId
     ;(this as any).cancelStream = streamChat(
       payload,
@@ -317,6 +369,7 @@ Page({
       },
       (label) => { if (label) this.updateAssistantProgress(assistantId, label) },
       (item) => this.pushTrace(assistantId, item),
+      (artifact) => this.pushArtifact(assistantId, artifact),
     )
   },
   stopSend() {
@@ -351,9 +404,34 @@ Page({
     const result = appendTrace(this.data.messages, id, item)
     if (result.changed) this.setData({ messages: result.messages, lastMessageId: id })
   },
+  // 工具产物：agent 本轮生成的文件，后端收好之后随时推来，落在这一轮回答下面
+  pushArtifact(id: string, artifact: any) {
+    const result = addArtifact(this.data.messages, id, artifact)
+    if (result.changed) this.setData({ messages: result.messages, lastMessageId: id })
+  },
+  // 文件卡只带 id：回到本轮消息里取完整产物（实时问答与历史回放走同一条）
+  findArtifact(e: any) {
+    const id = String((e.currentTarget.dataset || {}).id || '')
+    if (!id) return null
+    const messages = this.data.messages as any[]
+    for (let index = 0; index < messages.length; index += 1) {
+      const hit = (messages[index].artifacts || []).find((item: any) => item && item.id === id)
+      if (hit) return hit
+    }
+    return null
+  },
+  openArtifact(e: any) {
+    const item = this.findArtifact(e)
+    if (item) openArtifactFile(item)
+  },
+  saveArtifact(e: any) {
+    const item = this.findArtifact(e)
+    if (item) saveArtifactFile(item)
+  },
   toggleTrace(e: any) {
     const id = String(e.currentTarget.dataset.id || '')
-    const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, traceOpen: !message.traceOpen } : message)
+    // 这一行折叠的是思维链全文；执行步骤行始终可见，不受它影响
+    const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, reasonOpen: message.reasonOpen !== true } : message)
     this.setData({ messages })
   },
   copyAnswer(e: any) {

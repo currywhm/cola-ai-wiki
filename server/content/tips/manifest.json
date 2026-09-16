@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "version": "2026.09.16.4",
+  "title": "使用技巧",
+  "subtitle": "持续更新",
+  "updated_at": "2026-09-16",
+  "intro": "八篇短文，每篇只讲一件小事：怎么把资料放进来、怎么问、怎么看答案可不可信。都有「照着做」的步骤，按图点就行。",
+  "groups": [
+    {
+      "id": "start",
+      "title": "快速上手",
+      "entries": [
+        {
+          "id": "upload",
+          "title": "先放一份资料进来",
+          "summary": "微信文件、本地相册、拍照、公众号链接，资料在哪就点哪个。",
+          "icon": "upload",
+          "cover": "cover-upload.png",
+          "body": "entries/01-upload.md",
+          "read_minutes": 2
+        },
+        {
+          "id": "organize",
+          "title": "传上去就会自己整理",
+          "summary": "标题、摘要、标签、要点自动生成，你只要确认是不是这份文件。",
+          "icon": "file",
+          "cover": "cover-organize.png",
+          "body": "entries/02-organize.md",
+          "read_minutes": 2
+        }
+      ]
+    },
+    {
+      "id": "ask",
+      "title": "提问技巧",
+      "entries": [
+        {
+          "id": "scope",
+          "title": "先选清楚：只查资料还是联网办事",
+          "summary": "输入框左下角的小机器人点一下切换，选错就答不到点上。",
+          "icon": "knowledge",
+          "cover": "cover-scope.png",
+          "body": "entries/03-scope.md",
+          "read_minutes": 2
+        },
+        {
+          "id": "question",
+          "title": "把问题问清楚",
+          "summary": "一句话里带上范围、目标、格式，答案基本一次就能用。",
+          "icon": "dengpao",
+          "cover": "cover-question.png",
+          "body": "entries/04-question.md",
+          "read_minutes": 2
+        },
+        {
+          "id": "source",
+          "title": "每个结论都能点回原文",
+          "summary": "答案里的 [1] 对应下面的参考出处，点开就能核对原文。",
+          "icon": "book",
+          "cover": "cover-source.png",
+          "body": "entries/05-source.md",
+          "read_minutes": 1
+        }
+      ]
+    },
+    {
+      "id": "advanced",
+      "title": "进阶与权益",
+      "entries": [
+        {
+          "id": "skill",
+          "title": "技能：按固定套路干活",
+          "summary": "点一下选中技能，之后提问会自动按流程执行，还能多选。",
+          "icon": "atom",
+          "cover": "cover-skill.png",
+          "body": "entries/06-skill.md",
+          "read_minutes": 3
+        },
+        {
+          "id": "model",
+          "title": "选对回答方式",
+          "summary": "日常查询用快速回答；要推理、要多步处理时打开深度思考。",
+          "icon": "settings",
+          "cover": "cover-model.png",
+          "body": "entries/07-model.md",
+          "read_minutes": 2
+        },
+        {
+          "id": "plan",
+          "title": "空间与会员",
+          "summary": "登录送 30 天试用 300MB；Plus 10GB、Pro 30GB，按租期开通。",
+          "icon": "vip",
+          "cover": "cover-plan.png",
+          "body": "entries/08-plan.md",
+          "read_minutes": 2
+        }
+      ]
+    }
+  ]
+}

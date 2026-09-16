@@ -27,7 +27,8 @@ button.se-back:active { background: #eceeee; }
 
 .se-input { height: 68rpx; margin-top: 6rpx; color: #171b20; font-size: 30rpx; font-weight: 500; line-height: 1.4; }
 .se-placeholder { color: #b6bbc1; font-size: 28rpx; font-weight: 400; }
-.se-textarea { width: 100%; min-height: 260rpx; max-height: 640rpx; margin-top: 12rpx; padding: 22rpx 22rpx 24rpx; border-radius: 20rpx; background: #f5f6f7; color: #1f2227; font-size: 28rpx; font-weight: 400; line-height: 1.7; box-sizing: border-box; }
+/* 底部多留一段内边距，给贴在右下角的增强图标腾位置，文字不会和它撞上 */
+.se-textarea { width: 100%; min-height: 260rpx; max-height: 640rpx; margin-top: 12rpx; padding: 22rpx 22rpx 92rpx; border-radius: 20rpx; background: #f5f6f7; color: #1f2227; font-size: 28rpx; font-weight: 400; line-height: 1.7; box-sizing: border-box; }
 
 /* 图标选择：每行精确 7 个，14 个图标正好两行；选中用浅底 + 描边，不用对勾，保持安静 */
 .se-icons { display: flex; flex-wrap: wrap; justify-content: space-between; margin-top: 4rpx; }
@@ -62,3 +63,36 @@ button.se-ghost::after, button.se-danger::after, button.se-save::after { border:
 button.se-ask-primary { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 94rpx; margin: 30rpx 0 0; padding: 0 32rpx; border: 0; border-radius: 999rpx; background: #242b3d; color: #fff; font-size: 30rpx; font-weight: 600; line-height: 1.3; }
 button.se-ask-ghost { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 88rpx; margin: 14rpx 0 0; padding: 0 32rpx; border: 0; border-radius: 999rpx; background: #f3f4f5; color: #4b545d; font-size: 28rpx; font-weight: 500; line-height: 1.3; }
 button.se-ask-primary::after, button.se-ask-ghost::after { border: 0; }
+
+/* 增强提示词：指令输入框右下角只露一个圆形图标按钮，悬停 / 按住才浮出文字说明 */
+.se-prompt { position: relative; }
+button.se-enhance { position: absolute; right: 14rpx; bottom: 14rpx; display: flex; align-items: center; justify-content: center; width: 64rpx; height: 64rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: #e9edf0; }
+button.se-enhance::after { border: 0; }
+button.se-enhance:active { background: #dde3e8; }
+button.se-enhance[disabled] { opacity: .45; }
+/* 文字说明默认完全隐去（只占位不拦事件），鼠标悬停或按住图标时才淡入 */
+.se-enhance-hint { position: absolute; right: 88rpx; bottom: 22rpx; padding: 8rpx 18rpx; border-radius: 999rpx; background: rgba(24, 28, 34, .88); color: #fff; font-size: 22rpx; font-weight: 400; line-height: 1.4; opacity: 0; transition: opacity .15s ease; pointer-events: none; }
+button.se-enhance:hover + .se-enhance-hint { opacity: 1; }
+button.se-enhance.on + .se-enhance-hint { opacity: 1; }
+
+/* 技能包文件：只在 harness 真的生成了技能包时出现，用胶囊列出包内文件名 */
+.se-files-title { display: block; margin-top: 18rpx; color: #9aa1a9; font-size: 23rpx; font-weight: 400; line-height: 1.5; }
+.se-files { display: flex; flex-wrap: wrap; gap: 10rpx; margin-top: 10rpx; }
+.se-file { display: flex; align-items: center; padding: 8rpx 18rpx; border-radius: 999rpx; background: #f4f6f7; }
+.se-file-name { margin-left: 8rpx; color: #5b636c; font-size: 23rpx; font-weight: 400; line-height: 1.4; }
+
+/* 制作技能：生成要跑完整一轮 agent，用居中卡片把当前阶段如实报出来，可中途停止 */
+.se-make { position: fixed; z-index: 260; top: 0; right: 0; bottom: 0; left: 0; display: flex; align-items: center; justify-content: center; padding: 0 60rpx; }
+.se-make-mask { position: absolute; top: 0; right: 0; bottom: 0; left: 0; background: rgba(15, 18, 22, .42); }
+.se-make-panel { position: relative; display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 560rpx; padding: 54rpx 40rpx 36rpx; border-radius: 32rpx; background: #fff; box-shadow: 0 20rpx 60rpx rgba(16, 20, 26, .16); box-sizing: border-box; }
+.se-make-dots { display: flex; align-items: center; justify-content: center; height: 16rpx; }
+.se-make-dot { width: 12rpx; height: 12rpx; margin: 0 5rpx; border-radius: 50%; background: #c2c8ce; animation: se-blink 1.1s infinite ease-in-out; }
+.se-make-dot.d2 { animation-delay: .18s; }
+.se-make-dot.d3 { animation-delay: .36s; }
+@keyframes se-blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+.se-make-title { display: block; margin-top: 28rpx; color: #14171b; font-size: 32rpx; font-weight: 700; line-height: 1.3; }
+.se-make-stage { display: block; margin-top: 12rpx; color: #5b636c; font-size: 26rpx; font-weight: 500; line-height: 1.5; text-align: center; }
+.se-make-hint { display: block; margin-top: 10rpx; color: #a8adb3; font-size: 23rpx; font-weight: 400; line-height: 1.5; text-align: center; }
+button.se-make-cancel { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 86rpx; margin: 36rpx 0 0; padding: 0 32rpx; border: 0; border-radius: 999rpx; background: #f3f4f5; color: #4b545d; font-size: 28rpx; font-weight: 500; line-height: 1.3; }
+button.se-make-cancel::after { border: 0; }
+button.se-make-cancel:active { background: #e9ecee; }

@@ -1,5 +1,6 @@
 // 问AI页：一个吉祥物 + 一句标题 + 若干入口胶囊 + 一个输入框，其余全部留白
 // 登录前展示导入引导（图1），登录后展示能力入口与推荐提问（图2）
+import { deleteConversation, ensureAuth, getConversations, pinConversation } from '../../services/api'
 
 // 推荐提问池：每次「换一换」向后轮换，避免永远展示同一组问题
 const SUGGESTION_POOL: string[] = [
@@ -41,14 +42,16 @@ function readLoggedIn(): boolean {
 
 Page({
   data: {
-    navHeight: 88,
     loggedIn: false,
     booting: true,
     suggestionStart: 0,
+    // 历史对话抽屉：数据全部来自后端 /api/conversations，本页不缓存会话内容
+    historyVisible: false,
+    historyLoading: false,
+    historyItems: [] as any[],
     suggestions: pickSuggestions(0),
   },
   onLoad() {
-    this.measureNav()
     if (splashShown()) { this.setData({ booting: false }); return }
     bootStartedAt = Date.now()
     this.setData({ booting: true })
@@ -57,22 +60,13 @@ Page({
     this.syncTabBar()
     this.syncLogin()
     this.finishBoot()
-    // 冷启动时登录结果通常晚于首帧返回，补一次同步，保证「登录前 / 登录后」两态及时切换
+    // 微信登录在 app.onLaunch 里异步完成，登录一完成就必须让本页切换两态：
+    // 只靠固定 900ms 补一次，会在慢启动 / 重新登录 / 退出登录后停在「登录前」的样式上，
+    // 所以这里直接跟着登录结果同步（已有 token 时立即 resolve，不额外发请求）。
+    ensureAuth().then(() => this.syncLogin()).catch(() => this.syncLogin())
     setTimeout(() => this.syncLogin(), 900)
   },
   onHide() { this.finishBoot() },
-  // 顶部不留标题栏，但必须避让胶囊按钮，高度随机型变化
-  measureNav() {
-    try {
-      const api = wx as any
-      const info = api.getWindowInfo ? api.getWindowInfo() : wx.getSystemInfoSync()
-      const rect = wx.getMenuButtonBoundingClientRect()
-      const status = info.statusBarHeight || 20
-      const valid = rect && rect.height > 0 && rect.top >= status
-      const height = valid ? Math.max(44, (rect.top - status) * 2 + rect.height) : 44
-      this.setData({ navHeight: status + height })
-    } catch (e) { this.setData({ navHeight: 88 }) }
-  },
   syncLogin() {
     const loggedIn = readLoggedIn()
     if (loggedIn !== this.data.loggedIn) this.setData({ loggedIn })
@@ -113,6 +107,67 @@ Page({
     wx.setStorageSync('qa_auto_send', !!autoSend)
     wx.setStorageSync('qa_mode', 'knowledge')
     wx.navigateTo({ url: '/pages/qa/index' })
+  },
+  // 顶部栏左侧的历史对话：与对话页共用同一个抽屉，取当前用户的全部会话
+  openHistory() {
+    if (this.data.historyVisible) return
+    this.setData({ historyVisible: true, historyLoading: true })
+    // 未登录时先走一次微信登录再取历史；登不上就关掉抽屉并说明原因，不留白屏
+    ensureAuth().then(() => getConversations({ knowledgeId: '', folderId: '' })).then((items) => {
+      this.setData({ historyItems: items || [], historyLoading: false })
+    }).catch(() => {
+      this.setData({ historyVisible: false, historyLoading: false, historyItems: [] })
+      wx.showToast({ title: '登录后可查看历史对话', icon: 'none' })
+    })
+  },
+  closeHistory() { this.setData({ historyVisible: false }) },
+  // 选中一条历史：进问答页并直接恢复那条会话（会话与所属知识库随本地缓存带过去）
+  pickHistory(e: any) {
+    const id = String((e.detail && e.detail.id) || '')
+    if (!id) return
+    const item = (this.data.historyItems as any[]).find((row: any) => row.id === id) || {}
+    this.setData({ historyVisible: false })
+    wx.setStorageSync('qa_conversation_id', id)
+    if (item.knowledge_id) wx.setStorageSync('qa_knowledge_id', String(item.knowledge_id))
+    else wx.removeStorageSync('qa_knowledge_id')
+    wx.removeStorageSync('qa_draft')
+    wx.removeStorageSync('qa_auto_send')
+    wx.navigateTo({ url: '/pages/qa/index' })
+  },
+  // 新建对话：清掉待恢复的会话，直接进一个空白问答页
+  newConversation() {
+    this.setData({ historyVisible: false })
+    wx.removeStorageSync('qa_conversation_id')
+    wx.removeStorageSync('qa_knowledge_id')
+    this.openChat('', false)
+  },
+  // 置顶 / 取消置顶：只改当前用户自己的会话，置顶后排到列表最前
+  pinHistory(e: any) {
+    const id = String((e.detail && e.detail.id) || '')
+    const pinned = !!(e.detail && e.detail.pinned)
+    if (!id) return
+    pinConversation(id, pinned).then(() => {
+      this.setData({ historyItems: this.data.historyItems.map((item: any) => item.id === id ? { ...item, pinned: pinned ? 1 : 0 } : item) })
+      wx.showToast({ title: pinned ? '已置顶' : '已取消置顶', icon: 'none' })
+    }).catch(() => wx.showToast({ title: '操作失败，请稍后重试', icon: 'none' }))
+  },
+  // 删除：二次确认后再删，删完立刻从列表里移除，不走重新拉取
+  removeHistory(e: any) {
+    const id = String((e.detail && e.detail.id) || '')
+    if (!id) return
+    wx.showModal({
+      title: '删除这条对话',
+      content: '删除后这条对话的内容不再保留，无法恢复。',
+      confirmText: '删除',
+      confirmColor: '#d92d20',
+      success: (res) => {
+        if (!res.confirm) return
+        deleteConversation(id).then(() => {
+          this.setData({ historyItems: this.data.historyItems.filter((item: any) => item.id !== id) })
+          wx.showToast({ title: '已删除', icon: 'success' })
+        }).catch(() => wx.showToast({ title: '删除失败，请稍后重试', icon: 'none' }))
+      },
+    })
   },
   // 底部输入框是入口按钮：点击后进入问答页
   onComposerTap() { this.openChat('', false) },

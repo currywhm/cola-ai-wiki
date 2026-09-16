@@ -20,6 +20,9 @@ button.profile-edit { display:flex; align-items:center; flex:0 0 auto; gap:5rpx;
 .storage-count { color:#929497; font-size:28rpx; font-weight:500; white-space:nowrap; }
 .storage-track { width:100%; height:20rpx; margin-top:17rpx; overflow:hidden; border-radius:10rpx; background:#eaf4f0; }
 .storage-fill { height:100%; min-width:10rpx; border-radius:10rpx; background:#08a766; transition:width .25s ease; }
+.storage-meta { display:flex; align-items:center; justify-content:space-between; gap:12rpx; margin-top:14rpx; color:#8b96a1; font-size:21rpx; line-height:1.4; }
+.storage-meta-item { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.storage-meta-warn { flex:0 0 auto; color:#c98a1c; font-size:21rpx; }
 .usage-card { margin-top:18rpx; padding:23rpx 24rpx 21rpx; border:0; border-radius:22rpx; background:#fff; box-shadow:none; }
 .section-heading { display:flex; align-items:baseline; justify-content:space-between; gap:12rpx; margin:0 2rpx 16rpx; }
 .section-title { overflow:hidden; color:#1f2227; font-size:34rpx; font-weight:760; line-height:1.35; letter-spacing:-.6rpx; text-overflow:ellipsis; white-space:nowrap; }
@@ -59,6 +62,8 @@ button.tier-tab { display:flex; flex-direction:column; align-items:center; justi
 .tier-tab-desc { color:#8e99a4; font-size:22rpx; font-weight:500; line-height:1.35; }
 .tier-tab.active { border-color:#e7f5ef; background:#eef9f4; }
 .tier-tab.active .tier-tab-title { color:#23896d; }
+.plan-benefits { margin-top:16rpx; padding:14rpx 18rpx; border-radius:14rpx; background:#f4f8f6; }
+.plan-benefit { color:#5d6a76; font-size:21rpx; line-height:1.45; }
 .plan-options { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12rpx; margin-top:18rpx; }
 button.plan-option { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5rpx; min-width:0; min-height:94rpx; padding:12rpx 8rpx; border:1rpx solid transparent; border-radius:15rpx; background:#fff; color:#4b5663; text-align:center; }
 .plan-option.selected { border-color:#e7f5ef; background:#eef9f4; }
@@ -75,21 +80,23 @@ button.shortcut { display:flex; flex-direction:column; align-items:center; justi
 .section-block { margin-top:60rpx; }
 .section-block .section-heading { margin-bottom:14rpx; }
 .section-link { flex:0 0 auto; color:#079c5a; font-size:21rpx; line-height:1.3; }
-.tips-card,.files-card { padding:0 28rpx; border:0; border-radius:18rpx; background:#fff; box-shadow:none; }
-/* 列表不画分隔线：靠留白与行内图标区分条目，避免“表格线”观感 */
-.tip-row { display:flex; align-items:center; min-width:0; gap:18rpx; min-height:148rpx; padding:22rpx 0; border:0 none; }
+.files-card { padding:0 28rpx; border:0; border-radius:18rpx; background:#fff; box-shadow:none; }
+/* 使用技巧：分组 + 图文条目，内容全部由后端下发 */
+.tip-group { margin-top:26rpx; }
+.tip-group:first-child { margin-top:0; }
+.tip-group-title { display:block; margin:0 4rpx 12rpx; color:#8f99a4; font-size:23rpx; font-weight:600; letter-spacing:.4rpx; }
+button.tip-item { display:flex; align-items:center; justify-content:flex-start; width:100%; min-height:0; margin:0 0 14rpx; padding:18rpx 20rpx; border:0; border-radius:20rpx; background:#fff; color:#20242b; text-align:left; }
+button.tip-item:last-child { margin-bottom:0; }
+.tip-thumb { display:flex; align-items:center; justify-content:center; flex:0 0 132rpx; width:132rpx; height:88rpx; overflow:hidden; border-radius:14rpx; background:#eff7f3; color:#0f8a56; }
+.tip-thumb-img { display:block; width:132rpx; height:88rpx; }
+.tip-main { flex:1 1 auto; min-width:0; margin:0 16rpx; text-align:left; }
+.tip-item .tip-title { color:#17191d; font-size:29rpx; font-weight:700; line-height:1.35; letter-spacing:-.3rpx; }
+.tip-item .tip-desc { display:-webkit-box; margin-top:6rpx; overflow:hidden; color:#8b96a1; font-size:22rpx; font-weight:400; line-height:1.42; white-space:normal; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+/* 文件列表不画分隔线：靠留白与行内图标区分条目，避免“表格线”观感 */
 .file-row { display:flex; align-items:center; min-width:0; gap:14rpx; min-height:94rpx; padding:16rpx 0; border:0 none; }
 .tip-title,.tip-desc,.file-name,.file-meta { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tip-title { color:#101214; font-size:31rpx; font-weight:650; line-height:1.4; letter-spacing:-.4rpx; }
 .tip-desc { margin-top:8rpx; color:#9098a2; font-size:22rpx; line-height:1.35; }
-.tip-cover { display:flex; align-items:center; justify-content:center; flex:0 0 98rpx; width:98rpx; height:98rpx; overflow:hidden; border-radius:17rpx; background:#eef8f4; color:#111; }
-.tip-cover.cover-0 { background:#fff5d9; color:#916f18; }
-.tip-cover.cover-1 { background:#eaf2ed; color:#43554a; }
-.tip-cover.cover-2 { background:#edf6fb; color:#3a7caa; }
-.tip-cover.cover-3 { background:#f1f3d8; color:#6d7f16; }
-.tip-cover.cover-4 { background:#e9f3fa; color:#286d98; }
-.tip-cover.cover-5 { background:#f4eee8; color:#865536; }
-.tip-cover.cover-6 { background:#eaf6ee; color:#21865b; }
 .file-type { display:flex; align-items:center; justify-content:center; flex:0 0 60rpx; width:60rpx; height:60rpx; border-radius:14rpx; font-size:18rpx; font-weight:650; }
 .file-type.pdf { border:1rpx solid #ffd4d4; background:#fff5f5; color:#e25656; }
 .file-type.docx { border:1rpx solid #d6e4ff; background:#f2f6ff; color:#3d79da; }

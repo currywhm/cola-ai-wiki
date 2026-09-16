@@ -1,4 +1,5 @@
 import { getRecent } from '../../services/api'
+import { openChat } from '../../services/navigation'
 
 interface KbItem {
   id: string
@@ -95,11 +96,27 @@ Page({
   openKnowledge(e: any) {
     const id = e.currentTarget.dataset.id
     if (!id) return
-    wx.setStorageSync('chat_target', { knowledgeId: id })
-    wx.switchTab({ url: '/pages/chat/index' })
+    // 统一走共享导航：storage 里的旧键没人消费，跳过去会丢失目标知识库
+    openChat({ knowledgeId: String(id) })
   },
-  openDocument(e: any) {
-    const id = e.currentTarget.dataset.id
+  // 最近列表同时含文档与文件夹：文件夹不是文档，不能直接进文档预览页
+  // （否则后端查不到该 id 的文档，只会弹「文档不存在」）。
+  openItem(e: any) {
+    const id = String(e.currentTarget.dataset.id || '')
+    if (!id) return
+    const kind = String(e.currentTarget.dataset.kind || 'document')
+    const knowledgeId = String(e.currentTarget.dataset.knowledge || '')
+    if (kind === 'folder') {
+      if (!knowledgeId) {
+        wx.showToast({ title: '文件夹所属知识库已不可用', icon: 'none' })
+        return
+      }
+      openChat({ knowledgeId, folderId: id })
+      return
+    }
+    this.openDocument(id)
+  },
+  openDocument(id: string) {
     if (!id) return
     wx.navigateTo({ url: `/pages/document/index?id=${id}` })
   },

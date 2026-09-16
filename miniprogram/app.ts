@@ -3,8 +3,8 @@ import { ensureAuth } from './services/api'
 // 按小程序运行环境切换后端地址：开发版连本地，体验版/正式版连生产域名（上线前替换为真实 HTTPS 域名）
 const API_BASE_BY_ENV: Record<string, string> = {
   develop: 'http://127.0.0.1:8765',
-  trial: 'https://api.cola-wiki.example.com',
-  release: 'https://api.cola-wiki.example.com',
+  trial: 'https://airouter-api.zeabur.app',
+  release: 'https://airouter-api.zeabur.app',
 }
 function resolveApiBase(): string {
   try {

@@ -4,7 +4,9 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / 'dist' / 'zhi-reader-api.tar.gz'
-FILES = ['app', 'scripts', 'tests', 'deploy', 'requirements.txt', 'Dockerfile',
+# content 是使用技巧等运营文案的源文件：部署后由 scripts/import_content.py
+# （或服务首次启动的自动导入）写进数据库，因此必须随包发布。
+FILES = ['app', 'scripts', 'tests', 'deploy', 'content', 'requirements.txt', 'Dockerfile',
          'docker-compose.yml', '.env.example', '.dockerignore', '.gitignore', 'README.md', 'VALIDATION.md']
 
 

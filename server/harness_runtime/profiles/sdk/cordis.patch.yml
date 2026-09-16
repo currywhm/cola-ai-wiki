@@ -1,0 +1,89 @@
+# cola 知识库部署级 profile 覆盖（发布资产，随代码走）
+#
+# 本文件由后端启动时同步到 `$DSH_HOME/profiles/<profile>/cordis.patch.yml`，
+# 是「部署决定」的唯一落点：权限边界、计划模式评审通道、模型流超时。
+# 上游 dsh-base / dsh-sdk-app bundled patch 仍然生效，这里只按 id 覆盖需要的行。
+#
+# 注意：按 id 的 patch 会整行替换该行的 `config`（不是深合并），
+# 因此凡是列出的行都要把完整配置写全。
+
+# 一、文件效应边界：沙箱固定为 workspace-write，工作根按租户注入
+#     （后端为每个租户设置 DSH_WORKSPACE_ROOT = 该租户的工作区目录）。
+- id: sandbox-policy
+  config:
+    mode: workspace-write
+    workspaceRoot: !!js process.env.DSH_WORKSPACE_ROOT ?? process.cwd()
+
+# 二、审批策略固定为 never（fail closed）。
+#     默认值在 workspace-write 下是 `ask`，而官方 SDK jsonrpc 传输层不转发
+#     approval/request，ask 会让工具永久挂起。固定 never 后，任何需要审批的动作
+#     都会被确定性地拒绝，越界写入无法发生；租户工作区内的正常读写不受影响。
+- id: approval
+  config:
+    policy: never
+
+# 三、权限预设表：官方内置表里没有 (workspace-write, never) 这一组合，
+#     而「沙箱模式 + 审批策略」的组合必须能落到某个预设上，否则运行时会拒绝启动。
+#     这里在官方三条之外补一条同语义预设并指定为默认：沙箱边界不变，只是不再弹审批。
+- id: permission
+  config:
+    defaultPreset: workspace-write-no-prompt
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      workspace-write-no-prompt:
+        sandbox: workspace-write
+        approval: never
+        name: workspace-write (no prompts)
+        description: >-
+          只能写租户工作区；没有接入审批通道，任何越界动作都会被确定性拒绝。
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+
+# 四、计划模式评审通道：把用户的「批准 / 继续规划」通过文件队列桥接到小程序后端，
+#     并由同一插件按租户下发的 mode 文件驱动计划模式开关。
+- insert:
+    - id: cola-plan-bridge
+      name: '@cola/dsh-plan-bridge'
+
+# 五、推理模型思考阶段长时间无可见 token，60s 流空闲超时会误判断流；
+#     工具调用链本身也可能超过 60s。放宽到 240s。
+- id: llm-deepseek
+  config:
+    streamIdleTimeoutMs: 240000
+
+# 六、执行能力归零（第一道边界）：cola 知识库只需要「对话 / 知识库 / 读写整理文档 /
+#     联网检索」，不需要也不允许任何命令行、脚本、可执行文件的执行能力。
+#     这里把 shell 工具、后台作业、工作流与脚本迭代、以及会 spawn 外部进程（rg）
+#     的文件搜索整体关闭：这些工具不会出现在模型可见的工具清单里，调用也无人响应。
+#     文档读写（tool-fs）、知识库检索、联网检索、技能全部保留，不受影响。
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+# 注：`bash-sandbox` / `shell-env` 这类「服务行」必须留着。它们只提供 ctx.shell /
+#     ctx.shellEnv 两个内部服务，`dsh-permission-presets` 等行要等这些服务才能启动；
+#     一旦关掉，整棵插件树加载失败（运行时会直接起不来）。真正的执行入口是下面那
+#     些 model-facing 的 tool 行，只关工具就足以让模型没有可调用的执行能力。
+- id: tool-jobs
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: workflow-worker-thread
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+
+# 七、工具层安全守卫（第二道边界）：即使提示词被用户输入、文档内容或技能指令
+#     带偏，也只能在「非执行 + 租户工作区内」这个范围内动作。官方沙箱只限制写，
+#     读是放开的，所以路径收口必须在工具层做（见插件源码注释）。
+- insert:
+    - id: cola-safety-guard
+      name: '@cola/dsh-safety-guard'

@@ -94,6 +94,33 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
+    def test_content_tips_are_served_from_database(self):
+        """使用技巧：源文件在 content/ 目录，服务启动时导入数据库，接口只读库。"""
+        manifest = json.loads((ROOT / 'content' / 'tips' / 'manifest.json').read_text(encoding='utf-8'))
+        response = self.client.get('/api/content/tips')
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload['version'], manifest['version'])
+        self.assertEqual(payload['title'], manifest['title'])
+        self.assertEqual(len(payload['groups']), len(manifest['groups']))
+        expected = {entry['id'] for group in manifest['groups'] for entry in group['entries']}
+        self.assertEqual({entry['id'] for group in payload['groups'] for entry in group['entries']}, expected)
+
+        first = payload['groups'][0]['entries'][0]
+        detail = self.client.get(f"/api/content/tips/{first['id']}")
+        self.assertEqual(detail.status_code, 200, detail.text)
+        blocks = detail.json()['blocks']
+        self.assertTrue(blocks)
+        self.assertTrue({block['type'] for block in blocks} & {'paragraph', 'step', 'bullet'})
+
+        cover = self.client.get(first['cover'])
+        self.assertEqual(cover.status_code, 200, cover.text)
+        self.assertEqual(cover.headers['content-type'], 'image/png')
+        self.assertTrue(cover.content.startswith(b'\x89PNG'))
+        self.assertEqual(self.client.get('/api/content/assets/..%2F.env').status_code, 404)
+        self.assertEqual(self.client.get('/api/content/assets/missing.png').status_code, 404)
+        self.assertEqual(self.client.get('/api/content/tips/unknown-entry').status_code, 404)
+
     def test_health_and_auth(self):
         self.assertTrue(self.client.get('/health').json()['ok'])
         self.assertEqual(self.client.get('/api/knowledge').status_code, 401)

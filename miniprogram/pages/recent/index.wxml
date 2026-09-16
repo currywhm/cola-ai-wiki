@@ -29,7 +29,7 @@
           <text class="recent-section-hint">{{recentDocs.length}} 条</text>
         </view>
         <view wx:if="{{recentDocs.length}}" class="recent-doc-card">
-          <view wx:for="{{recentDocs}}" wx:key="id" class="recent-doc" hover-class="recent-doc-hover" hover-stay-time="60" bindtap="openDocument" data-id="{{item.id}}">
+          <view wx:for="{{recentDocs}}" wx:key="id" class="recent-doc" hover-class="recent-doc-hover" hover-stay-time="60" bindtap="openItem" data-id="{{item.id}}" data-kind="{{item.kind}}" data-knowledge="{{item.knowledgeId}}" data-name="{{item.name}}">
             <view class="recent-doc-icon"><ui-icon name="{{item.iconName}}" size="{{64}}" rpx /></view>
             <view class="recent-doc-info">
               <text class="recent-doc-name">{{item.name}}</text>

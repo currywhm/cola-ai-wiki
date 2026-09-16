@@ -1,6 +1,6 @@
 // 新建 / 编辑「我的技能」。
 // 规则：技能默认私有，只有自己能在对话里选中并注入；发布到技能广场后其他人才用得到，随时可以下架。
-import { createSkill, deleteSkill, getSkill, publishSkill, Skill, updateSkill } from '../../services/api'
+import { buildSkill, deleteSkill, enhanceSkillPrompt, getSkill, publishSkill, Skill, updateSkill } from '../../services/api'
 
 // 可选图标：与后端 SKILL_ICONS 白名单保持一致，避免出现前端能选、后端回落的情况
 // 全部选单色线性图标：一套笔画、一个色阶，排在一起不会花
@@ -16,7 +16,13 @@ Page({
     id: '',
     loading: false,
     saving: false,
-    creating: false,
+    // 制作技能用遮罩展示过程；askVisible 是制作完成后问「要不要发布」的弹层
+    askVisible: false,
+    building: false,
+    buildStage: '',
+    // 增强图标的文字说明：平时不显示，悬停 / 按住才浮出来
+    enhanceHint: false,
+    enhancing: false,
     published: false,
     name: '',
     summary: '',
@@ -24,6 +30,9 @@ Page({
     wechat: '',
     icon: 'skill-node',
     icons: ICONS,
+    // 技能包型技能（由 harness 的 skill-creator 生成）会带出包内文件清单
+    files: [] as string[],
+    isPackage: false,
   },
   onLoad(query: any) {
     // 新建页保留返回键，编辑页顶部左侧同样只放返回，避免和胶囊按钮抢位置
@@ -40,6 +49,8 @@ Page({
         wechat: skill.developer_wechat || '',
         icon: skill.icon || 'skill-node',
         published: !!skill.published,
+        files: (skill.files || []) as string[],
+        isPackage: !!skill.package,
       })
       if (!skill.is_owner) {
         // 别人的技能只读：直接退回，避免改了报错
@@ -67,26 +78,62 @@ Page({
   goBack() {
     wx.navigateBack({ delta: 1, fail: () => { wx.switchTab({ url: '/pages/mine/index' }) } })
   },
+  // 生成中途退出页面要把流断掉，避免后台白跑一轮
+  onUnload() {
+    this.stopBuild()
+    // 离场时把提示定时器一并收掉，避免页面销毁后再改数据
+    const pending = (this as any).hintTimer
+    if (pending) { clearTimeout(pending); (this as any).hintTimer = null }
+  },
   noop() { return },
+  // 制作完成后点遮罩关闭弹层：技能已经存好了，关掉只是不发布
+  closeAsk() { if (!this.data.saving) this.setData({ askVisible: false }) },
   onName(e: any) { this.setData({ name: String(e.detail.value || '').slice(0, NAME_MAX) }) },
   onSummary(e: any) { this.setData({ summary: String(e.detail.value || '').slice(0, SUMMARY_MAX) }) },
   onPrompt(e: any) { this.setData({ prompt: String(e.detail.value || '').slice(0, PROMPT_MAX) }) },
   onWechat(e: any) { this.setData({ wechat: String(e.detail.value || '').slice(0, 40) }) },
   pickIcon(e: any) { this.setData({ icon: String(e.currentTarget.dataset.icon || 'skill-node') }) },
+  // 增强提示词：把随手写的一句话交回后端按技能模板改写，再回填到输入框，用不用由用户决定
+  onEnhance() {
+    if (this.data.enhancing || this.data.building) return
+    const instruction = this.data.prompt.trim()
+    if (instruction.length < 2) { wx.showToast({ title: '先写一句技能要求，再点增强', icon: 'none' }); return }
+    this.setData({ enhancing: true })
+    wx.showLoading({ title: '正在整理…', mask: true })
+    enhanceSkillPrompt({ instruction, name: this.data.name.trim() }).then((result) => {
+      wx.hideLoading()
+      this.setData({ enhancing: false, prompt: String(result.instruction || '').slice(0, PROMPT_MAX) })
+      wx.showToast({ title: '已按技能模板改写', icon: 'none' })
+    }).catch((error: any) => {
+      wx.hideLoading()
+      this.setData({ enhancing: false })
+      wx.showToast({ title: error.message || '增强失败，请稍后重试', icon: 'none' })
+    })
+  },
+  // 图标本身不带文字：鼠标移上去（PC / 模拟器）或手指按住（手机）时才浮出「增强提示词」
+  onEnhanceHint() { if (!this.data.enhanceHint) this.setData({ enhanceHint: true }) },
+  offEnhanceHint() {
+    const pending = (this as any).hintTimer
+    if (pending) clearTimeout(pending)
+    // 略停一下再收，避免文字一闪而过来不及看清
+    ;(this as any).hintTimer = setTimeout(() => {
+      ;(this as any).hintTimer = null
+      if (this.data.enhanceHint) this.setData({ enhanceHint: false })
+    }, 700)
+  },
   // 保存前的本地校验：名称和指令是必填，其余可以留空
   validate(): { name: string; summary: string; prompt: string; developer_wechat: string; icon: string } | null {
     const name = this.data.name.trim()
     const prompt = this.data.prompt.trim()
     if (!name) { wx.showToast({ title: '请填写技能名称', icon: 'none' }); return null }
-    if (!prompt) { wx.showToast({ title: '请填写技能指令', icon: 'none' }); return null }
+    if (prompt.length < 4) { wx.showToast({ title: '把技能指令写清楚一些', icon: 'none' }); return null }
     return { name, summary: this.data.summary.trim(), prompt, developer_wechat: this.data.wechat.trim(), icon: this.data.icon }
   },
   save(): Promise<Skill | null> {
     const form = this.validate()
     if (!form) return Promise.resolve(null)
     this.setData({ saving: true })
-    const task = this.data.id ? updateSkill(this.data.id, form) : createSkill(form)
-    return task.then((skill) => {
+    return updateSkill(this.data.id, form).then((skill) => {
       this.setData({ saving: false })
       return skill
     }).catch((error: any) => {
@@ -95,46 +142,82 @@ Page({
       return null
     })
   },
-  // 新建时先问一句：保存后要不要顺手发布到广场
+  // 新建：交给 harness 现场制作技能包。生成要跑完整一轮 agent，耗时以十秒计，
+  // 所以用遮罩把过程阶段显示出来，不让人以为点了没反应。
+  startBuild() {
+    const form = this.validate()
+    if (!form) return
+    if (this.data.building) return
+    this.setData({ building: true, buildStage: '正在准备制作技能…' })
+    let created: (Skill & { note?: string }) | null = null
+    ;(this as any).abortBuild = buildSkill(
+      { instruction: form.prompt, name: form.name, summary: form.summary, icon: form.icon, developer_wechat: form.developer_wechat },
+      (label) => { if (this.data.building && label) this.setData({ buildStage: label }) },
+      (skill) => { created = skill },
+      (error: any) => {
+        this.setData({ building: false })
+        wx.showToast({ title: (error && error.message) || '技能制作失败，请重试', icon: 'none' })
+      },
+      () => {
+        if (!created) { this.setData({ building: false }); wx.showToast({ title: '技能没有生成，请重试', icon: 'none' }); return }
+        // 生成成功：切到编辑态（后续改文案走 PATCH），并把技能包里的文件列出来
+        this.setData({
+          building: false,
+          id: created.id,
+          published: !!created.published,
+          files: (created.files || []) as string[],
+          isPackage: !!created.package,
+        })
+        if (created.degraded) wx.showToast({ title: '已按你写的内容生成基础技能', icon: 'none', duration: 2200 })
+        else wx.showToast({ title: '技能制作完成', icon: 'success' })
+        this.setData({ askVisible: true })
+      },
+    )
+  },
+  stopBuild() {
+    const abort = (this as any).abortBuild
+    if (typeof abort === 'function') { abort(); (this as any).abortBuild = null }
+    if (this.data.building) this.setData({ building: false })
+  },
+  onCancelBuild() {
+    this.stopBuild()
+    wx.showToast({ title: '已停止制作', icon: 'none' })
+  },
   submit() {
-    if (this.data.saving) return
-    if (!this.data.id) {
-      const form = this.validate()
-      if (!form) return
-      this.setData({ creating: true })
+    if (this.data.saving || this.data.building) return
+    // 已有技能：只改说明文字，轻量保存；新建：交给 harness 真的写一份技能包
+    if (this.data.id) {
+      this.save().then((skill) => {
+        if (!skill) return
+        wx.showToast({ title: '已保存', icon: 'success' })
+        setTimeout(() => this.goBack(), 600)
+      })
       return
     }
-    this.save().then((skill) => {
-      if (!skill) return
-      wx.showToast({ title: '已保存', icon: 'success' })
-      setTimeout(() => this.goBack(), 600)
-    })
+    this.startBuild()
   },
   submitPrivate() {
-    this.setData({ creating: false })
-    this.save().then((skill) => {
-      if (!skill) return
-      wx.showToast({ title: '已保存，只有你能用', icon: 'none' })
-      setTimeout(() => this.goBack(), 700)
-    })
+    this.setData({ askVisible: false })
+    wx.showToast({ title: '已保存，只有你能用', icon: 'none' })
+    setTimeout(() => this.goBack(), 700)
   },
   submitAndPublish() {
-    this.setData({ creating: false })
-    this.save().then((skill) => {
-      if (!skill) return
-      publishSkill(skill.id, true).then(() => {
-        wx.showToast({ title: '已发布到技能广场', icon: 'success' })
-        setTimeout(() => this.goBack(), 700)
-      }).catch((error: any) => {
-        // 发布失败不影响技能本身：已经保存成私有技能
-        wx.showToast({ title: error.message || '已保存，但发布失败', icon: 'none' })
-        setTimeout(() => this.goBack(), 900)
-      })
+    if (!this.data.id || this.data.saving) return
+    this.setData({ saving: true })
+    publishSkill(this.data.id, true).then(() => {
+      this.setData({ saving: false, askVisible: false, published: true })
+      wx.showToast({ title: '已发布到技能广场', icon: 'success' })
+      setTimeout(() => this.goBack(), 700)
+    }).catch((error: any) => {
+      // 发布失败不影响技能本身：已经保存成私有技能
+      this.setData({ saving: false, askVisible: false })
+      wx.showToast({ title: error.message || '已保存，但发布失败', icon: 'none' })
+      setTimeout(() => this.goBack(), 900)
     })
   },
   // 下架 / 重新发布：只改可见性，技能内容不动
   togglePublish() {
-    if (this.data.saving || !this.data.id) return
+    if (this.data.saving || this.data.building || !this.data.id) return
     const published = !this.data.published
     this.setData({ saving: true })
     publishSkill(this.data.id, published).then((skill) => {
@@ -147,7 +230,7 @@ Page({
   },
   // 删除是不可恢复的：二次确认后才真正删，同时提醒已发布的内容也会从广场消失
   remove() {
-    if (!this.data.id || this.data.saving) return
+    if (!this.data.id || this.data.saving || this.data.building) return
     wx.showModal({
       title: '删除这个技能',
       content: this.data.published ? '删除后它会从技能广场一起消失，且无法恢复。' : '删除后无法恢复，之后需要重新创建。',

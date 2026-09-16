@@ -1,4 +1,5 @@
-import { getDocument, previewDocument } from '../../services/api'
+import { contentAssetBase, getDocument, previewDocument } from '../../services/api'
+import { localizeHtmlImages } from '../../services/media'
 import { canPreview, previewIconName } from '../../utils/file-type'
 
 // 文件阅读是从知识库 / 最近钻进来的视图：不保留底部导航（非 tab 页本身没有 tabBar，这里做显式保障）
@@ -32,8 +33,11 @@ Page({
       const previewable = canPreview(document.file_type)
       const previewIcon = previewIconName(document.file_type)
       if (document.file_type === '.html' && document.content_html) {
-        const base = getApp<IAppOption>().globalData.apiBase || ''
-        this.setData({ document, canPreview: previewable, previewIcon, isHtml: true, textUnavailable: false, htmlContent: String(document.content_html).replace(/src="\//g, `src="${base}/`), pageTotal: 1 })
+        const base = contentAssetBase()
+        const html = String(document.content_html).replace(/src="\//g, `src="${base}/`)
+        this.setData({ document, canPreview: previewable, previewIcon, isHtml: true, textUnavailable: false, htmlContent: html, pageTotal: 1 })
+        // 正文里的配图同样要换成可渲染的本地地址，否则 rich-text 里只剩空框
+        localizeHtmlImages(html).then((localized) => this.setData({ htmlContent: localized })).catch(() => {})
         return
       }
       const total = Math.max(1, Number(document.page_count) || 1)

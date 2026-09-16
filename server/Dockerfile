@@ -9,6 +9,8 @@ COPY requirements.txt .
 ARG PIP_INDEX_URL=https://pypi.org/simple
 RUN pip install --no-cache-dir --timeout 30 --retries 2 --index-url "${PIP_INDEX_URL}" -r requirements.txt
 COPY app ./app
+# 运营文案（使用技巧等）：镜像内自带一份，生产也可以挂载卷覆盖后热更新
+COPY content ./content
 RUN useradd --uid 10001 --create-home api \
     && mkdir -p data uploads cert \
     && chown -R api:api /app

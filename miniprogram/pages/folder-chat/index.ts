@@ -1,11 +1,14 @@
 // 文件夹会话页：与「问AI」的独立问答页共用同一套结构、样式与过程区实现，
 // 差别只有两点——顶部显示「文件夹 / 知识库」上下文，问答范围由后端锁定在该文件夹内。
 import { renderMarkdown } from '../../utils/markdown'
-import { appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, settleTrace } from '../../utils/thread'
-import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER } from '../../utils/skills'
+import { addArtifact, appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, markPlanReviewed, settleTrace, togglePlan } from '../../utils/thread'
+// 生成的文件：卡片打开 / 保存到微信都在 utils/artifact 里统一实现，三个会话页共用同一份
+import { openArtifact as openArtifactFile, saveArtifact as saveArtifactFile } from '../../utils/artifact'
+import { FOLDER_PLACEHOLDER, PLANNER_PLACEHOLDER } from '../../utils/skills'
+import { persistSkills, restoreSkills } from '../../utils/skill-prefs'
 import { buildSharePayload, homePayload, questionFor } from '../../utils/share'
 import { fileTypeLabel } from '../../utils/file-type'
-import { deleteConversation, getConversation, getConversations, getKnowledgeDetail, getModels, getSuggestions, pinConversation, Source, streamChat } from '../../services/api'
+import { deleteConversation, getConversation, getConversations, getKnowledgeDetail, getModels, getSuggestions, pinConversation, Source, reviewPlan, streamChat } from '../../services/api'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
 
@@ -25,7 +28,7 @@ Page({
     suggestions: [] as string[],
     suggestionsLoading: false,
     input: '',
-    placeholder: KNOWLEDGE_PLACEHOLDER,
+    placeholder: FOLDER_PLACEHOLDER,
     canSend: false,
     sending: false,
     readyForInput: false,
@@ -35,10 +38,9 @@ Page({
     skillSheetVisible: false,
     scopeSheetVisible: false,
     deepThinking: true,
-    pendingSkill: '',
-    pendingSkillName: '',
     model: 'deepseek-flash',
-    selectedSkillId: '',
+    // 已启用的技能 id（可多选、长期生效，不在发送或切换页面时重置）
+    selectedSkillIds: [] as string[],
     historyVisible: false,
     historyLoading: false,
     historyItems: [] as any[],
@@ -54,6 +56,7 @@ Page({
     this.measureSafeArea()
     this.loadModels()
     this.loadFolder()
+    this.restoreSkillPrefs()
   },
   onShow() { this.measureSafeArea() },
   onUnload() {
@@ -158,7 +161,7 @@ Page({
     this.setData({ input: e.detail.value, readyForInput: true }, () => this.syncCanSend())
   },
   clearSkill() {
-    this.setData({ pendingSkill: '', pendingSkillName: '', selectedSkillId: '' }, () => this.syncCanSend())
+    this.applySkills([])
   },
   syncCanSend() {
     this.setData({ canSend: !!this.data.readyForInput && !!this.data.input.trim() && !!this.data.knowledgeId && !!this.data.folderId && this.data.loadState === 'ready' && !this.data.sending })
@@ -166,7 +169,7 @@ Page({
   toggleAskLogic() {
     if (this.data.sending) return
     const askMode = this.data.askMode === 'planner' ? 'knowledge' : 'planner'
-    this.setData({ askMode, placeholder: askMode === 'planner' ? PLANNER_PLACEHOLDER : KNOWLEDGE_PLACEHOLDER, modelSheetVisible: false, skillSheetVisible: false, scopeSheetVisible: false }, () => this.syncCanSend())
+    this.setData({ askMode, placeholder: askMode === 'planner' ? PLANNER_PLACEHOLDER : FOLDER_PLACEHOLDER, modelSheetVisible: false, skillSheetVisible: false, scopeSheetVisible: false }, () => this.syncCanSend())
   },
   openModelSheet() {
     if (this.data.sending) return
@@ -183,11 +186,22 @@ Page({
   closeSheets() { this.setData({ modelSheetVisible: false, skillSheetVisible: false, scopeSheetVisible: false }) },
   noop() { return },
   toggleDeepThinking() { this.setData({ deepThinking: !this.data.deepThinking }) },
-  // 选中即把技能 id 绑定到本轮对话，发送时随请求下发，隔离由后端按用户判定
+  // 多选：点一下切换一个技能，面板不关闭；隔离仍由后端按用户判定
   onSkillSelect(e: any) {
-    const skill = (e && e.detail) || {}
+    const skill = ((e && e.detail && e.detail.skill) || {})
     if (!skill.id) return
-    this.setData({ skillSheetVisible: false, readyForInput: true, pendingSkill: skill.id, pendingSkillName: skill.name || '', selectedSkillId: skill.id }, () => this.syncCanSend())
+    const ids = this.data.selectedSkillIds.slice()
+    const index = ids.indexOf(skill.id)
+    if (index === -1) ids.push(skill.id)
+    else ids.splice(index, 1)
+    this.applySkills(ids)
+  },
+  applySkills(ids: string[]) {
+    this.setData({ selectedSkillIds: ids, readyForInput: true }, () => this.syncCanSend())
+    persistSkills(ids)
+  },
+  restoreSkillPrefs() {
+    restoreSkills().then((ids) => { if (ids.length) this.setData({ selectedSkillIds: ids }) }).catch(() => undefined)
   },
   // 新建 / 编辑技能：先收起面板，回来时重新打开就是最新列表
   onSkillCreate() { this.setData({ skillSheetVisible: false }, () => wx.navigateTo({ url: '/pages/skill-edit/index' })) },
@@ -195,6 +209,32 @@ Page({
     const id = String((e.detail && e.detail.id) || '')
     if (!id) return
     this.setData({ skillSheetVisible: false }, () => wx.navigateTo({ url: `/pages/skill-edit/index?id=${encodeURIComponent(id)}` }))
+  },
+  // 计划模式（plan mode）：用户在计划卡片上的结论回写后端，后端转交运行时
+  // 交回被阻塞的 exit_plan_mode；批准即开始执行，继续规划则由模型修订后再次呈交。
+  onPlanReview(e: any) {
+    const detail = e.detail || {}
+    const messageId = String(detail.messageId || '')
+    const reviewId = String(detail.reviewId || '')
+    const approved = !!detail.approved
+    if (!reviewId || !messageId) return
+    this.setData({ messages: markPlanReviewed(this.data.messages, messageId, approved ? 'approved' : 'revising') })
+    reviewPlan(reviewId, approved).then((result: any) => {
+      if (!result || result.accepted === false) {
+        this.setData({ messages: markPlanReviewed(this.data.messages, messageId, 'review') })
+        wx.showToast({ title: '计划评审已超时，请重新提问', icon: 'none' })
+        return
+      }
+      wx.showToast({ title: approved ? '已批准，开始执行' : '已提交，继续规划', icon: 'none' })
+    }).catch(() => {
+      this.setData({ messages: markPlanReviewed(this.data.messages, messageId, 'review') })
+      wx.showToast({ title: '提交失败，请稍后重试', icon: 'none' })
+    })
+  },
+  onPlanToggle(e: any) {
+    const messageId = String((e.detail || {}).messageId || '')
+    if (!messageId) return
+    this.setData({ messages: togglePlan(this.data.messages, messageId) })
   },
   send() {
     const content = this.data.input.trim()
@@ -205,14 +245,12 @@ Page({
   doSend(content: string) {
     const userId = `m${Date.now()}`
     const assistantId = `m${Date.now() + 1}`
-    const skill = this.data.pendingSkill
+    // 技能是长期设定：发送后保留，只有用户主动修改才会变
+    const skills = this.data.selectedSkillIds
     this.setData({
       input: '',
       sending: true,
       canSend: false,
-      pendingSkill: '',
-      pendingSkillName: '',
-      selectedSkillId: '',
       messages: [...this.data.messages, { id: userId, role: 'user', content, sources: [] }, assistantMessage(assistantId)],
       lastMessageId: assistantId,
     })
@@ -226,7 +264,8 @@ Page({
       model: this.data.model,
       thinking: this.data.deepThinking ? 'deep' : 'quick',
     }
-    if (skill) payload.skill = skill
+    // 可以多选；后端逐个解析并注入
+    if (skills.length) payload.skills = skills
     ;(this as any).cancelStream = streamChat(
       payload,
       (meta) => { this.setData({ conversationId: meta.conversation_id }); this.updateAssistant(assistantId, assistant, meta.sources as Source[]) },
@@ -250,6 +289,7 @@ Page({
       },
       (label) => { if (label) this.updateAssistantProgress(assistantId, label) },
       (item) => this.pushTrace(assistantId, item),
+      (artifact) => this.pushArtifact(assistantId, artifact),
     )
   },
   stopSend() {
@@ -284,9 +324,34 @@ Page({
     const result = appendTrace(this.data.messages, id, item)
     if (result.changed) this.setData({ messages: result.messages, lastMessageId: id })
   },
+  // 工具产物：agent 本轮生成的文件，后端收好之后随时推来，落在这一轮回答下面
+  pushArtifact(id: string, artifact: any) {
+    const result = addArtifact(this.data.messages, id, artifact)
+    if (result.changed) this.setData({ messages: result.messages, lastMessageId: id })
+  },
+  // 文件卡只带 id：回到本轮消息里取完整产物（实时问答与历史回放走同一条）
+  findArtifact(e: any) {
+    const id = String((e.currentTarget.dataset || {}).id || '')
+    if (!id) return null
+    const messages = this.data.messages as any[]
+    for (let index = 0; index < messages.length; index += 1) {
+      const hit = (messages[index].artifacts || []).find((item: any) => item && item.id === id)
+      if (hit) return hit
+    }
+    return null
+  },
+  openArtifact(e: any) {
+    const item = this.findArtifact(e)
+    if (item) openArtifactFile(item)
+  },
+  saveArtifact(e: any) {
+    const item = this.findArtifact(e)
+    if (item) saveArtifactFile(item)
+  },
   toggleTrace(e: any) {
     const id = String(e.currentTarget.dataset.id || '')
-    const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, traceOpen: !message.traceOpen } : message)
+    // 这一行折叠的是思维链全文；执行步骤行始终可见，不受它影响
+    const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, reasonOpen: message.reasonOpen !== true } : message)
     this.setData({ messages })
   },
   // 历史对话：只看当前文件夹的会话，与其它文件夹、根目录天然隔离

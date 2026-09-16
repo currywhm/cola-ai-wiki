@@ -1,6 +1,6 @@
 <view class="ask-page">
-  <!-- 参考设计：问AI 页不放标题栏，只留出胶囊按钮的安全高度 -->
-  <view class="ask-navspace" style="height:{{navHeight}}px;"></view>
+  <!-- 顶部栏与其他 tab 页一致：居中标题 + 左侧历史对话入口，高度自动避让胶囊按钮 -->
+  <app-nav title="cola AI" center history bind:historytap="openHistory" />
   <scroll-view class="ask-body" scroll-y enhanced show-scrollbar="{{false}}">
     <view class="ask-hero-icon"><ui-icon name="ask-hero" size="{{108}}" rpx /></view>
     <text class="ask-hero-title">{{loggedIn ? '今天从哪里开始？' : '快来开启你的 AI 知识库'}}</text>
@@ -46,6 +46,9 @@
       <text class="ask-placeholder">基于知识问AI</text>
     </view>
   </view>
+
+  <!-- 历史对话：与对话页共用同一个抽屉，数据来自后端，按用户收窄 -->
+  <history-drawer visible="{{historyVisible}}" loading="{{historyLoading}}" items="{{historyItems}}" bind:pick="pickHistory" bind:create="newConversation" bind:close="closeHistory" bind:pin="pinHistory" bind:remove="removeHistory" />
 
   <view wx:if="{{booting}}" class="boot-screen">
     <view class="boot-center">

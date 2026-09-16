@@ -42,6 +42,9 @@ const ICONS: Record<string, IconConfig> = {
   'knowledge-mode': { file: 'scope-knowledge.svg' },
   copy: { file: 'copy.svg' },
   share: { file: 'share.svg' },
+  // 对话产物卡右侧的「保存」：下到本地后转发到微信聊天（可继续保存到手机）
+  download: { file: 'download.svg' },
+  save: { file: 'download.svg' },
   pin: { file: 'pin.svg' },
   'pin-white': { file: 'pin-white.svg' },
   home: { file: 'guanyu.svg' },
@@ -96,6 +99,9 @@ const ICONS: Record<string, IconConfig> = {
   'robot-knowledge': { file: 'robot-knowledge.svg' },
   skill: { file: 'skill-node.svg' },
   'skill-node': { file: 'skill-node.svg' },
+  // 选中态：线条变蓝，作为「本轮已启用技能」的唯一提示
+  'skill-blue': { file: 'skill-node-blue.svg' },
+  'skill-node-blue': { file: 'skill-node-blue.svg' },
   'knowledge-pick': { file: 'knowledge-pick.svg' },
   'model-depth': { file: 'model-depth.svg' },
   'agent-mode': { file: 'agent-mode.svg' },
@@ -103,6 +109,10 @@ const ICONS: Record<string, IconConfig> = {
   agent: { file: 'robot.svg' },
   sliders: { file: 'sliders.svg' },
   tune: { file: 'sliders.svg' },
+  // 增强提示词：四角星（AI 润色 / 生成语义），技能编辑页指令框右下角用它
+  enhance: { file: 'enhance.svg' },
+  star: { file: 'enhance.svg' },
+  sijiaoxing: { file: 'enhance.svg' },
   at: { file: 'at.svg' },
   mention: { file: 'at.svg' },
 }

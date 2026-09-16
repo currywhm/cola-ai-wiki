@@ -1,0 +1,28 @@
+<view class="file-page">
+  <app-nav title="{{name || '文件预览'}}" back />
+  <scroll-view class="file-body" scroll-y enhanced show-scrollbar="{{false}}">
+    <view wx:if="{{state === 'loading'}}" class="file-state"><text class="file-state-text">正在打开文件…</text></view>
+    <view wx:elif="{{state === 'error'}}" class="file-state">
+      <text class="file-state-title">文件暂时打不开</text>
+      <text class="file-state-text">{{error}}</text>
+      <button class="file-retry" bindtap="load">重新加载</button>
+    </view>
+    <block wx:else>
+      <view class="file-head">
+        <view class="file-head-icon"><ui-icon name="{{icon}}" size="{{64}}" rpx /></view>
+        <view class="file-head-copy">
+          <text class="file-head-name">{{name}}</text>
+          <text class="file-head-meta">{{meta}}</text>
+        </view>
+      </view>
+      <view wx:if="{{html}}" class="qa-answer-text file-content"><rich-text nodes="{{html}}"></rich-text></view>
+      <view wx:elif="{{text}}" class="file-content file-text"><text selectable="{{true}}">{{text}}</text></view>
+      <view wx:else class="file-state"><text class="file-state-text">这个文件没有可显示的正文，保存后用其它应用打开即可。</text></view>
+      <view wx:if="{{truncated}}" class="file-truncated">内容较长，这里只显示开头部分；完整内容保存文件后查看。</view>
+    </block>
+    <view class="file-bottom-space"></view>
+  </scroll-view>
+  <view wx:if="{{state === 'ready'}}" class="file-footer">
+    <button class="file-save" bindtap="save"><ui-icon name="download" size="{{32}}" rpx /><text>保存到微信</text></button>
+  </view>
+</view>

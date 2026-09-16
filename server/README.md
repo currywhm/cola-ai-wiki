@@ -31,9 +31,25 @@ curl http://127.0.0.1:8765/ready
 - 模型配置见 `DEEPSEEK_*`、`OPENAI_*`、`MINIMAX_*`。未启用 Harness 时，三者使用 OpenAI Chat Completions 兼容协议；未配置模型时仍可完成本地基础整理，但问答只返回配置提示。
 - Harness 运行时：后端安装匹配版本的 `deepseek-harness-sdk` 与 runtime 后，设置 `HARNESS_ENABLED=true`、`HARNESS_HOME`、`HARNESS_PROFILE=sdk`、`HARNESS_PROVIDER=deepseek-official`、`HARNESS_MODEL=deepseek-v4-flash`、`HARNESS_RUNTIME_MODE`。每次问答会创建只含 `knowledge-context.md` 的临时服务端工作区，Harness Agent/Skill 仅可读取该资料上下文；小程序端不接收 Harness 配置、插件或密钥。`HARNESS_STRICT=true` 时问答链路只走 Harness，runtime、profile、provider、model 或后端模型密钥缺失都会返回明确错误，不再静默回退到旧 OpenAI-compatible 链路。
 - “问全网”同样只在后端执行：设置 `WEB_SEARCH_PROVIDER=tavily` 或 `brave`、`WEB_SEARCH_API_KEY` 和对应的 `WEB_SEARCH_BASE_URL` 后，服务端先取得公开网页结果，再将带来源的检索上下文交给 Harness。小程序端只传 `mode=web`，不会引入 Harness、搜索 SDK 或任何密钥。未配置搜索凭据时接口会明确返回配置错误，不会把普通知识库回答冒充为全网结果。
+- 运营内容（使用技巧）源文件在 `content/tips/`，运行时从数据库读，部署后执行 `python scripts/import_content.py` 导入，详见下文「运营内容」一节。
+- 技能不进对话展示：用户在小程序里选中的技能由后端解析并注入（内置技能包走 Harness `skill` 工具、我的技能走技能指令），选中状态只体现在输入框技能图标变蓝；接口不返回技能过程节点。
 - `APP_ENV=production` 启动时检查微信登录参数；所有环境均拒绝默认或过短的 JWT 密钥。
 
 原小程序的 `server` 现在仅为指向本目录的兼容符号链接；后续后端改动以本目录为唯一代码源。现有数据库和上传文件随目录移动保留。新生成的 JWT 密钥会使旧开发 token 失效，需要重新微信登录。
+
+## 运营内容（使用技巧）
+
+「使用技巧」这类图文内容的源文件放在 `content/tips/`：`manifest.json` 是清单（顺序、标题、摘要、封面、正文文件、阅读时长），`entries/*.md` 是正文，`assets/*.png` 是配图。**运行时统一从数据库读取**（表 `content_meta` / `content_entries` / `content_assets`），容器里没有 `content` 目录也能正常展示，改文案也不用重新发小程序。
+
+部署或更新内容时执行一次：
+
+```bash
+.venv/bin/python scripts/import_content.py            # 指纹没变自动跳过，可反复执行
+.venv/bin/python scripts/import_content.py --force    # 强制重新导入
+.venv/bin/python scripts/import_content.py --check    # 只查看库里当前有什么
+```
+
+不执行这一步也能用：服务启动时若发现库里没有内容、而 `content/tips` 目录存在，会自动导入一次。正文的 Markdown 在导入时就解析成结构化 blocks 存库，请求时不再解析；`manifest.json` 的 `version` 用于小程序端缓存失效。配图接口 `/api/content/assets/{文件名}` 不挂登录态（小程序 `<image>` 无法携带 token），只允许读取该目录内的单个文件名，返回二进制并带 ETag。
 
 ## Linux / Docker 部署
 
@@ -45,6 +61,8 @@ cp .env.example .env
 mkdir -p cert
 # 若切换为传统商户支付，再将支付私钥和平台证书放入 cert
 docker compose up -d --build
+# 把镜像里的 content/ 源文件导入数据库（幂等；漏执行会在首次启动自动导入一次）
+docker compose exec api python scripts/import_content.py
 curl http://127.0.0.1:8765/ready
 ```
 
@@ -78,7 +96,29 @@ docker build -t zhi-reader-api:verify .
 
 源码包输出 `dist/zhi-reader-api.tar.gz`，使用文件白名单，排除 `.env`、证书、数据库、用户上传文件、虚拟环境和日志。Mac 验证结果与尚未验收项见 `VALIDATION.md`。
 
-## 当前产品边界
+## 能力边界与安全（执行能力归零）
+
+本产品的模型侧只有这些能力：**对话、知识库检索问答、读写文档、整理文档、联网检索、技能、子智能体**。
+它**没有**任何命令、脚本或可执行文件的执行能力，也无法读写当前用户工作区以外的服务器文件。
+这条边界由两层而非一句提示词来保证：
+
+1. **运行时插件行关闭**（`harness_runtime/profiles/sdk/cordis.patch.yml`）：
+   `tool-bash` / `tool-pwsh` / `tool-jobs` / `tool-workflow` / `workflow-worker-thread` /
+   `tool-ralph` / `tool-fs-search`（会 spawn `rg`）全部 `disabled: true`。
+   这些工具不会出现在模型可见的工具清单里（实测清单：`read` / `read_image` / `write` / `edit` /
+   `skill` / `web_search` / `web_fetch` / `subagent*` / `todo_write` / `goal` /
+   `exit_plan_mode`），调用不会有任何东西响应。
+   注意：`bash-sandbox` / `shell-env` 这类**服务行必须留着**——它们只提供 `ctx.shell`/`ctx.shellEnv`
+   内部服务，权限预设等行在等它们；关掉会让整棵插件树加载失败（表现为问答永久挂起）。
+2. **工具层守卫插件** `@cola/dsh-safety-guard`（`harness_runtime/safety_guard/`）：
+   用官方 `ctx.tools.guard()` 做单调否决：执行类工具名一律拒绝；`read`/`write`/`edit`/`read_image`
+   等工具的参数路径只要落在租户工作区之外就拒绝。这一层不依赖模型是否听话——文档正文、技能指令、
+   用户输入里的提示注入都被这层拦住（官方沙箱只限制写、不限制读，所以读的收口必须在这里做）。
+
+每个租户的工作区是 `harness-workspaces/users/<用户 id>`，`DSH_HOME` 是 `harness-home/users/<用户 id>`，
+技能、会话、附件、工作区全部按租户分目录，互不可见；上传白名单只收文档与图片（不含脚本、可执行文件）。
+改动上述任一层后，务必用「要求执行命令 / 要求读取 `.env` / 恶意技能」三类请求回归一次：
+正确表现是**零工具调用 + 明确说明能力边界**，且会话日志里的工具 schema 清单不含执行类工具。
 
 ## 服务边界
 

@@ -8,6 +8,7 @@
         <button wx:if="{{action}}" class="nav-button nav-action" bindtap="openAction" aria-label="当前会话操作"><ui-icon name="{{action}}" size="{{21}}" /></button>
       </block>
       <block wx:elif="{{center}}">
+        <button wx:if="{{history}}" class="nav-button nav-history" bindtap="openHistory" aria-label="历史对话"><ui-icon name="menu" size="{{41}}" rpx /></button>
         <text class="nav-center-title">{{title}}</text>
       </block>
       <block wx:else>

@@ -3,10 +3,19 @@ import { PREVIEW_FILE_TYPES } from '../utils/file-type'
 
 function appInstance() { return getApp<IAppOption>() }
 function base() { return appInstance()?.globalData?.apiBase || 'http://127.0.0.1:8765' }
+
+// 配图地址就跟后端同一个 base。微信基础库 3.17 起 <image> 不再接受 http://，
+// 所以这些地址不会直接交给 <image>：services/media.ts 会先把字节取回来落到本地文件再渲染，
+// 这样调试环境不需要额外的 HTTPS 旁路服务，线上换成正式域名也走同一条路。
+// 真需要单独指定配图域名时，在 globalData.assetBase 里覆盖即可。
+function assetBase() {
+  const override = (appInstance()?.globalData as any)?.assetBase
+  return override || base()
+}
 function token() { return appInstance()?.globalData?.token || wx.getStorageSync('llmwiki_token') || '' }
 
 let authPromise: Promise<void> | null = null
-function rawRequest<T>(path: string, method: 'GET' | 'POST' | 'PATCH' | 'DELETE' = 'GET', data?: any): Promise<T> {
+function rawRequest<T>(path: string, method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE' = 'GET', data?: any): Promise<T> {
   return new Promise((resolve, reject) => wx.request({ url: `${base()}${path}`, method: method as any, data, header: { Authorization: `Bearer ${token()}` }, success: (res) => { if (res.statusCode >= 200 && res.statusCode < 300) resolve(res.data as T); else reject(Object.assign(new Error((res.data as any)?.detail || `请求失败（${res.statusCode}）`), { statusCode: res.statusCode })) }, fail: reject }))
 }
 export function ensureAuth(): Promise<void> {
@@ -21,7 +30,7 @@ export function resumeWechatLogin(): Promise<void> {
   appInstance().globalData.loggedOut = false
   return ensureAuth()
 }
-function request<T>(path: string, method: 'GET' | 'POST' | 'PATCH' | 'DELETE' = 'GET', data?: any): Promise<T> {
+function request<T>(path: string, method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE' = 'GET', data?: any): Promise<T> {
   return ensureAuth().then(() => {
     const attemptedToken = token()
     return rawRequest<T>(path, method, data).catch((error) => {
@@ -38,16 +47,71 @@ function request<T>(path: string, method: 'GET' | 'POST' | 'PATCH' | 'DELETE' = 
   })
 }
 
+export type ArtifactKind = 'image' | 'document' | 'text' | 'file'
+
+// 工具产物：harness agent 本轮生成的文件。后端收好之后随消息下发，重进对话也会回放；
+// 前端只负责展示与打开——收集、存盘、按用户收窄全部在后端。
+export type ArtifactView = { id: string; name: string; type: string; suffix: string; kind: ArtifactKind; size: number; size_label: string; mime: string; document_id: string; saved: boolean; note: string; created_at: string; url: string; text?: string; truncated?: boolean }
+
+/** 站内预览：文本类产物直接拿正文（Markdown / 纯文本 / 代码），其它类型只看类型信息 */
+export const getArtifactPreview = (id: string) => request<ArtifactView>(`/api/artifacts/${id}/preview`)
+
+/**
+ * 把产物下到本地临时文件。
+ * 微信的原生预览（图片 / 文档）与「转发到聊天」都只认本地路径，所以这一步不能省。
+ */
+export function downloadArtifact(artifactId: string): Promise<string> {
+  return ensureAuth().then(() => new Promise<string>((resolve, reject) => {
+    wx.downloadFile({
+      url: `${base()}/api/artifacts/${artifactId}/download`,
+      header: { Authorization: `Bearer ${token()}` },
+      timeout: 120000,
+      success: (res: any) => {
+        if (res.statusCode === 200 && res.tempFilePath) { resolve(res.tempFilePath); return }
+        reject(new Error(`文件下载失败（${res.statusCode}）`))
+      },
+      fail: () => reject(new Error('文件下载失败，请检查网络后重试')),
+    })
+  }))
+}
+
 export type Knowledge = { id: string; name: string; description: string; icon: string; document_count: number; updated_at: string }
 export type Document = { id: string; filename: string; file_type: string; file_size: number; page_count: number; status: string; progress: number; error_message: string; organized_title?: string; summary?: string; tags?: string[]; key_points?: string[]; organize_status?: string; organize_method?: string }
 export type Source = { id: string; document_id?: string; filename: string; page_number: number; quote: string; score: number; url?: string }
 
 // 后端 harness 桥的过程节点：与 deepseek-harness 前端一致的过程展示数据
-export type TraceKind = 'step' | 'reason' | 'tool' | 'skill' | 'agent' | 'note'
+export type TraceKind = 'step' | 'reason' | 'tool' | 'skill' | 'agent' | 'note' | 'plan'
 export type TraceState = 'run' | 'done' | 'error' | 'catalog' | 'load'
-export type TraceItem = { type?: string; kind: TraceKind; state?: TraceState; title?: string; text?: string; detail?: string; name?: string; index?: number }
+export type TraceItem = { type?: string; kind: TraceKind; state?: TraceState; title?: string; text?: string; detail?: string; name?: string; index?: number; /* 计划模式：kind==='plan' 时携带完整计划 markdown 与评审 id（= 该轮 harness 会话 id） */ plan?: string; review_id?: string }
 export async function login(code: string) { const result = await rawRequest<{ token: string; user: any }>('/api/auth/login', 'POST', { code }); appInstance().globalData.token = result.token; wx.setStorageSync('llmwiki_token', result.token); wx.setStorageSync('llmwiki_user', result.user); return result }
 export const getMe = () => request<any>('/api/me')
+// 用户偏好（目前用于持久化「已选技能」）：skills 为 null 表示服务端从未设置过
+export type UserPreferences = { skills: string[] | null }
+export const getPreferences = () => request<UserPreferences>('/api/me/preferences')
+export const savePreferences = (data: { skills?: string[] }) => request<UserPreferences>('/api/me/preferences', 'PUT', data)
+// 运营文案（使用技巧）：正文与配图都在后端，改文件即生效，前端只负责渲染。
+export type TipEntry = { id: string; title: string; summary: string; icon: string; cover: string; read_minutes: number }
+export type TipGroup = { id: string; title: string; entries: TipEntry[] }
+export type TipIndex = { version: string; title: string; subtitle: string; intro: string; updated_at: string; groups: TipGroup[] }
+export type TipRun = { text: string; style: 'plain' | 'strong' | 'code' }
+export type TipBlock = { type: 'heading' | 'paragraph' | 'bullet' | 'step' | 'note' | 'figure'; level?: number; index?: number; text?: string; runs?: TipRun[]; src?: string; caption?: string }
+export type TipDetail = TipEntry & { group: string; blocks: TipBlock[] }
+export const contentAssetBase = () => assetBase()
+export const contentAssetUrl = (path: string) => {
+  if (!path) return ''
+  if (/^https?:\/\//.test(path)) return path
+  return `${assetBase()}${path.charAt(0) === '/' ? path : `/${path}`}`
+}
+export const getTipsIndex = () => rawRequest<TipIndex>('/api/content/tips')
+export const getTipDetail = (id: string) => rawRequest<TipDetail>(`/api/content/tips/${id}`)
+// 合规文档（关于 / 数据管理 / 隐私安全 / 隐私保护指引 / 服务协议 / 软件许可 /
+// 会员服务条款）：正文与更新日期都在后端，改文案不用重新提交审核，
+// 而且走匿名请求——审核和未登录状态都要能直接打开。
+export type LegalDocMeta = { id: string; title: string; summary: string; updated_at: string; effective_at: string }
+export type LegalIndex = { version: string; title: string; subtitle: string; updated_at: string; docs: LegalDocMeta[] }
+export type LegalDetail = LegalDocMeta & { blocks: TipBlock[] }
+export const getLegalIndex = () => rawRequest<LegalIndex>('/api/content/legal')
+export const getLegalDoc = (id: string) => rawRequest<LegalDetail>(`/api/content/legal/${id}`)
 export const updateMe = (data: { nickname: string; avatar: string }) => request<any>('/api/me', 'PATCH', data)
 export const deleteAccount = () => request<any>('/api/me', 'DELETE')
 export const getKnowledge = () => request<Knowledge[]>('/api/knowledge')
@@ -121,6 +185,9 @@ export type Skill = {
   visibility: 'private' | 'public'; published: boolean; is_owner: boolean
   harness: string; use_count: number; like_count: number; favorite_count: number
   liked: boolean; favorited: boolean; created_at: string; updated_at: string
+  // 技能包型技能（由 harness 的 skill-creator 生成）会带出包内文件清单；
+  // degraded=true 表示模型没写出完整技能包，后端按用户填写的内容兜底合成了一份。
+  files?: string[]; package?: boolean; degraded?: boolean
 }
 export type SkillForm = { name: string; summary: string; prompt: string; developer_wechat: string; icon: string }
 export type SkillFlagResult = { id: string; active: boolean; count: number; field: string }
@@ -132,6 +199,36 @@ export const deleteSkill = (id: string) => request<any>(`/api/skills/${id}`, 'DE
 export const publishSkill = (id: string, published: boolean) => request<Skill>(`/api/skills/${id}/publish`, 'POST', { published })
 export const likeSkill = (id: string, active: boolean) => request<SkillFlagResult>(`/api/skills/${id}/like`, 'POST', { active })
 export const favoriteSkill = (id: string, active: boolean) => request<SkillFlagResult>(`/api/skills/${id}/favorite`, 'POST', { active })
+// 增强提示词：把随手写的一句话按技能模板改写成可执行的技能指令（直连模型，秒级返回）
+export const enhanceSkillPrompt = (data: { instruction: string; name?: string }) => request<{ instruction: string }>('/api/skills/enhance', 'POST', data)
+// 制作技能：交给后端 harness 加载 skill-creator 生成技能包（可能包含 SKILL.md 之外的脚本/模板）。
+// 生成要跑完整一轮 agent，用 SSE 把过程阶段推出来，与对话流同一套分帧解析。
+export function buildSkill(payload: { instruction: string; name?: string; summary?: string; icon?: string; developer_wechat?: string }, onStage: (label: string) => void, onSkill: (skill: Skill & { note?: string }) => void, onError: (error: any) => void, onDone: () => void) {
+  let task: any; let finished = false; let receivedChunk = false
+  const fail = (error: any) => { if (!finished) { finished = true; onError(error) } }
+  const parser = new EventStream((data) => {
+    if (finished) return
+    if (data.type === 'stage') onStage(String(data.label || ''))
+    else if (data.type === 'skill') onSkill(data.skill || {})
+    else if (data.type === 'error') fail(new Error(data.message || '技能制作失败，请重试'))
+    else if (data.type === 'done') { finished = true; onDone() }
+  })
+  ensureAuth().then(() => {
+    if (finished) return
+    task = wx.request({
+      url: `${base()}/api/skills/build`, method: 'POST', enableChunked: true, responseType: 'text', data: payload, timeout: 600000,
+      header: { 'content-type': 'application/json', Authorization: `Bearer ${token()}` },
+      success: (res: any) => {
+        if (finished) return
+        if (res.statusCode < 200 || res.statusCode >= 300) { let detail = ''; try { detail = (typeof res.data === 'string' ? JSON.parse(res.data) : res.data)?.detail || '' } catch { /* 非 JSON 错误体 */ } fail(new Error(detail || `技能制作请求失败（${res.statusCode}）`)); return }
+        try { if (!receivedChunk && typeof res.data === 'string') parser.push(res.data); if (!finished) fail(new Error('连接已中断，技能没有制作完成，请重试。')) } catch { fail(new Error('技能制作数据格式异常，请重试。')) }
+      },
+      fail,
+    } as any)
+    task.onChunkReceived((chunk: any) => { if (finished) return; receivedChunk = true; try { parser.push(chunk.data) } catch { fail(new Error('技能制作数据格式异常，请重试。')) } })
+  }).catch(fail)
+  return () => { finished = true; if (task) task.abort() }
+}
 export const logout = () => request<any>('/api/auth/logout', 'POST').catch(() => ({ ok: false }))
 export type Folder = { id: string; name: string; document_count: number }
 export const getFolders = (knowledgeId: string) => request<Folder[]>(`/api/knowledge/${knowledgeId}/folders`)
@@ -142,6 +239,11 @@ export const deleteFolder = (folderId: string) => request<any>(`/api/folders/${f
 export const moveDocument = (documentId: string, folderId: string) => request<any>(`/api/documents/${documentId}/move`, 'PATCH', { folder_id: folderId })
 export const importArticle = (knowledgeId: string, url: string, folderId = '') => request<any>(`/api/knowledge/${knowledgeId}/import-article`, 'POST', { url, folder_id: folderId })
 export type MembershipPlan = 'plus_monthly' | 'plus_quarterly' | 'plus_yearly' | 'pro_monthly' | 'pro_quarterly' | 'pro_yearly'
+export type PayPlanOption = { id: MembershipPlan; amount: number; price: string; days: number; available: boolean }
+export type PayTier = { id: 'plus' | 'pro'; label: string; storage_bytes: number; storage_label: string; knowledge_bases: number; monthly_questions: number; max_file_label: string; plans: PayPlanOption[] }
+export type PayCatalog = { trial_days: number; free: { label: string; storage_label: string; knowledge_bases: number; monthly_questions: number; monthly_questions_after_trial: number }; tiers: PayTier[] }
+export const getPayPlans = () => rawRequest<PayCatalog>('/api/pay/plans')
+export type LegacyMembershipPlan = MembershipPlan
 export const createPayOrder = (plan: MembershipPlan) => request<any>('/api/pay/orders', 'POST', { plan })
 // 微信虚拟支付在 iOS 端要求微信客户端 >= 8.0.68，版本不足时直接拦截并提示升级
 function ensureVirtualPaymentSupported(): void {
@@ -241,10 +343,16 @@ export async function uploadDocument(knowledgeId: string, source?: UploadSource,
   const file = await chooseLocalUpload(selected)
   return uploadPickedFile(knowledgeId, file, folderId)
 }
-export function streamChat(payload: { knowledge_id?: string; conversation_id?: string; folder_id?: string; content: string; model?: string; mode?: 'knowledge' | 'web'; thinking?: 'quick' | 'deep'; skill?: string }, onMeta: (value: any) => void, onDelta: (value: string) => void, onDone: () => void, onError: (error: any) => void, onProgress?: (label: string) => void, onTrace?: (item: TraceItem) => void) {
+export function streamChat(payload: { knowledge_id?: string; conversation_id?: string; folder_id?: string; content: string; model?: string; mode?: 'knowledge' | 'web'; thinking?: 'quick' | 'deep'; skill?: string; skills?: string[] }, onMeta: (value: any) => void, onDelta: (value: string) => void, onDone: () => void, onError: (error: any) => void, onProgress?: (label: string) => void, onTrace?: (item: TraceItem) => void, onArtifact?: (artifact: ArtifactView) => void) {
   let task: any; let finished = false; let receivedChunk = false
   const fail = (error: any) => { if (!finished) { finished = true; onError(error) } }
-  const parser = new EventStream((data) => { if (finished) return; if (data.type === 'meta') onMeta(data); else if (data.type === 'delta') onDelta(data.content || ''); else if (data.type === 'progress') { if (onProgress) onProgress(data.label || '') } else if (data.type === 'trace') { const item = data as TraceItem; if (onTrace) onTrace(item); else if (onProgress) { if (item.kind === 'tool' || item.kind === 'skill' || item.kind === 'agent') { if (item.state === 'run' || item.state === 'load') onProgress(`${item.title || '处理中'}…`) } else if (item.kind === 'step') onProgress('正在思考…'); else onProgress(item.title || '') } } else if (data.type === 'error') fail(new Error(data.message || '回答未完成')); else if (data.type === 'done') { finished = true; onDone() } })
-  ensureAuth().then(() => { if (finished) return; task = wx.request({ url: `${base()}/api/chat/stream`, method: 'POST', enableChunked: true, responseType: 'text', data: payload, timeout: 300000, header: { 'content-type': 'application/json', Authorization: `Bearer ${token()}` }, success: (res: any) => { if (finished) return; if (res.statusCode < 200 || res.statusCode >= 300) { let detail = ''; try { detail = (typeof res.data === 'string' ? JSON.parse(res.data) : res.data)?.detail || '' } catch { /* 非 JSON 错误体 */ } fail(new Error(detail || `回答请求失败（${res.statusCode}）`)); return }; try { if (!receivedChunk && typeof res.data === 'string') parser.push(res.data); if (!finished) fail(new Error('连接已中断，回答未完成，请重新提问。')) } catch { fail(new Error('回答数据格式异常，请重试。')) } }, fail } as any); task.onChunkReceived((chunk: any) => { if (finished) return; receivedChunk = true; try { parser.push(chunk.data) } catch { fail(new Error('回答数据格式异常，请重试。')) } }) }).catch(fail)
+  // 工具产物：agent 生成的文件随时回流，边写边出现在对话里；历史回放走 /api/conversations/:id
+  const parser = new EventStream((data) => { if (finished) return; if (data.type === 'meta') onMeta(data); else if (data.type === 'delta') onDelta(data.content || ''); else if (data.type === 'progress') { if (onProgress) onProgress(data.label || '') } else if (data.type === 'artifact') { if (onArtifact && data.artifact) onArtifact(data.artifact as ArtifactView) } else if (data.type === 'trace') { const item = data as TraceItem; if (onTrace) onTrace(item); else if (onProgress) { if (item.kind === 'tool' || item.kind === 'skill' || item.kind === 'agent') { if (item.state === 'run' || item.state === 'load') onProgress(`${item.title || '处理中'}…`) } else if (item.kind === 'step') onProgress('正在思考…'); else onProgress(item.title || '') } } else if (data.type === 'error') fail(new Error(data.message || '回答未完成')); else if (data.type === 'done') { finished = true; onDone() } })
+  ensureAuth().then(() => { if (finished) return; task = wx.request({ url: `${base()}/api/chat/stream`, method: 'POST', enableChunked: true, responseType: 'text', data: payload, timeout: 1800000, header: { 'content-type': 'application/json', Authorization: `Bearer ${token()}` }, success: (res: any) => { if (finished) return; if (res.statusCode < 200 || res.statusCode >= 300) { let detail = ''; try { detail = (typeof res.data === 'string' ? JSON.parse(res.data) : res.data)?.detail || '' } catch { /* 非 JSON 错误体 */ } fail(new Error(detail || `回答请求失败（${res.statusCode}）`)); return }; try { if (!receivedChunk && typeof res.data === 'string') parser.push(res.data); if (!finished) fail(new Error('连接已中断，回答未完成，请重新提问。')) } catch { fail(new Error('回答数据格式异常，请重试。')) } }, fail } as any); task.onChunkReceived((chunk: any) => { if (finished) return; receivedChunk = true; try { parser.push(chunk.data) } catch { fail(new Error('回答数据格式异常，请重试。')) } }) }).catch(fail)
   return () => { finished = true; if (task) task.abort() }
 }
+
+// 计划评审：把用户在计划卡片上的结论回写给后端（后端转给运行时，
+// 由 @cola/dsh-plan-bridge 交回被阻塞的 exit_plan_mode）。
+export const reviewPlan = (reviewId: string, approved: boolean, feedback = '') =>
+  request<{ accepted: boolean; reason: string }>('/api/chat/plan-review', 'POST', { review_id: reviewId, approved, feedback })

@@ -1,0 +1,31 @@
+@import "../../styles/thread.wxss";
+
+/* 生成文件的站内预览：复用会话页的正文排版（.qa-answer-text），
+   页面本身只负责头部信息与底部保存入口，全程不画分隔线。 */
+page { overflow-x: hidden; background: #fff; }
+
+.file-page { display: flex; flex-direction: column; width: 100%; max-width: 750rpx; height: 100vh; min-height: 0; margin: 0 auto; overflow: hidden; background: #fff; box-sizing: border-box; }
+.file-body { flex: 1 1 auto; min-height: 0; height: 0; padding: 6rpx 30rpx 0; box-sizing: border-box; }
+
+.file-head { display: flex; align-items: center; gap: 18rpx; padding: 8rpx 0 22rpx; }
+.file-head-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 64rpx; width: 64rpx; height: 64rpx; }
+.file-head-copy { flex: 1 1 auto; min-width: 0; }
+.file-head-name { display: block; color: #22262b; font-size: 30rpx; font-weight: 650; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-head-meta { display: block; margin-top: 4rpx; color: #9aa3ad; font-size: 23rpx; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.file-content { padding-bottom: 20rpx; }
+/* 非 Markdown：按等宽正文展示，长行自动换行，复制粘贴不串行 */
+.file-text { color: #4a5159; font-family: Menlo, Consolas, monospace; font-size: 25rpx; line-height: 1.72; word-break: break-word; white-space: pre-wrap; }
+.file-truncated { margin: 4rpx 0 20rpx; padding: 18rpx 20rpx; border-radius: 16rpx; background: #f6f7f8; color: #8b98a5; font-size: 24rpx; line-height: 1.6; }
+
+.file-state { display: flex; flex-direction: column; align-items: center; padding: 160rpx 20rpx 0; text-align: center; }
+.file-state-title { color: #1f2227; font-size: 32rpx; font-weight: 700; line-height: 1.5; }
+.file-state-text { margin-top: 12rpx; color: #8b8e92; font-size: 26rpx; line-height: 1.6; }
+button.file-retry { min-width: 220rpx; min-height: 76rpx; margin-top: 30rpx; padding: 0 36rpx; border: 1rpx solid #dce3e6; border-radius: 16rpx; background: #fff; color: #43505e; font-size: 27rpx; font-weight: 600; line-height: 76rpx; }
+button.file-retry::after { border: 0; }
+
+.file-bottom-space { height: 40rpx; }
+.file-footer { flex-shrink: 0; padding: 12rpx 30rpx calc(18rpx + env(safe-area-inset-bottom)); background: #fff; }
+button.file-save { display: flex; align-items: center; justify-content: center; gap: 10rpx; width: 100%; height: 92rpx; margin: 0; padding: 0; border: 0; border-radius: 24rpx; background: #07a05c; color: #fff; font-size: 30rpx; font-weight: 600; line-height: 92rpx; }
+button.file-save:active { background: #078f52; }
+button.file-save::after { border: 0; }

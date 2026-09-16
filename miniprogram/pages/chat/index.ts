@@ -1,9 +1,12 @@
 import { consumeChatTarget } from '../../services/navigation'
-import { appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, settleTrace } from '../../utils/thread'
+import { addArtifact, appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, markPlanReviewed, settleTrace, togglePlan } from '../../utils/thread'
+// 生成的文件：卡片打开 / 保存到微信都在 utils/artifact 里统一实现，三个会话页共用同一份
+import { openArtifact as openArtifactFile, saveArtifact as saveArtifactFile } from '../../utils/artifact'
 import { renderMarkdown } from '../../utils/markdown'
 import { fileTypeKind, fileTypeLabel } from '../../utils/file-type'
-import { deleteConversation, getConversation, getConversations, getKnowledge, getKnowledgeDetail, deleteDocument, deleteKnowledge, getModels, getFolders, getSuggestions, createFolder, deleteFolder, importArticle, moveDocument, pinConversation, uploadLocalFile, Knowledge, ModelOption, Folder, resumeWechatLogin, Source, streamChat, uploadDocument, UploadSource } from '../../services/api'
+import { deleteConversation, getConversation, getConversations, getKnowledge, getKnowledgeDetail, deleteDocument, deleteKnowledge, getModels, getFolders, getSuggestions, createFolder, deleteFolder, importArticle, moveDocument, pinConversation, uploadLocalFile, Knowledge, ModelOption, Folder, resumeWechatLogin, Source, reviewPlan, streamChat, uploadDocument, UploadSource } from '../../services/api'
 import { buildSharePayload, homePayload, questionFor } from '../../utils/share'
+import { persistSkills, restoreSkills } from '../../utils/skill-prefs'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
 // 与后端 CHAT_MODELS 一致的兜底清单；正常运行时会被 /api/models 的返回值覆盖
@@ -16,7 +19,7 @@ let bootSplashShown = true
 
 
 Page({
-  data: { safeBottom: 0, dirTouchStartX: 0, dirTouchStartY: 0, booting: !bootSplashShown, knowledgeId: '', knowledgeName: '', knowledgeDesc: '', conversationId: '', conversationActive: false, selectedIndex: 0, input: '', canSend: false, sending: false, readyForInput: false, lastMessageId: '', model: 'deepseek-flash', selectedModelKey: 'deepseek-flash', modelLabel: '云枢', modelShortLabel: '云枢', thinkingMode: 'quick' as 'quick' | 'deep', modelOptions: FALLBACK_MODEL_OPTIONS, modelPickerVisible: false, askMode: 'knowledge' as 'knowledge' | 'web', modePickerVisible: false, pinned: false, uploadSheetVisible: false, uploadUsedLabel: '0.00GB', uploadLimitLabel: '300MB', loadState:'loading', knowledge:[] as Knowledge[], filteredKnowledge:[] as Knowledge[], pickerQuery:'', pickerVisible:false, documents:[] as any[], documentsLoading:false, documentsError:false, folders:[] as Folder[], documentGroups:[] as any[], visibleDocuments:[] as any[], currentFolderId:'', currentFolderName:'', articleSheetVisible:false, articleUrl:'', articleImporting:false, importMode:false, pendingFileName:'', askLayerVisible:false, askFocus:false, askGreeting:'', suggestions:[] as string[], suggestionsFor:'', suggestionsLoading:false, messages: [] as any[] },
+  data: { safeBottom: 0, dirTouchStartX: 0, dirTouchStartY: 0, booting: !bootSplashShown, knowledgeId: '', knowledgeName: '', knowledgeDesc: '', conversationId: '', conversationActive: false, selectedIndex: 0, input: '', canSend: false, sending: false, readyForInput: false, lastMessageId: '', model: 'deepseek-flash', selectedModelKey: 'deepseek-flash', modelLabel: '云枢', modelShortLabel: '云枢', thinkingMode: 'quick' as 'quick' | 'deep', modelOptions: FALLBACK_MODEL_OPTIONS, modelPickerVisible: false, askMode: 'knowledge' as 'knowledge' | 'web', modePickerVisible: false, pinned: false, uploadSheetVisible: false, uploadUsedLabel: '0.00GB', uploadLimitLabel: '300MB', loadState:'loading', knowledge:[] as Knowledge[], filteredKnowledge:[] as Knowledge[], pickerQuery:'', pickerVisible:false, documents:[] as any[], documentsLoading:false, documentsError:false, folders:[] as Folder[], documentGroups:[] as any[], visibleDocuments:[] as any[], currentFolderId:'', currentFolderName:'', articleSheetVisible:false, articleUrl:'', articleImporting:false, importMode:false, pendingFileName:'', askLayerVisible:false, askFocus:false, askGreeting:'', suggestions:[] as string[], suggestionsFor:'', suggestionsLoading:false, messages: [] as any[], selectedSkillIds: [] as string[] },
   onLoad() {
     // tabBar 为自定义组件：会话态、提问层、进入文件夹后的目录都要隐藏它，
     // 这里统一拦截 setData 同步，避免逐个调用点遗漏
@@ -35,7 +38,9 @@ Page({
   // 自定义 tabBar 需要页面自己同步选中项与显隐：会话视图为全屏，隐藏底部导航
   // 会话视图与问AI问答页共用一套交互：技能包、历史对话抽屉、顶部安全高度
   primeThreadState() {
-    this.setData({ navHeight: 88, skillSheetVisible: false, pendingSkill: '', pendingSkillName: '', selectedSkillId: '', historyVisible: false, historyLoading: false, historyItems: [] })
+    // selectedSkillIds 在 restoreSkillPrefs 之前先给出空数组，避免异步返回前的空值访问
+    this.setData({ navHeight: 88, skillSheetVisible: false, selectedSkillIds: [] as string[], historyVisible: false, historyLoading: false, historyItems: [] })
+    this.restoreSkillPrefs()
     this.measureNav()
   },
   syncTabBar() {
@@ -50,6 +55,25 @@ Page({
     this.syncTabBar()
     this.measureSafeArea()
     const target = consumeChatTarget()
+    if (target && target.folderId) {
+      // 从「最近」点文件夹：不进会话，直接落在该文件夹的目录视图
+      // （目录加载完成后由 loadDirectory 里的 pendingFolderId 消费）
+      ;(this as any).pendingFolderId = String(target.folderId)
+      this.setData({
+        knowledgeId: target.knowledgeId,
+        conversationId: '',
+        conversationActive: false,
+        currentFolderId: '',
+        currentFolderName: '',
+        messages: [],
+        input: '',
+        canSend: false,
+        readyForInput: false,
+        lastMessageId: '',
+      })
+      this.load(false)
+      return
+    }
     if (target) this.setData({ knowledgeId:target.knowledgeId, conversationId:target.conversationId || '', conversationActive:true, messages:[], input:'', canSend:false, readyForInput:false, lastMessageId:'' })
     this.load(!!target)
   },
@@ -140,7 +164,11 @@ Page({
   },
   loadDirectory(knowledgeId: string) {
     this.setData({ documentsLoading:true, documentsError:false })
-    Promise.all([getKnowledgeDetail(knowledgeId), getFolders(knowledgeId).catch(() => [] as Folder[])]).then(([result, folders]) => {
+    Promise.all([getKnowledgeDetail(knowledgeId), getFolders(knowledgeId).catch(() => [] as Folder[])]).then((pair) => {
+      // 不用数组解构赋值：开发者工具的 babel 运行时会为解构注入 slicedToArray helper，
+      // 该 helper 在部分基础库组合下注入失败会导致整页模块加载中断（页面白屏）
+      const result = pair[0]
+      const folders = pair[1]
       const documents = ((result as any).documents || []).map((item: any) => ({
         ...item,
         typeKind: fileTypeKind(item.file_type),
@@ -166,7 +194,15 @@ Page({
         documentsLoading:false,
         documentsError:false,
         uploadUsedLabel: this.formatStorage(usedBytes),
-      }, () => this.syncCanSend())
+      }, () => {
+        this.syncCanSend()
+        // 「最近」带来的文件夹目标：目录就绪后再展开，避免用还没加载的文件夹列表
+        const wanted = String((this as any).pendingFolderId || '')
+        if (wanted) {
+          ;(this as any).pendingFolderId = ''
+          if (folderList.some((f) => f.id === wanted)) this.enterFolderById(wanted)
+        }
+      })
     }).catch(() => this.setData({ documents:[], documentGroups:[], documentsLoading:false, documentsError:true }))
   },
   // 置顶为本地偏好（后端暂无字段），按知识库持久化到本地存储
@@ -219,6 +255,18 @@ Page({
     // 行已左滑展开时，第一次点击先收起操作按钮
     if (this.getDirSwipe('folder', key) < 0) { this.applyDirSwipe('folder', key, 0); return }
     const folder = this.data.folders.find((f) => f.id === key)
+    if (!folder) return
+    const documentGroups = this.buildDocumentGroups(this.data.documents, this.data.folders, folder.id)
+    this.setData({
+      currentFolderId: folder.id,
+      currentFolderName: folder.name,
+      documentGroups,
+      visibleDocuments: this.visibleDocumentsOf(documentGroups, folder.id),
+    }, () => this.syncCanSend())
+  },
+  // 按文件夹 id 直接展开（已有 enterFolder 复用同一份逻辑）
+  enterFolderById(folderId: string) {
+    const folder = this.data.folders.find((f) => f.id === folderId)
     if (!folder) return
     const documentGroups = this.buildDocumentGroups(this.data.documents, this.data.folders, folder.id)
     this.setData({
@@ -751,14 +799,23 @@ Page({
   closeSheets() { this.setData({ skillSheetVisible: false }) },
   // 弹层内部点击不穿透到遮罩
   noop() { return },
-  // 选中即把技能 id 绑定到本轮对话，发送时随请求下发；后端按 id 解析并注入
+  // 多选：点一下切换一个技能，面板不关闭；选择持久化，发送与切换视图都不会重置
   onSkillSelect(e: any) {
-    const skill = (e && e.detail) || {}
+    const skill = ((e && e.detail && e.detail.skill) || {})
     if (!skill.id) return
-    this.setData({ skillSheetVisible: false, readyForInput: true, pendingSkill: skill.id, pendingSkillName: skill.name || '', selectedSkillId: skill.id }, () => this.syncCanSend())
+    const ids = this.data.selectedSkillIds.slice()
+    const index = ids.indexOf(skill.id)
+    if (index === -1) ids.push(skill.id)
+    else ids.splice(index, 1)
+    this.applySkills(ids)
   },
-  clearSkill() {
-    this.setData({ pendingSkill: '', pendingSkillName: '', selectedSkillId: '' }, () => this.syncCanSend())
+  applySkills(ids: string[]) {
+    this.setData({ selectedSkillIds: ids, readyForInput: true }, () => this.syncCanSend())
+    persistSkills(ids)
+  },
+  clearSkill() { this.applySkills([]) },
+  restoreSkillPrefs() {
+    restoreSkills().then((ids) => { if (ids.length) this.setData({ selectedSkillIds: ids }) }).catch(() => undefined)
   },
   // 新建 / 编辑技能：先收起面板，回来时重新打开就是最新列表
   onSkillCreate() { this.setData({ skillSheetVisible: false }, () => wx.navigateTo({ url: '/pages/skill-edit/index' })) },
@@ -815,6 +872,32 @@ Page({
       },
     })
   },
+  // 计划模式（plan mode）：用户在计划卡片上的结论回写后端，后端转交运行时
+  // 交回被阻塞的 exit_plan_mode；批准即开始执行，继续规划则由模型修订后再次呈交。
+  onPlanReview(e: any) {
+    const detail = e.detail || {}
+    const messageId = String(detail.messageId || '')
+    const reviewId = String(detail.reviewId || '')
+    const approved = !!detail.approved
+    if (!reviewId || !messageId) return
+    this.setData({ messages: markPlanReviewed(this.data.messages, messageId, approved ? 'approved' : 'revising') })
+    reviewPlan(reviewId, approved).then((result: any) => {
+      if (!result || result.accepted === false) {
+        this.setData({ messages: markPlanReviewed(this.data.messages, messageId, 'review') })
+        wx.showToast({ title: '计划评审已超时，请重新提问', icon: 'none' })
+        return
+      }
+      wx.showToast({ title: approved ? '已批准，开始执行' : '已提交，继续规划', icon: 'none' })
+    }).catch(() => {
+      this.setData({ messages: markPlanReviewed(this.data.messages, messageId, 'review') })
+      wx.showToast({ title: '提交失败，请稍后重试', icon: 'none' })
+    })
+  },
+  onPlanToggle(e: any) {
+    const messageId = String((e.detail || {}).messageId || '')
+    if (!messageId) return
+    this.setData({ messages: togglePlan(this.data.messages, messageId) })
+  },
   send() {
     const content = this.data.input.trim()
     if (!this.data.readyForInput || this.data.loadState !== 'ready' || !content || this.data.sending) return
@@ -826,13 +909,13 @@ Page({
   },
   doSend(mode: 'knowledge' | 'web', content: string) {
     const userId = `m${Date.now()}`; const assistantId = `m${Date.now() + 1}`
-    const skill = (this.data as any).pendingSkill
+    // 技能是一段长期设定：发送后保留，只有用户在面板里改动才会变
+    const skills = this.data.selectedSkillIds
     this.setData({ input: '', conversationActive:true, sending: true, canSend: false, messages: [...this.data.messages, { id: userId, role: 'user', content, sources: [] }, assistantMessage(assistantId)], lastMessageId: assistantId })
-    this.setData({ pendingSkill: '', pendingSkillName: '', selectedSkillId: '' })
     let assistant = ''
     const payload: any = { mode, conversation_id: this.data.conversationId || undefined, content, model: this.data.model, thinking: this.data.thinkingMode }
-    // 选中的 harness 技能随请求下发，后端先加载并注入技能再执行任务
-    if (skill) payload.skill = skill
+    // 选中的技能随请求下发（可多选），后端先加载并注入技能再执行任务
+    if (skills.length) payload.skills = skills
     if (mode === 'knowledge') payload.knowledge_id = this.data.knowledgeId
     ;(this as any).cancelStream = streamChat(
       payload,
@@ -842,6 +925,7 @@ Page({
       (error) => { (this as any).cancelStream = null; this.flushReset(assistantId); this.updateAssistant(assistantId, assistant || '回答未完成，请稍后重新提问。'); this.settleAnswer(assistantId); this.setData({ sending: false }); this.syncCanSend(); wx.showToast({ title: error.message || error.errMsg || '回答失败', icon: 'none' }) },
       (label) => { if (label) this.updateAssistantProgress(assistantId, label) },
       (item) => this.pushTrace(assistantId, item),
+      (artifact) => this.pushArtifact(assistantId, artifact),
     )
   },
   // 过程区与增量节流统一走 utils/thread，与问AI页、文件夹会话共用同一实现
@@ -858,9 +942,34 @@ Page({
     const result = appendTrace(this.data.messages, id, item)
     if (result.changed) this.setData({ messages: result.messages, lastMessageId: id })
   },
+  // 工具产物：agent 本轮生成的文件，后端收好之后随时推来，落在这一轮回答下面
+  pushArtifact(id: string, artifact: any) {
+    const result = addArtifact(this.data.messages, id, artifact)
+    if (result.changed) this.setData({ messages: result.messages, lastMessageId: id })
+  },
+  // 文件卡只带 id：回到本轮消息里取完整产物（实时问答与历史回放走同一条）
+  findArtifact(e: any) {
+    const id = String((e.currentTarget.dataset || {}).id || '')
+    if (!id) return null
+    const messages = this.data.messages as any[]
+    for (let index = 0; index < messages.length; index += 1) {
+      const hit = (messages[index].artifacts || []).find((item: any) => item && item.id === id)
+      if (hit) return hit
+    }
+    return null
+  },
+  openArtifact(e: any) {
+    const item = this.findArtifact(e)
+    if (item) openArtifactFile(item)
+  },
+  saveArtifact(e: any) {
+    const item = this.findArtifact(e)
+    if (item) saveArtifactFile(item)
+  },
   toggleTrace(e: any) {
     const id = String(e.currentTarget.dataset.id || '')
-    const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, traceOpen: !message.traceOpen } : message)
+    // 这一行折叠的是思维链全文；执行步骤行始终可见，不受它影响
+    const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, reasonOpen: message.reasonOpen !== true } : message)
     this.setData({ messages })
   },
   stopSend() {

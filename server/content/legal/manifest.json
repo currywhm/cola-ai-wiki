@@ -1,0 +1,105 @@
+{
+  "schema": 1,
+  "version": "2026.09.16.1",
+  "title": "服务说明",
+  "subtitle": "与本小程序同时生效",
+  "updated_at": "2026-09-16",
+  "intro": "关于 cola 知识库、数据管理、隐私安全、隐私保护指引、服务协议、软件许可与会员条款。",
+  "groups": [
+    {
+      "id": "product",
+      "title": "产品与数据",
+      "entries": [
+        {
+          "id": "about",
+          "title": "关于 cola 知识库",
+          "summary": "这是什么、能做什么、由谁运营、怎么联系我们。",
+          "icon": "guanyu",
+          "cover": "",
+          "body": "entries/01-about.md",
+          "read_minutes": 3,
+          "updated_at": "2026年9月16日",
+          "effective_at": "2026年9月16日"
+        },
+        {
+          "id": "data",
+          "title": "数据管理",
+          "summary": "你的数据存在哪、怎么导出、怎么删除、注销怎么处理。",
+          "icon": "shuju",
+          "cover": "",
+          "body": "entries/02-data.md",
+          "read_minutes": 5,
+          "updated_at": "2026年9月16日",
+          "effective_at": "2026年9月16日"
+        }
+      ]
+    },
+    {
+      "id": "privacy",
+      "title": "隐私与安全",
+      "entries": [
+        {
+          "id": "privacy",
+          "title": "隐私安全",
+          "summary": "我们怎么保护数据：隔离、加密、密钥边界与安全事件处置。",
+          "icon": "anquanbaozhang",
+          "cover": "",
+          "body": "entries/03-privacy.md",
+          "read_minutes": 4,
+          "updated_at": "2026年9月16日",
+          "effective_at": "2026年9月16日"
+        },
+        {
+          "id": "guide",
+          "title": "小程序隐私保护指引",
+          "summary": "完整版：收集哪些信息、用于什么、和谁共享、你有哪些权利。",
+          "icon": "dengpao",
+          "cover": "",
+          "body": "entries/04-guide.md",
+          "read_minutes": 8,
+          "updated_at": "2026年9月16日",
+          "effective_at": "2026年9月16日"
+        }
+      ]
+    },
+    {
+      "id": "legal",
+      "title": "协议与权益",
+      "entries": [
+        {
+          "id": "terms",
+          "title": "用户服务协议",
+          "summary": "账号规则、使用规范、人工智能服务提示与责任边界。",
+          "icon": "jieshao",
+          "cover": "",
+          "body": "entries/05-terms.md",
+          "read_minutes": 8,
+          "updated_at": "2026年9月16日",
+          "effective_at": "2026年9月16日"
+        },
+        {
+          "id": "license",
+          "title": "软件许可及服务协议",
+          "summary": "许可范围、使用限制、开源组件声明与免责说明。",
+          "icon": "book",
+          "cover": "",
+          "body": "entries/06-license.md",
+          "read_minutes": 6,
+          "updated_at": "2026年9月16日",
+          "effective_at": "2026年9月16日"
+        },
+        {
+          "id": "plan",
+          "title": "会员服务条款与权益说明",
+          "summary": "免费试用、Plus、Pro 的价格、额度、期限与退款规则。",
+          "icon": "vip",
+          "cover": "",
+          "body": "entries/07-plan.md",
+          "read_minutes": 5,
+          "updated_at": "2026年9月16日",
+          "effective_at": "2026年9月16日"
+        }
+      ]
+    }
+  ]
+}

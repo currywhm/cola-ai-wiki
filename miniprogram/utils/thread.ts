@@ -4,6 +4,8 @@
 // 避免三个入口各写一遍导致的表现不一致。
 
 import { renderMarkdown } from './markdown'
+import { fileIconName } from './file-type'
+import { artifactIcon, artifactMeta } from './artifact'
 
 export interface TraceNode {
   key: string
@@ -15,6 +17,16 @@ export interface TraceNode {
   icon: string
   /** 右侧状态字：只有「进行中 / 失败」才有值，完成的动作不啰嗦 */
   stateLabel: string
+  /** 分组层级：0=step 容器或独立节点，1=挂在「第 N 步 · 动作」下面的具体调用 */
+  depth?: number
+  /** 计划模式：kind==='plan' 时携带完整计划 markdown（页面附着卡片展示） */
+  plan?: string
+  /** 计划正文渲染后的 HTML（rich-text 使用） */
+  planHtml?: string
+  /** 评审 id（= 该轮 harness 会话 id），用户批准时回传后端 */
+  reviewId?: string
+  /** review=待确认 / approved=已批准 / revising=继续规划 / error=评审失败 */
+  reviewState?: string
 }
 
 export interface TraceResult {
@@ -73,25 +85,44 @@ function firstLine(text: string): string {
   return lines.length ? lines[0] : ''
 }
 
-// ---- 参考出处图标：PDF / Word / 表格 / 图片 / 公开网页 ----
+// 摘要行去掉 markdown 的加粗标记，避免折叠行里露出一串 **
+function plain(text: string): string {
+  return String(text || '').replace(/\*\*/g, '')
+}
 
-const SOURCE_SUFFIX_ICONS: Array<[string, string]> = [
-  ['.pdf', 'recent-pdf'],
-  ['.doc', 'recent-doc'],
-  ['.docx', 'recent-doc'],
-  ['.md', 'recent-text'],
-  ['.txt', 'recent-text'],
-  ['.ppt', 'recent-ppt'],
-  ['.pptx', 'recent-ppt'],
-  ['.xls', 'recent-sheet'],
-  ['.xlsx', 'recent-sheet'],
-  ['.csv', 'recent-sheet'],
-  ['.png', 'recent-image'],
-  ['.jpg', 'recent-image'],
-  ['.jpeg', 'recent-image'],
-  ['.webp', 'recent-image'],
-  ['.gif', 'recent-image'],
-]
+/** 现有 step 容器里最大的步号，用于后端没带 index 时兜底 */
+function lastStepIndex(trace: TraceNode[]): number {
+  return trace.reduce((max, node) => {
+    if (node.kind !== 'step') return max
+    return Math.max(max, Number(String(node.key).replace('step-', '')) || 0)
+  }, 0)
+}
+
+/**
+ * 抹掉「下面什么都没有」的步骤行。历史对话里存过旧版后端发来的空壳
+ * （标题只有「第 2 步」、下面一行内容也没有），渲染出来只会让人困惑。
+ * 带动作名的分组标题（「第 1 步 · 检索知识库」）和有子调用的分组一律保留。
+ */
+function dropEmptySteps(trace: TraceNode[]): TraceNode[] {
+  return trace.filter((node, index) => {
+    if (node.kind !== 'step') return true
+    if (!/^第 \d+ 步$/.test(String(node.title || ''))) return true
+    const next = trace[index + 1]
+    return !!next && next.depth === 1
+  })
+}
+
+/** 当前仍然开着的那一步（工具节点据此判断要不要缩进一级） */
+function openStepNode(trace: TraceNode[]): TraceNode | null {
+  for (let idx = trace.length - 1; idx >= 0; idx -= 1) {
+    const node = trace[idx]
+    if (node.kind === 'step') return node.state === 'run' ? node : null
+  }
+  return null
+}
+
+// ---- 参考出处图标：PDF / Word / 表格 / 图片 / 公开网页 ----
+// 图标映射统一在 utils/file-type 里，知识库列表 / 最近 / 参考出处 / 对话产物共用一套。
 
 /** 给参考出处补上类型图标，供 wxml 直接渲染 */
 export function decorateSources(sources: any[] | undefined): any[] {
@@ -99,9 +130,36 @@ export function decorateSources(sources: any[] | undefined): any[] {
     if (source && source.iconName) return source
     if (source && source.url) return { ...source, iconName: 'quanwang' }
     const name = String((source && (source.filename || source.name)) || '').toLowerCase()
-    const hit = SOURCE_SUFFIX_ICONS.find(([suffix]) => name.endsWith(suffix))
-    return { ...source, iconName: hit ? hit[1] : 'recent-text' }
+    const hit = /\.[a-z0-9]+$/.exec(name)
+    return { ...source, iconName: hit ? fileIconName(hit[0]) : 'recent-text' }
   })
+}
+
+/** 把一条 trace 事件并入目标消息；事件与消息无关时原样返回，避免多余 setData。 */
+// ---- 对话产物（agent 本轮生成的文件）----
+
+/**
+ * 给产物补上「类型图标 + 一行副解读物」。
+ * 后端只给事实（名称 / 后缀 / 体积 / 是否已进知识库），怎么展示由这里统一决定，
+ * 实时流与历史回放因此长得完全一样。
+ */
+export function decorateArtifacts(items: any[] | undefined): any[] {
+  return (items || []).filter((item: any) => item && item.id).map((item: any) => ({
+    ...item,
+    icon: item.icon || artifactIcon(item),
+    meta: item.meta || artifactMeta(item),
+  }))
+}
+
+/** 把后端推来的产物并入目标消息（同一 id 只留一条，断线重连不会出两张卡） */
+export function addArtifact(messages: any[], id: string, artifact: any): TraceResult {
+  const index = messages.findIndex((message: any) => message.id === id)
+  if (index < 0 || !artifact || !artifact.id) return { messages, changed: false }
+  const existing: any[] = messages[index].artifacts || []
+  if (existing.some((item: any) => item.id === artifact.id)) return { messages, changed: false }
+  const next = messages.slice()
+  next[index] = { ...messages[index], artifacts: decorateArtifacts([...existing, artifact]) }
+  return { messages: next, changed: true }
 }
 
 /** 把一条 trace 事件并入目标消息；事件与消息无关时原样返回，避免多余 setData。 */
@@ -116,10 +174,17 @@ export function appendTrace(messages: any[], id: string, item: any): TraceResult
     // 思考增量只有文字，累加到过程区顶部
     reason += item.text || ''
   } else if (item.kind === 'step') {
-    const key = `step-${item.index || trace.length + 1}`
-    if (!trace.some((node) => node.key === key)) {
-      trace.push({ key, kind: 'step', state: 'done', title: item.title || `第 ${item.index || trace.length + 1} 步`, icon: nodeIcon('step'), stateLabel: '' })
-    }
+    // step 是「一段执行」的分组容器：后端只在这一步真的调了工具时才发过来，
+    // 标题里已经带上动作（「第 1 步 · 检索知识库」），不会再出现下面空无一物的步骤行。
+    const index = Number(item.index) || lastStepIndex(trace) + 1
+    const key = `step-${index}`
+    const state = String(item.state || 'run')
+    const at = trace.findIndex((node) => node.key === key)
+    // 收尾事件只带 state 不带标题，沿用开容器时那句动作
+    const title = item.title || (at >= 0 ? trace[at].title : `第 ${index} 步`)
+    const node: TraceNode = { key, kind: 'step', state, title, icon: nodeIcon('step'), stateLabel: '', depth: 0 }
+    if (at >= 0) trace[at] = { ...trace[at], ...node }
+    else trace.push(node)
   } else if (item.kind === 'tool' || item.kind === 'skill' || item.kind === 'agent') {
     // 同一动作先 run 后 done：按 key 合并状态，避免出现两条重复节点
     const state = String(item.state || 'done')
@@ -139,8 +204,44 @@ export function appendTrace(messages: any[], id: string, item: any): TraceResult
       // 是否结束交给右侧状态字；图标也保留 run 那次选中的，不因缺 name 而回退
       const title = state === 'done' && prev.title ? prev.title : (node.title || prev.title)
       const icon = item.name ? nodeIcon(item.kind, item.name) : (prev.icon || node.icon)
-      trace[at] = { ...prev, ...node, title, icon, detail: node.detail || prev.detail }
-    } else trace.push(node)
+      // 缩进层级沿用第一次出现时的判断，动作结束后不会突然跳回顶层
+      trace[at] = { ...prev, ...node, title, icon, detail: node.detail || prev.detail, depth: prev.depth || 0 }
+    } else {
+      // 挂在当前这一步「第 N 步 · 动作」下面；没有开着的 step 就是独立一行
+      node.depth = openStepNode(trace) ? 1 : 0
+      trace.push(node)
+    }
+  } else if (item.kind === 'plan') {
+    // 计划模式：官方 exit_plan_mode 提交的完整计划。以「页面附着卡片」呈现——
+    // 它不进过程区的步骤流，折叠过程区也依然可见，因此不影响对话观感与使用。
+    const reviewId = String(item.review_id || '')
+    const key = `plan:${reviewId}`
+    const state = String(item.state || 'review')
+    let at = trace.findIndex((node) => node.kind === 'plan' && (reviewId === '' || node.key === key))
+    if (at < 0 && state !== 'review') {
+      for (let idx = trace.length - 1; idx >= 0; idx -= 1) {
+        if (trace[idx].kind === 'plan') { at = idx; break }
+      }
+    }
+    const plan = String(item.plan || (at >= 0 ? trace[at].plan || '' : ''))
+    const node: TraceNode = {
+      key, kind: 'plan',
+      state: state === 'review' ? 'run' : (state === 'error' ? 'error' : 'done'),
+      // 标题始终是计划自己的名字：批准/继续规划只反映在副标题与状态字上，
+      // 避免「批准并执行」这类系统文案顶掉用户正在读的标题。
+      title: (at >= 0 && trace[at].title && state !== 'review')
+        ? trace[at].title
+        : (item.title || (at >= 0 ? trace[at].title : '') || '执行计划'),
+      detail: '',
+      icon: 'agent-mode',
+      stateLabel: state === 'review' ? '待确认' : (state === 'error' ? '继续规划' : '已批准'),
+      plan,
+      planHtml: plan ? renderMarkdown(plan) : '',
+      reviewId: reviewId || (at >= 0 ? trace[at].reviewId : '') || '',
+      reviewState: state,
+    }
+    if (at >= 0) trace[at] = { ...trace[at], ...node, plan, planHtml: node.planHtml || trace[at].planHtml }
+    else trace.push(node)
   } else if (item.kind === 'note') {
     // 提示类节点只保留最新一条，避免网络重试等信息堆叠
     trace = trace.filter((node) => node.kind !== 'note')
@@ -150,24 +251,70 @@ export function appendTrace(messages: any[], id: string, item: any): TraceResult
     return { messages, changed: false }
   }
 
-  // 行内摘要：优先显示当前动作（“检索全网资料 · 中粮集团…”），否则跟到最后一行思考
+  // 折叠行的摘要：优先显示当前动作（“检索全网资料 · 中粮集团…”），否则跟到最后一行思考。
+  // 思考全文只在用户展开那一行时才渲染，不会再一上来就铺满一屏推理文字。
   const latest = trace[trace.length - 1]
   const action = latest && latest.kind !== 'step' ? (latest.detail ? `${latest.title} · ${latest.detail}` : latest.title) : ''
   const next = messages.slice()
+  const planNode = planNodeOf(trace)
   next[index] = {
     ...message,
     trace,
     reason,
     running: true,
-    traceOpen: true,
+    // 用户自己展开过就尊重他的选择，默认保持折叠
+    reasonOpen: message.reasonOpen === true,
     traceTitle: '思考中',
-    traceIcon: (latest && latest.icon) || 'dengpao',
-    traceSummary: action || lastLine(reason),
+    traceIcon: 'dengpao',
+    traceSummary: plain(action || lastLine(reason)),
+    // 计划卡片默认展开（评审需要立刻看到计划正文），展开态是消息自己的状态
+    planNode,
+    planOpen: message.planOpen === undefined ? true : message.planOpen,
   }
   return { messages: next, changed: true }
 }
 
 /** 一轮结束：收起过程区，标题换成「已完成思考 · N 个步骤」。 */
+
+/** 取最后一条计划节点（计划卡片只认最新一次评审）。 */
+function planNodeOf(trace: TraceNode[]) {
+  for (let idx = trace.length - 1; idx >= 0; idx -= 1) {
+    if (trace[idx].kind === 'plan') return trace[idx]
+  }
+  return null
+}
+
+/**
+ * 用户在计划卡片上做出选择后的本地收尾：先把按钮收起，避免重复提交；
+ * 运行时的权威状态会随后通过 plan 节点（approved / error）合并回来。
+ */
+export function markPlanReviewed(messages: any[], id: string, reviewState: string) {
+  const labels: Record<string, { state: string; label: string }> = {
+    review: { state: 'run', label: '待确认' },
+    approved: { state: 'done', label: '已批准' },
+    revising: { state: 'run', label: '继续规划中' },
+  }
+  const view = labels[reviewState] || labels.review
+  return messages.map((message: any) => {
+    if (message.id !== id || !message.planNode) return message
+    return {
+      ...message,
+      planNode: {
+        ...message.planNode,
+        state: view.state,
+        stateLabel: view.label,
+        reviewState,
+      },
+    }
+  })
+}
+
+/** 展开 / 收起计划卡片。 */
+export function togglePlan(messages: any[], id: string) {
+  return messages.map((message: any) => (
+    message.id === id && message.planNode ? { ...message, planOpen: !message.planOpen } : message
+  ))
+}
 
 function elapsedLabel(startedAt?: number): string {
   if (!startedAt) return ''
@@ -178,9 +325,10 @@ function elapsedLabel(startedAt?: number): string {
 }
 
 /**
- * 一轮结束：收起过程区，标题从「思考中」换成「已深度思考」。
- * 与 harness 的 ReasoningRow 一致：折叠时只留一行摘要（思考的第一行，没有思考就退化成步骤数），
- * 展开才看全文；顺带把没收尾的节点补成完成态，避免流中断后一直停在「进行中」。
+ * 一轮结束：思考折叠成一行摘要，标题从「思考中」换成「已深度思考」。
+ * 与 harness 的 ReasoningRow 一致：折叠时只留思考的第一行，展开才看全文，
+ * 不会再一屏铺满灰色推理文字；步骤行本来就只有真的调了工具才会出现，这里不动它们。
+ * 顺带把没收尾的节点补成完成态，避免流中断后一直停在「进行中」。
  */
 export function settleTrace(messages: any[], id: string): any[] {
   return messages.map((message: any) => {
@@ -189,18 +337,17 @@ export function settleTrace(messages: any[], id: string): any[] {
       node.state === 'run' || node.state === 'load' ? { ...node, state: 'done', stateLabel: '' } : node
     ))
     const reason = String(message.reason || '')
-    const steps = trace.filter((node: any) => node.kind === 'tool' || node.kind === 'skill' || node.kind === 'agent')
-    const hasTrace = trace.length > 0 || !!reason
-    const summary = firstLine(reason) || (steps.length ? `${steps.length} 个步骤` : '')
+    const summary = plain(firstLine(reason))
+    const kept = dropEmptySteps(trace)
     return {
       ...message,
-      trace,
+      trace: kept,
       running: false,
-      traceOpen: !hasTrace,
-      traceTitle: hasTrace ? '已深度思考' : '已完成',
-      traceIcon: hasTrace ? 'dui' : 'dengpao',
+      traceTitle: summary ? '已深度思考' : '已完成',
+      traceIcon: summary ? 'dui' : 'dengpao',
       traceSummary: summary,
       traceElapsed: elapsedLabel(message.traceStartedAt),
+      planNode: planNodeOf(kept),
     }
   })
 }
@@ -213,9 +360,12 @@ export function assistantMessage(id: string) {
     content: '',
     html: '',
     sources: [],
+    // 工具产物（agent 生成的文件）：后端随时推来，随消息一起落库、一起回放
+    artifacts: [] as any[],
     trace: [],
     reason: '',
-    traceOpen: true,
+    // 思考默认折叠成一行摘要，用户展开才看全文
+    reasonOpen: false,
     running: true,
     traceTitle: '思考中',
     traceIcon: 'dengpao',
@@ -246,8 +396,8 @@ export function hydrateAssistant(message: any): any {
     ...message,
     trace: [],
     reason: String(message.reason || ''),
+    reasonOpen: false,
     running: true,
-    traceOpen: true,
     traceTitle: '思考中',
     traceSummary: '',
     traceElapsed: '',
@@ -261,7 +411,11 @@ export function hydrateAssistant(message: any): any {
     ...restored,
     html: renderMarkdown(message.content || ''),
     sources: decorateSources(message.sources),
+    artifacts: decorateArtifacts(message.artifacts),
     traceElapsed: durationLabel(message.duration_ms),
+    // 计划卡片随过程节点一起落库：重进对话时同样复原，只是默认收起
+    planNode: restored.planNode || null,
+    planOpen: false,
   }
 }
 

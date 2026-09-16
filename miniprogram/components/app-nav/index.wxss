@@ -19,6 +19,12 @@
 .nav-conversation-title { left:92rpx; right:180rpx; font-size:34rpx; font-weight:700; text-align:left; }
 .nav-action { position:absolute; right:126rpx; width:56rpx; height:56rpx; min-height:56rpx; border:1rpx solid #e3e5e6; border-radius:17rpx; background:#fff; color:#25282e; }
 .nav-back:active { background:#edf1f5; }
+/* 居中标题栏左侧的历史对话入口：与对话页左上角同一枚图标、同一档尺寸。
+   基础样式里的 wx-button[class]{width:auto} 优先级高于组件内的单类选择器，
+   会把这个 button 压成“跟图标等宽”、热区只剩 41rpx，所以这里用 !important 固定 88rpx 热区，
+   再用 left 让图标视觉左边缘落在页面内容栏（44rpx）上。 */
+.nav-history { position:absolute; left:20rpx; top:50%; transform:translateY(-50%); width:88rpx !important; min-width:88rpx !important; height:88rpx; min-height:88rpx; border-radius:50%; color:#263247; }
+.nav-history:active { background:#edf1f5; }
 .nav-center-title { position:absolute; left:112rpx; right:112rpx; overflow:hidden; color:#161e2d; font-size:34rpx; font-weight:600; line-height:44rpx; text-align:center; text-overflow:ellipsis; white-space:nowrap; }
 .nav-menu-left { position:absolute; left:92rpx; top:50%; transform:translateY(-50%); width:60rpx; height:60rpx; min-height:60rpx; border-radius:50%; color:#263247; }
 .nav-menu-left:active { background:#edf1f5; }

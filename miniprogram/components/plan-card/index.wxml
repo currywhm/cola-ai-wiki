@@ -1,0 +1,19 @@
+<view wx:if="{{node}}" class="plan-card {{node.reviewState}}">
+  <view class="plan-head" bindtap="onToggle">
+    <view class="plan-icon"><ui-icon name="agent-mode" size="{{32}}" rpx /></view>
+    <view class="plan-heading">
+      <text class="plan-title">{{node.title}}</text>
+      <text class="plan-sub">{{node.reviewState === 'review' ? '待你确认后开始执行' : (node.reviewState === 'approved' ? '已批准，正在按计划执行' : (node.reviewState === 'revising' ? '已提交，模型在完善方案' : '本轮未通过，模型在继续完善'))}}</text>
+    </view>
+    <view class="plan-toggle"><ui-icon name="{{open ? 'chevron-up' : 'chevron-down'}}" size="{{24}}" rpx /></view>
+  </view>
+
+  <scroll-view wx:if="{{open}}" class="plan-body" scroll-y enhanced show-scrollbar="{{false}}">
+    <rich-text class="plan-md" nodes="{{node.planHtml}}"></rich-text>
+  </scroll-view>
+
+  <view wx:if="{{node.reviewState === 'review'}}" class="plan-actions">
+    <button class="plan-btn plan-revise" bindtap="onRevise">继续规划</button>
+    <button class="plan-btn plan-approve" bindtap="onApprove">批准并执行</button>
+  </view>
+</view>

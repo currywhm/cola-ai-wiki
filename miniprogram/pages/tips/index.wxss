@@ -1,0 +1,59 @@
+/* 使用技巧详情页：内容驱动，样式只负责排版与节奏 */
+.tips-page { min-height: 100vh; padding: 8rpx 0 60rpx; background: #f6f7f9; }
+
+.tips-state { padding: 40rpx 28rpx; }
+.tips-skeleton { border-radius: 16rpx; background: #eceeed; }
+.tips-skeleton-cover { height: 300rpx; border-radius: 24rpx; }
+.tips-skeleton-line { height: 28rpx; margin-top: 26rpx; }
+.tips-skeleton-line.short { width: 58%; }
+.tips-state-title { display: block; color: #1f2227; font-size: 31rpx; font-weight: 700; }
+.tips-state-desc { display: block; margin-top: 12rpx; color: #8b96a1; font-size: 25rpx; line-height: 1.6; }
+.tips-retry { width: 100%; min-height: 84rpx; margin-top: 28rpx; border-radius: 18rpx; background: #eaf9f1; color: #078b50; font-size: 28rpx; font-weight: 650; }
+
+.tips-hero { margin: 8rpx 24rpx 0; overflow: hidden; border-radius: 24rpx; background: #fff; }
+/* 封面按 750x297 的真实界面横条出图，这里保持同一比例，aspectFill 不会裁掉内容 */
+.tips-hero-cover { display: block; width: 100%; height: 300rpx; background: #f2f7f5; }
+.tips-hero-body { padding: 26rpx 28rpx 30rpx; }
+.tips-hero-meta { display: flex; align-items: center; gap: 14rpx; }
+.tips-chip { padding: 5rpx 14rpx; border-radius: 20rpx; background: #eaf9f1; color: #078b50; font-size: 21rpx; font-weight: 600; line-height: 1.4; }
+.tips-read { color: #9aa3ad; font-size: 22rpx; }
+.tips-hero-title { display: block; margin-top: 16rpx; color: #14181d; font-size: 40rpx; font-weight: 780; line-height: 1.32; letter-spacing: -.6rpx; }
+.tips-hero-summary { display: block; margin-top: 12rpx; color: #7e8994; font-size: 25rpx; line-height: 1.6; }
+
+.tips-body { margin: 20rpx 24rpx 0; padding: 30rpx 28rpx 34rpx; border-radius: 24rpx; background: #fff; }
+.tips-h2 { display: block; margin-top: 36rpx; color: #14181d; font-size: 32rpx; font-weight: 750; line-height: 1.42; letter-spacing: -.3rpx; }
+.tips-h2:first-child { margin-top: 0; }
+.tips-p { color: #333c47; font-size: 29rpx; font-weight: 400; line-height: 1.76; }
+.tips-h2 + .tips-p { margin-top: 14rpx; }
+.tips-p + .tips-p { margin-top: 18rpx; }
+
+.tips-line { display: flex; align-items: flex-start; gap: 16rpx; margin-top: 18rpx; }
+.tips-line-body { flex: 1 1 auto; min-width: 0; }
+.tips-dot { flex: 0 0 12rpx; width: 12rpx; height: 12rpx; margin-top: 20rpx; border-radius: 50%; background: #17a76a; }
+.tips-step { display: flex; align-items: center; justify-content: center; flex: 0 0 42rpx; width: 42rpx; height: 42rpx; margin-top: 8rpx; border-radius: 50%; background: #eaf9f1; color: #078b50; font-size: 23rpx; font-weight: 700; }
+
+.tips-note { display: flex; align-items: stretch; gap: 16rpx; margin-top: 24rpx; padding: 20rpx 22rpx; border-radius: 16rpx; background: #f2f8f5; }
+.tips-note-bar { flex: 0 0 6rpx; width: 6rpx; border-radius: 3rpx; background: #35b37d; }
+.tips-note-body { flex: 1 1 auto; min-width: 0; }
+.tips-note .tips-p { color: #3d4a45; font-size: 26rpx; line-height: 1.7; }
+
+.tips-figure { margin: 28rpx 0 6rpx; }
+.tips-figure-img { display: block; width: 100%; border-radius: 18rpx; background: #f2f7f5; }
+.tips-figure-caption { display: block; margin-top: 12rpx; color: #9aa3ad; font-size: 22rpx; line-height: 1.5; text-align: center; }
+
+.run-strong { color: #14181d; font-weight: 700; }
+.run-code { padding: 2rpx 8rpx; border-radius: 6rpx; background: #f1f4f3; color: #2b3a44; font-size: 26rpx; }
+
+.tips-related { margin: 20rpx 24rpx 0; }
+.tips-related-title { display: block; margin: 0 4rpx 12rpx; color: #8f99a4; font-size: 23rpx; font-weight: 600; letter-spacing: .4rpx; }
+button.tips-related-item { display: flex; align-items: center; justify-content: flex-start; width: 100%; min-height: 0; margin: 0 0 14rpx; padding: 18rpx 20rpx; border: 0; border-radius: 20rpx; background: #fff; color: #20242b; text-align: left; }
+button.tips-related-item:last-child { margin-bottom: 0; }
+.tips-related-thumb { display: flex; align-items: center; justify-content: center; flex: 0 0 126rpx; width: 126rpx; height: 84rpx; overflow: hidden; border-radius: 14rpx; background: #eff7f3; }
+.tips-related-img { display: block; width: 126rpx; height: 84rpx; }
+.tips-related-main { flex: 1 1 auto; min-width: 0; margin: 0 16rpx; }
+.tips-related-name { display: block; overflow: hidden; color: #17191d; font-size: 28rpx; font-weight: 680; line-height: 1.38; text-overflow: ellipsis; white-space: nowrap; }
+.tips-related-desc { display: block; margin-top: 6rpx; overflow: hidden; color: #8b96a1; font-size: 22rpx; font-weight: 400; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+
+.tips-footer { margin: 34rpx 24rpx 0; }
+.tips-footer-text { display: block; color: #a2abb4; font-size: 22rpx; line-height: 1.5; text-align: center; }
+.tips-ask { width: 100%; min-height: 92rpx; margin-top: 22rpx; border-radius: 22rpx; background: #eaf9f1; color: #078b50; font-size: 30rpx; font-weight: 680; }

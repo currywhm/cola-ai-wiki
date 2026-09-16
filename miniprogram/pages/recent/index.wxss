@@ -1,6 +1,7 @@
 /* 最近：沿用「知识库 / 我的」的视觉语言——浅灰底、白卡片、克制描边、绿系强调色 */
 .recent-page { display: flex; flex-direction: column; min-height: 100vh; background: #f6f6f6; box-sizing: border-box; padding-bottom: calc(112rpx + env(safe-area-inset-bottom)); }
-.recent-body { flex: 1; padding: 10rpx 32rpx 0; box-sizing: border-box; }
+/* 左右留白跟「知识库 / 我的」的 24rpx 对齐：原先 32rpx，看上去两边空得太多 */
+.recent-body { flex: 1; padding: 10rpx 24rpx 0; box-sizing: border-box; }
 
 .recent-section { margin-bottom: 34rpx; }
 .recent-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12rpx; margin: 0 2rpx 16rpx; }
@@ -9,7 +10,7 @@
 
 /* 最近知识库 */
 .recent-kb-scroll { width: 100%; white-space: nowrap; }
-.recent-kb-list { display: inline-flex; align-items: stretch; gap: 16rpx; padding: 2rpx 32rpx 4rpx 0; }
+.recent-kb-list { display: inline-flex; align-items: stretch; gap: 16rpx; padding: 2rpx 24rpx 4rpx 0; }
 .recent-kb-card { display: inline-flex; flex-direction: column; justify-content: flex-start; width: 268rpx; padding: 22rpx 22rpx 20rpx; box-sizing: border-box; border-radius: 20rpx; background: #fff; }
 .recent-kb-card-hover { background: #f4f7f5; }
 .recent-kb-icon { display: flex; align-items: center; justify-content: center; width: 56rpx; height: 56rpx; margin-bottom: 16rpx; border-radius: 16rpx; background: #f0fbf5; }

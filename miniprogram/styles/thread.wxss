@@ -8,7 +8,7 @@
 button.qa-back { position: absolute; left: 6rpx; bottom: 0; display: flex; align-items: center; justify-content: center; width: 88rpx; height: 88rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; }
 button.qa-back::after { border: 0; }
 /* 返回右侧的折叠图标：拉出历史对话抽屉 */
-button.qa-history { position: absolute; left: 76rpx; bottom: 0; display: flex; align-items: center; justify-content: center; width: 88rpx; height: 88rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; }
+button.qa-history { position: absolute; left: 80rpx; bottom: 0; display: flex; align-items: center; justify-content: center; width: 88rpx; height: 88rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; }
 button.qa-history::after { border: 0; }
 button.qa-history:active { background: #f2f2f2; }
 /* 会话页的上下文（知识库名 / 文件夹名）：居中、小字、弱对比，不与标题栏抢位置 */
@@ -71,9 +71,9 @@ button.qa-prompt::after { border: 0; }
 .qa-trace-spacer { flex: 1 1 auto; min-width: 0; }
 .qa-trace-elapsed { display: block; flex: 0 0 auto; color: #b6bbc1; font-size: 22rpx; line-height: 1.4; }
 .qa-trace-chevron { display: flex; align-items: center; justify-content: center; flex: 0 0 32rpx; width: 32rpx; height: 32rpx; opacity: .55; }
-.qa-trace-body { margin: 6rpx 0 4rpx; padding: 18rpx 20rpx 4rpx; border-radius: 18rpx; background: #f7f8f9; }
-/* 思考原文：展开时才完整呈现，次级色小字号，不抢正文 */
-.qa-reason { display: block; margin-bottom: 14rpx; padding-bottom: 14rpx; border-bottom: 1rpx solid #eceef0; color: #8f969e; font-size: 24rpx; line-height: 1.72; white-space: pre-wrap; word-break: break-word; }
+.qa-trace-body { margin: 6rpx 0 4rpx; padding: 18rpx 20rpx 14rpx; border-radius: 18rpx; background: #f7f8f9; }
+/* 思维链原文：展开时才完整呈现，次级色小字号，不抢正文；它下面不再跟别的行，所以不留分隔线 */
+.qa-reason { display: block; color: #8f969e; font-size: 24rpx; line-height: 1.72; white-space: pre-wrap; word-break: break-word; }
 .qa-node { display: flex; align-items: flex-start; gap: 12rpx; margin-bottom: 16rpx; }
 .qa-node-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 40rpx; width: 40rpx; height: 40rpx; border-radius: 12rpx; background: #eceef0; }
 .qa-node.error .qa-node-icon { background: #fdecec; }
@@ -88,6 +88,13 @@ button.qa-prompt::after { border: 0; }
 .qa-node-state { display: block; flex: 0 0 auto; padding-top: 3rpx; color: #a5abb2; font-size: 21rpx; line-height: 1.5; }
 .qa-node-state.run { color: #0a9b5c; }
 .qa-node-state.error { color: #d9534f; }
+
+/* 执行步骤：不折叠、始终可见。「第 N 步 · 动作」是分组标题，具体的调用缩进一级挂在它下面 */
+.qa-process { margin: 0 0 6rpx; }
+.qa-node.step .qa-node-icon { background: #eef1f4; }
+.qa-node.step .qa-node-title { color: #525a63; font-weight: 600; }
+.qa-node.nested { margin-left: 36rpx; }
+.qa-node.nested .qa-node-title { color: #666e77; font-weight: 400; }
 .qa-answer-text .md-pre { margin: 12rpx 0; padding: 18rpx 22rpx; border-radius: 12rpx; background: #f4f5f6; font-family: Menlo, Consolas, monospace; font-size: 25rpx; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
 .qa-answer-text .md-code { padding: 2rpx 8rpx; border-radius: 6rpx; background: #f0f1f2; font-family: Menlo, Consolas, monospace; font-size: 25rpx; }
 .qa-answer-text .md-list { margin: 8rpx 0 12rpx; padding-left: 36rpx; }
@@ -111,6 +118,24 @@ button.qa-prompt::after { border: 0; }
 .qa-source-file { display: block; color: #485465; font-size: 25rpx; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qa-source-page { display: block; margin-top: 2rpx; color: #9aa3ad; font-size: 21rpx; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qa-answer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12rpx; margin-top: 16rpx; padding-top: 14rpx; border-top: 1rpx solid #eceff0; }
+/*
+  生成的文件（工具产物）：一行一张卡片，左侧类型图标、中间名称与体积、右侧保存。
+  点卡片直接预览（图片 / 文档走微信原生预览，文本走站内预览页）；
+  右侧小按钮把文件转发到微信聊天，用户可在聊天里保存到手机。
+*/
+.qa-files { margin: 18rpx 0 4rpx; }
+.qa-files-title { display: block; margin-bottom: 12rpx; color: #8b98a5; font-size: 22rpx; line-height: 1.4; }
+.qa-file { display: flex; align-items: center; justify-content: flex-start; gap: 18rpx; margin-bottom: 12rpx; padding: 20rpx; border: 1rpx solid #eceef0; border-radius: 18rpx; background: #fff; }
+.qa-file:last-child { margin-bottom: 0; }
+.qa-file-hover { background: #f7f9fa; }
+.qa-file-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 56rpx; width: 56rpx; height: 56rpx; }
+.qa-file-copy { flex: 1 1 auto; min-width: 0; }
+.qa-file-name { display: block; color: #22262b; font-size: 28rpx; font-weight: 600; line-height: 1.42; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qa-file-meta { display: block; margin-top: 4rpx; color: #9aa3ad; font-size: 22rpx; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.qa-file-save { display: flex; align-items: center; justify-content: center; flex: 0 0 56rpx; width: 56rpx; min-width: 56rpx; height: 56rpx; min-height: 56rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: #f4f5f6; }
+button.qa-file-save:active { background: #e9ecee; }
+button.qa-file-save::after { border: 0; }
+
 button.qa-action { display: flex; align-items: center; gap: 6rpx; min-height: 48rpx; margin: 0; padding: 0 16rpx; border: 0; border-radius: 14rpx; background: #f3f4f5; color: #6d7684; font-size: 23rpx; line-height: 1.3; }
 button.qa-action:active { background: #eaeded; }
 

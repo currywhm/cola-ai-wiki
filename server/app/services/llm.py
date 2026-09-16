@@ -50,18 +50,31 @@ def provider_config(model: str) -> tuple[str, str, str] | None:
 
 
 async def stream_answer(messages: list[dict], model: str, session_id: str = '', thinking: str = 'quick',
-                    skill: str = '', mode: str = 'knowledge', skill_prompt: str = '', skill_label: str = '') -> AsyncIterator[dict]:
+                    skills: list[dict] | None = None, mode: str = 'knowledge',
+                    user_id: str = '', plan: bool = False) -> AsyncIterator[dict]:
+    # skills：用户选中的技能列表，每项形如 {'id','harness','prompt','label'}；空列表即不注入。
+    # user_id：多租户隔离边界（工作区 + DSH_HOME + 计划评审桥都按它分目录）。
+    # plan：是否为本轮打开官方 plan mode（计划以「页面附着卡片」提交评审）。
+    selected = skills or []
     # 统一走完整 harness profile（技能/工具/思考过程全量），失败时非严格模式回落直连通道。
     # 产出 {'kind':'text','text':...}（回答增量）与 {'kind':'trace','item':{...}}（过程节点）。
     if harness_configured():
         produced = False
         try:
             system = messages[0].get('content', '') if messages else ''
-            question = _compose_history_question(messages[1:-1], messages[-1].get('content', '') if messages else '')
-            # harness 会话每轮新建（上下文由 DB 注入）：避免跨轮复用引发的
-            # "session already exists" 冲突，且重试/回落后记忆不丢失
-            turn_session = f'{session_id}-{uuid.uuid4().hex[:8]}' if session_id else ''
-            async for event in harness_stream_answer(question, system, turn_session, model, thinking, skill, mode, skill_prompt, skill_label):
+            question = messages[-1].get('content', '') if messages else ''
+            # 会话复用（对齐 harness 的 session 持久化）：
+            # 会话 id 与后端对话 id 绑定并跨轮复用，上下文由运行时自己的事件日志承载
+            # （压缩也交给官方 compaction），不再把整段历史重新拼进提示词——
+            # 这是「上下文膨胀」和「重进对话丢过程」的根因。
+            # 只有在没有可复用会话时（预热等）才回退到内联历史。
+            turn_session = session_id
+            if not turn_session:
+                question = _compose_history_question(messages[1:-1], question)
+            async for event in harness_stream_answer(
+                question, system, turn_session, model, thinking, selected, mode,
+                user_id=user_id, plan=plan,
+            ):
                 if event.get('kind') == 'text' and event.get('text'):
                     produced = True
                 yield event
@@ -84,9 +97,13 @@ async def stream_answer(messages: list[dict], model: str, session_id: str = '', 
     base_url, api_key, provider_model = config
     # 直连通道同样遵守「选中的技能才注入」：技能指令作为一条独立系统约束追加在末尾
     direct_messages = list(messages)
-    if skill_prompt.strip():
-        label = (skill_label or '').strip() or '用户选择的技能'
-        direct_messages.append({"role": "system", "content": f'本轮启用了技能「{label}」，必须严格按以下技能指令执行：\n{skill_prompt.strip()}'})
+    for item in selected:
+        prompt = (item.get('prompt') or '').strip()
+        if not prompt:
+            # 内置技能依赖 harness 技能包，直连通道无法加载，这里跳过
+            continue
+        label = (item.get('label') or '').strip() or '用户选择的技能'
+        direct_messages.append({"role": "system", "content": f'本轮启用了技能「{label}」，必须严格按以下技能指令执行：\n{prompt}'})
     payload = {"model": provider_model, "messages": direct_messages, "stream": True, "temperature": 0.2}
     endpoint = f"{base_url.rstrip('/')}/chat/completions" if base_url.rstrip('/').endswith('/v1') else f"{base_url.rstrip('/')}/v1/chat/completions"
     # 网关约 2-3 成概率断流导致零产出：无内容流出时整轮重试（最多 3 次）；

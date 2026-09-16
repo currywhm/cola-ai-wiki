@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     app_name: str = "知库资料服务"
     database_url: str = "sqlite+aiosqlite:///./data/llmwiki.db"
     upload_dir: str = "./uploads"
+    # 运营文案（使用技巧等）存放目录：改文件即可更新，不需要发版。
+    content_dir: str = "./content"
     jwt_secret: str = "change-me-in-production"
     wechat_appid: str = ""
     wechat_secret: str = ""
@@ -65,6 +67,18 @@ class Settings(BaseSettings):
     harness_runtime_sdk_path: str = ""
     harness_reasoning_effort: str = "low"
     harness_strict: bool = True
+    # 多租户隔离：每个用户独立的工作区与 DSH_HOME（sessions/skills/storages/attachments
+    # 全部私有），运行时按租户池化复用，空闲回收。`profiles/` 作为部署级只读资产共享。
+    harness_workspaces: str = "./harness-workspaces"
+    harness_max_runtimes: int = 6
+    harness_idle_seconds: int = 1800
+    # 深度思考开关真正生效：快速/深度走不同推理强度，必要时深度可换模型
+    # （dsh-llm-deepseek 的 reasoningEffort 取值 off | low | high | max）
+    harness_quick_reasoning_effort: str = "low"
+    harness_deep_reasoning_effort: str = "high"
+    harness_deep_model: str = ""
+    # 计划模式：执行规划通道启用官方 plan mode，计划以「页面附着卡片」提交评审
+    harness_plan_mode: bool = True
     # 对话记忆（参考 deepseek-harness 的 session 持久化 + compaction）：
     # 每轮上下文 = memory_summary（压缩态）+ 最近 memory_recent_messages 条原文；
     # 旧轮次累计超过 memory_compress_chars 字时，用 LLM 滚动压缩进摘要
@@ -79,6 +93,14 @@ class Settings(BaseSettings):
     # 密钥通过 env EXA_API_KEY 传给 Node 运行时；留空则工具报「认证失败」，
     # 模型会降级为通用回答并声明搜索不可用
     exa_api_key: str = ""
+    # 合规文案（隐私保护指引 / 服务协议 / 软件许可 / 数据管理 / 隐私安全 /
+    # 会员服务条款 / 关于）里随部署环境变化的字段：只在 .env 维护一处，
+    # 导入时替换 content/legal 里的 {{operator}} / {{email_line}} / {{icp_line}}。
+    # LEGAL_OPERATOR_NAME 建议填真实运营者名称（个人主体填本人姓名或常用称谓），
+    # 留空会退化成通用表述，属于上线前必须补齐的项。
+    legal_operator_name: str = ""
+    legal_contact_email: str = ""
+    legal_icp_number: str = ""
     cors_origins: str = "*"
     model_config = SettingsConfigDict(env_file=BACKEND_ROOT / '.env', extra="ignore")
 
@@ -106,6 +128,10 @@ class Settings(BaseSettings):
         path = self.resolve_path(self.upload_dir)
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @property
+    def content_path(self) -> Path:
+        return self.resolve_path(self.content_dir)
 
     @property
     def cors_list(self) -> list[str]:

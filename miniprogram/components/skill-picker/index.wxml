@@ -1,10 +1,11 @@
 <view wx:if="{{visible}}" class="sk-layer">
   <view class="sk-mask" bindtap="close"></view>
-  <view class="sk-panel" catchtap="noop">
+  <!-- 面板给确定高度：scroll-view 只有拿到确定高度才会滚动（只给 max-height 划不动） -->
+  <view class="sk-panel" style="{{panelHeight ? 'height:' + panelHeight + 'px;' : ''}}" catchtap="noop">
     <view class="sk-head">
       <view class="sk-head-copy">
         <text class="sk-title">选择技能</text>
-        <text class="sk-sub">选中后，本轮对话按这个技能执行</text>
+        <text class="sk-sub">可多选，选中的技能会一直生效</text>
       </view>
       <button class="sk-close" bindtap="close" aria-label="关闭"><ui-icon name="close" size="{{26}}" rpx /></button>
     </view>
@@ -50,14 +51,15 @@
 
       <block wx:else>
         <view wx:for="{{list}}" wx:key="id" class="sk-item {{item.id === selected ? 'on' : ''}}" data-id="{{item.id}}" bindtap="pick" hover-class="sk-item-hover">
-          <view class="sk-item-icon"><ui-icon name="{{item.icon}}" size="{{42}}" rpx /></view>
+          <!-- 选中态由组件逐项预计算（item._on），WXML 无法对数组做 indexOf -->
+          <view class="sk-item-icon {{item._on ? 'on' : ''}}"><ui-icon name="{{item.icon}}" size="{{42}}" rpx /></view>
           <view class="sk-item-main">
             <view class="sk-item-head">
               <text class="sk-item-name">{{item.name}}</text>
               <text wx:if="{{item.builtin}}" class="sk-badge">内置</text>
               <text wx:elif="{{item.is_owner && item.published}}" class="sk-badge published">已发布</text>
               <text wx:elif="{{item.is_owner}}" class="sk-badge mine">仅自己</text>
-              <view wx:if="{{item.id === selected}}" class="sk-check"><ui-icon name="dui" size="{{24}}" rpx /></view>
+              <view wx:if="{{item._on}}" class="sk-check"><ui-icon name="dui" size="{{28}}" rpx /></view>
             </view>
             <text class="sk-item-desc">{{item.summary}}</text>
             <!-- 右下角：开发者微信号 + 收藏 + 点赞，都做小，避免抢技能名的主次 -->
@@ -83,5 +85,8 @@
       </block>
       <view class="sk-bottom-space"></view>
     </scroll-view>
+    <view class="sk-foot">
+      <text class="sk-foot-count">{{selectedCount ? '已选 ' + selectedCount + ' 个技能' : '未选择技能，按默认方式回答'}}</text>
+    </view>
   </view>
 </view>

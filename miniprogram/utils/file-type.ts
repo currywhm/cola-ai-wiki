@@ -59,6 +59,22 @@ const PREVIEW_ICONS: Record<string, string> = {
   xlsx: 'recent-sheet',
 }
 
+// 全站统一的后缀 → 图标映射：知识库列表、最近、参考出处、对话产物用的是同一套。
+// 新增类型只改这一处，四个入口不会再各写一份表格。
+const TYPE_ICONS: Record<string, string> = {
+  pdf: 'recent-pdf',
+  doc: 'recent-doc', docx: 'recent-doc', rtf: 'recent-doc',
+  ppt: 'recent-ppt', pptx: 'recent-ppt', key: 'recent-ppt',
+  xls: 'recent-sheet', xlsx: 'recent-sheet', csv: 'recent-sheet', tsv: 'recent-sheet',
+  png: 'recent-image', jpg: 'recent-image', jpeg: 'recent-image', gif: 'recent-image', webp: 'recent-image', bmp: 'recent-image',
+  zip: 'recent-folder', folder: 'recent-folder',
+}
+
+/** 文件在列表 / 卡片上用的类型图标（叫不出来的统统按文本处理） */
+export function fileIconName(fileType: string): string {
+  return TYPE_ICONS[fileKind(fileType)] || 'recent-text'
+}
+
 export function previewIconName(fileType: string): string {
   return PREVIEW_ICONS[fileKind(fileType)] || 'recent-text'
 }

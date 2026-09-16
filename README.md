@@ -10,6 +10,23 @@
 - `server/`：可部署到外部服务器的 API 服务。
 - `server/Dockerfile`、`server/docker-compose.yml`：生产部署入口。
 
+## 小程序端编码约束
+
+不要在小程序源码（`miniprogram/**/*.ts`、`*.js`）里用**数组解构赋值**，比如 `Promise.all([...]).then(([a, b]) => {})`、`const [x, y] = list`。
+
+开发者工具把 ES6 转 ES5 时会通过 `loadBabelMod()` 注入 `@babel/runtime` 的 helper；本机工具版本注入不了 `slicedToArray`，只要有页面用到数组解构，该页会在**模块加载阶段**直接报 `module '@babel/runtime/helpers/arrayWithHoles.js' is not defined`，`Page({...})` 不会执行，页面只剩下底部 tabBar（白屏）。`pages/chat`、`pages/mine`、`pages/tips` 都踩过这个坑。
+
+改成下标取值即可：
+
+```ts
+Promise.all([getMe(), getKnowledge()]).then((pair) => {
+  const user = pair[0]
+  const knowledge = pair[1]
+})
+```
+
+提交前跑 `python3 scripts/check_mp_helpers.py` 自检，退出码非 0 表示存在风险写法。
+
 ## 本地联调
 
 ```bash
@@ -38,8 +55,12 @@ python3 scripts/manage.py setup
 
 ## 上线前清单
 
-- 完成微信小程序主体认证、隐私政策、用户协议和数据删除说明。
+法律与合规文案（关于 cola 知识库、数据管理、隐私安全、小程序隐私保护指引、用户服务协议、软件许可及服务协议、会员服务条款）统一放在后端 `server/content/legal/`，由 `scripts/import_content.py` 导入数据库、经 `/api/content/legal` 下发到小程序。修改文案不需要重新提交小程序审核；改完之后重跑一次导入即可。清单与占位符说明见 `server/content/legal/README.md`。
+
+- 补齐运营者信息：在 `.env` 里设置 `LEGAL_OPERATOR_NAME`（真实运营者名称）、`LEGAL_CONTACT_EMAIL`、`LEGAL_ICP_NUMBER`，然后重跑导入；漏填可以用 `python scripts/import_content.py --check` 查出来。
+- 完成微信小程序主体认证，并在微信后台把《用户隐私保护指引》按 `server/content/legal/README.md` 的清单逐项勾选；开启客服，保证注销与退款有入口。
 - 配置真实 `WECHAT_APPID/SECRET`，不要使用开发回退登录。
 - 使用 HTTPS 域名、生产 `JWT_SECRET`，并恢复 `urlCheck: true`。
 - 配置 DeepSeek/MiniMax Key，设置反向代理超时和上传大小限制。
+- 核对虚拟支付道具价格与 `PLAN_CATALOG`、以及 `content/legal/entries/07-plan.md` 三处一致。
 - 将 `data/`、`uploads/` 纳入备份，配置日志与异常告警。

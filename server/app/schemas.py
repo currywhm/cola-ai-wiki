@@ -10,6 +10,13 @@ class ProfileUpdate(BaseModel):
     avatar: str = Field(default="", max_length=2048)
 
 
+class PreferenceUpdate(BaseModel):
+    """用户偏好：只允许白名单字段，未传的字段保持不变。"""
+
+    # 用户当前启用的技能 id：只有用户主动修改才写入，后端不会自动重置
+    skills: list[str] | None = Field(default=None, max_length=8)
+
+
 class KnowledgeCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(default="", max_length=300)
@@ -28,6 +35,19 @@ class ChatRequest(BaseModel):
     thinking: str = Field(default="quick", pattern="^(quick|deep)$")
     # 前端技能面板选中的技能（kebab-case slug），后端据此要求 agent 先加载并注入该技能
     skill: str = Field(default="", max_length=40, pattern="^[a-z0-9-]*$")
+    # 多选技能：优先于 skill；为空时回落到 skill（兼容旧客户端）
+    skills: list[str] = Field(default_factory=list, max_length=8)
+    # 计划模式：显式打开官方 plan mode（计划先评审、批准后再执行）。
+    # 不传时由后端按 HARNESS_PLAN_MODE 与问答通道决定。
+    plan: bool | None = None
+
+
+class PlanReviewRequest(BaseModel):
+    """计划评审结论：批准 / 继续规划（可带反馈）。"""
+
+    review_id: str = Field(min_length=1, max_length=120)
+    approved: bool = False
+    feedback: str = Field(default="", max_length=2000)
 
 
 class PayCreateRequest(BaseModel):
@@ -85,6 +105,23 @@ class SkillForm(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
     developer_wechat: str = Field(default='', max_length=40)
     icon: str = Field(default='skill-node', max_length=40)
+
+
+class SkillBuildRequest(BaseModel):
+    """新建技能：把用户口述的要求交给 harness 的 skill-creator 做成技能包。"""
+
+    instruction: str = Field(min_length=4, max_length=4000)
+    name: str = Field(default='', max_length=30)
+    summary: str = Field(default='', max_length=60)
+    icon: str = Field(default='skill-node', max_length=40)
+    developer_wechat: str = Field(default='', max_length=40)
+
+
+class SkillEnhanceRequest(BaseModel):
+    """增强提示词：按技能模板把用户随手写的一句话改写成型。"""
+
+    instruction: str = Field(min_length=2, max_length=4000)
+    name: str = Field(default='', max_length=30)
 
 
 class SkillPublishUpdate(BaseModel):

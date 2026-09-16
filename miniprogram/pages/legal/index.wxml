@@ -1,70 +1,77 @@
 <view class="page legal-page">
   <app-nav title="{{title}}" back />
-  <text class="headline legal-title">{{title}}</text>
-  <text class="muted legal-updated">更新日期：2026 年 9 月 13 日</text>
-  <view class="card legal-card">
-    <block wx:if="{{type === 'data'}}">
-      <text class="legal-h2">资料范围</text>
-      <text class="legal-p">cola 知识库存储你主动创建的资料库信息、上传的文档文件、服务端解析出的文本片段、整理摘要、标签、问答记录和会员订单状态。小程序不会读取你未主动选择的微信聊天、相册、通讯录或设备文件。</text>
-      <text class="legal-h2">文件处理</text>
-      <text class="legal-p">上传文件会发送到部署方配置的服务端，用于解析、切片、索引、摘要整理和资料问答。图片和拍照资料可能经过 OCR 或等效文字识别处理。解析失败或格式不支持时，页面会提示失败状态。</text>
-      <text class="legal-h2">导出与删除</text>
-      <text class="legal-p">你可以在资料库详情中删除资料库或单个文档。删除后，服务端会移除相关文件、解析文本、索引切片和关联问答上下文。因备份、日志、安全审计需要而产生的残留记录，会在合理周期内滚动清理。</text>
-      <text class="legal-h2">本地缓存</text>
-      <text class="legal-p">小程序本地仅缓存登录令牌和基础用户信息，用于保持登录状态。退出登录会清理本地登录缓存，但不会删除服务端资料。</text>
-      <text class="legal-h2">容量与限制</text>
-      <text class="legal-p">免费版、Plus、Pro 对资料库数量和总容量有不同限制。达到限制后，需要删除资料、压缩文件或升级会员后继续上传。</text>
-      <view class="legal-actions"><button class="ghost-btn legal-action" bindtap="copyDataSummary">复制资料库清单</button><button class="ghost-btn legal-action" bindtap="clearLocalCache">清理本地缓存</button></view>
-    </block>
-    <block wx:elif="{{type === 'privacy'}}">
-      <text class="legal-h2">最小必要原则</text>
-      <text class="legal-p">cola 知识库仅在你主动登录、创建资料库、选择文件、导入图片、拍照扫描、发起搜索或问答时处理相关数据。我们不会在后台读取与你当前操作无关的内容。</text>
-      <text class="legal-h2">权限使用说明</text>
-      <text class="legal-p">微信登录用于识别账号；头像昵称仅在你点击同步并授权后保存；相册权限仅用于选择图片；相机权限仅用于拍照扫描；文件选择由微信能力提供，用于上传你主动选择的资料。</text>
-      <text class="legal-h2">第三方与服务端处理</text>
-      <text class="legal-p">微信登录和会员支付由微信平台提供。文档解析、向量检索、模型问答和会员权益发放由部署方服务端完成。模型密钥、支付密钥和服务端配置不会下发到小程序端。</text>
-      <text class="legal-h2">模型与资料边界</text>
-      <text class="legal-p">问答请求会携带你的问题、当前资料库检索片段和必要上下文到服务端模型链路。系统只围绕你选择的资料库检索回答，不承诺覆盖外部实时信息，也不用于训练公共模型。</text>
-      <text class="legal-h2">安全措施</text>
-      <text class="legal-p">服务端通过账号隔离、访问令牌、接口鉴权和 HTTPS 部署要求保护数据。请勿上传身份证件、银行卡、医疗病历、商业秘密等高度敏感信息，除非你确认部署环境和使用场景满足相应合规要求。</text>
-    </block>
-    <block wx:elif="{{type === 'agreement'}}">
-      <text class="legal-h2">服务内容</text>
-      <text class="legal-p">cola 知识库提供个人资料库创建、文档上传、解析整理、全文检索和基于资料的问答服务。具体可用能力以当前版本、服务端配置、会员状态和微信平台审核结果为准。</text>
-      <text class="legal-h2">用户责任</text>
-      <text class="legal-p">你应确保上传资料拥有合法来源和使用权，不得上传违法违规、侵权、恶意程序、色情暴力、欺诈信息、他人隐私或未经授权的保密资料。因用户上传内容产生的权利争议由用户自行承担。</text>
-      <text class="legal-h2">模型回答边界</text>
-      <text class="legal-p">资料问答由检索系统和服务端模型生成，可能存在遗漏、误解、过时、格式错误或幻觉。回答仅用于辅助阅读和整理，不构成法律、医疗、金融、投资、教育考试或其他专业意见。</text>
-      <text class="legal-h2">重要信息核验</text>
-      <text class="legal-p">涉及合同、交易、诊疗、合规、投资、财务、考试、工作决策等重要事项时，请以原文、官方文件、专业人士意见或权威渠道为准。你应自行判断并承担基于回答采取行动的风险。</text>
-      <text class="legal-h2">服务可用性</text>
-      <text class="legal-p">文档解析、模型服务、微信支付、网络环境或外部接口可能出现延迟、失败或临时不可用。我们会尽力保持服务稳定，但不承诺服务永不中断或回答永远准确。</text>
-      <text class="legal-h2">付费与权益</text>
-      <text class="legal-p">微信注册登录用户默认获得 1 个资料库和 300MB 免费空间。Plus / Pro 属于虚拟权益，购买后按照页面展示的资料库数量和容量限制生效。最终支付结果、续费、退款和订单状态以微信支付及服务端订单记录为准。</text>
-    </block>
-    <block wx:elif="{{type === 'plan'}}">
-      <text class="legal-h2">免费版</text>
-      <text class="legal-p">微信注册登录后可创建 1 个资料库，累计上传容量 300MB，支持文档整理、全文检索和资料问答。</text>
-      <text class="legal-h2">Plus 会员</text>
-      <text class="legal-p">可创建 5 个资料库，累计上传容量 3GB。价格为 6.90 元/月、18 元/季、69 元/年，适合个人长期整理学习、工作资料。</text>
-      <text class="legal-h2">Pro 会员</text>
-      <text class="legal-p">可创建 20 个资料库，累计上传容量 10GB。价格为 9.90 元/月、25 元/季、99 元/年，适合高频上传、多主题资料库和更大的知识沉淀。</text>
-      <text class="legal-h2">支付与权益生效</text>
-      <text class="legal-p">会员按次购买，月付有效期为 31 天，季付为 92 天，年付为 365 天；不会自动扣款，到期后可手动续费。优惠比例按月付价格折算后四舍五入展示。</text>
-      <text class="legal-h2">订单与生效时间</text>
-      <text class="legal-p">付款前请确认会员等级、有效期和总价。会员价格和最终支付状态以微信支付页面及服务端订单记录为准。服务端确认支付并发放权益后更新会员状态；若付款后未及时更新，请稍后重新进入“我的”，勿重复付款。</text>
-    </block>
-    <block wx:else>
-      <text class="legal-h2">cola 知识库</text>
-      <text class="legal-p">个人资料智能阅读小程序，帮助你整理文档、检索内容并获得带出处的问答。</text>
-      <text class="legal-h2">登录与部署</text>
-      <text class="legal-p">小程序仅支持微信登录。后端由部署方独立部署和维护，负责模型、数据库、文件存储、支付回调和 HTTPS 域名配置。</text>
-      <text class="legal-h2">适用场景</text>
-      <text class="legal-p">适用于个人学习资料、工作文档、读书笔记、项目资料的整理和检索。不建议作为法律审查、医疗诊断、财务投资、考试作答或自动决策系统使用。</text>
-      <text class="legal-h2">联系我们</text>
-      <text class="legal-p">如需处理订单、资料删除、隐私咨询、侵权投诉或服务异常，请通过小程序配置的客服、邮箱或部署方公告渠道联系处理。</text>
-      <text class="legal-h2">版本信息</text>
-      <text class="legal-p">当前版本：1.0.0。服务端地址、模型配置和支付配置由部署方维护。</text>
-    </block>
+
+  <view wx:if="{{loadState === 'loading'}}" class="legal-state">
+    <view class="legal-skeleton legal-skeleton-title"></view>
+    <view class="legal-skeleton legal-skeleton-line"></view>
+    <view class="legal-skeleton legal-skeleton-line short"></view>
   </view>
+
+  <view wx:elif="{{loadState === 'error'}}" class="legal-state">
+    <text class="legal-state-title">这份说明暂时打不开</text>
+    <text class="legal-state-desc">网络恢复后可以重试；需要马上联系我们的话，点下面的客服。</text>
+    <button class="legal-retry" bindtap="retry">重新加载</button>
+  </view>
+
+  <block wx:else>
+    <view class="legal-head">
+      <text wx:if="{{doc.summary}}" class="legal-head-summary">{{doc.summary}}</text>
+      <text wx:if="{{updatedLabel}}" class="legal-head-meta">{{updatedLabel}}</text>
+    </view>
+
+    <view class="legal-body">
+      <block wx:for="{{blocks}}" wx:key="key">
+        <text wx:if="{{item.type === 'heading'}}" class="legal-h2{{item.first ? ' legal-first' : ''}}">{{item.text}}</text>
+
+        <view wx:elif="{{item.type === 'paragraph'}}" class="legal-p{{item.first ? ' legal-first' : ''}}">
+          <text wx:for="{{item.runs}}" wx:for-item="run" wx:key="key" class="legal-run legal-run-{{run.style}}">{{run.text}}</text>
+        </view>
+
+        <view wx:elif="{{item.type === 'bullet'}}" class="legal-line{{item.first ? ' legal-first' : ''}}">
+          <view class="legal-dot"></view>
+          <view class="legal-line-body">
+            <text wx:for="{{item.runs}}" wx:for-item="run" wx:key="key" class="legal-run legal-run-{{run.style}}">{{run.text}}</text>
+          </view>
+        </view>
+
+        <view wx:elif="{{item.type === 'step'}}" class="legal-line{{item.first ? ' legal-first' : ''}}">
+          <view class="legal-step">{{item.index}}</view>
+          <view class="legal-line-body">
+            <text wx:for="{{item.runs}}" wx:for-item="run" wx:key="key" class="legal-run legal-run-{{run.style}}">{{run.text}}</text>
+          </view>
+        </view>
+
+        <view wx:elif="{{item.type === 'note'}}" class="legal-note{{item.first ? ' legal-first' : ''}}">
+          <view class="legal-note-bar"></view>
+          <view class="legal-line-body">
+            <text wx:for="{{item.runs}}" wx:for-item="run" wx:key="key" class="legal-run legal-run-{{run.style}}">{{run.text}}</text>
+          </view>
+        </view>
+      </block>
+    </view>
+
+    <view wx:if="{{isData}}" class="legal-actions">
+      <button class="legal-action" bindtap="copyDataSummary">复制资料库清单</button>
+      <button class="legal-action" bindtap="clearLocalCache">清理本地缓存</button>
+    </view>
+
+    <view class="legal-help">
+      <text class="legal-help-title">还有疑问</text>
+      <text class="legal-help-desc">注销账号、删除数据、订单与退款、侵权投诉，都可以直接找我们处理。</text>
+      <button class="legal-contact" open-type="contact">联系客服</button>
+    </view>
+
+    <view wx:if="{{related.length}}" class="legal-related">
+      <text class="legal-related-title">相关说明</text>
+      <button class="legal-related-item" wx:for="{{related}}" wx:key="id" data-id="{{item.id}}" bindtap="openDoc">
+        <view class="legal-related-main">
+          <text class="legal-related-name">{{item.title}}</text>
+          <text class="legal-related-desc">{{item.summary}}</text>
+        </view>
+        <ui-icon name="chevron-right" size="{{15}}" />
+      </button>
+    </view>
+
+    <text class="legal-foot-note">{{fromCache ? '当前显示的是本机缓存内容，联网后会自动更新。' : '内容以后端下发为准，更新后本页自动同步。'}}</text>
+  </block>
 </view>

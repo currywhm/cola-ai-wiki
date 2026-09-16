@@ -11,8 +11,10 @@
     "pages/market/index",
     "pages/knowledge-detail/index",
     "pages/document/index",
+    "pages/artifact/index",
     "pages/search/index",
     "pages/legal/index",
+    "pages/tips/index",
     "pages/create/index"
   ],
   "window": {

@@ -1,7 +1,9 @@
 import asyncio
 import hashlib
 import json
+import math
 import mimetypes
+import re
 import secrets
 import time
 import uuid
@@ -17,26 +19,44 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from .config import settings
 from .db import connect, decode_sources, fetchall, fetchone, init_db, row_dict
-from .schemas import ArticleImportRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, ProfileUpdate, ShareCreate, SkillFlagUpdate, SkillForm, SkillPublishUpdate
+from .schemas import ArticleImportRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, PlanReviewRequest, PreferenceUpdate, ProfileUpdate, ShareCreate, SkillBuildRequest, SkillEnhanceRequest, SkillFlagUpdate, SkillForm, SkillPublishUpdate
 from .security import create_token, current_user, rate_limit
 from .services.documents import ALLOWED_SUFFIXES, extract_text, split_chunks
+from .services import content as content_service
+from .services import skill_build
+from .services import artifacts as artifact_service
 from .services.wechat_article import ArticleFetchError, build_document_html, fetch_wechat_article
 from .services.llm import stream_answer
 from .services.memory import load_history, maybe_compress, recent_context
-from .services.harness import SKILL_LABELS, configured as harness_configured
+from .services.harness import (
+    SKILL_LABELS,
+    configured as harness_configured,
+    pending_plan_review,
+    stream_raw_prompt,
+    submit_plan_review,
+)
 from .services.organizer import organize_document
 from .services.virtual_pay import calc_pay_sig, calc_user_signature, query_order, sign_data, virtual_configured, virtual_product
 from .services.web_search import WebSearchError, search_web, web_context
 
+# 免费试用：注册当天起 30 天倒计时，期间 300MB / 1 个资料库。
+# 会员按租期开通（月/季/年）：Plus 10GB / Pro 30GB，另外区别在资料库数量、单文件大小与每月问答额度。
+TRIAL_DAYS = 30
+FREE_STORAGE_BYTES = 300 * 1024 * 1024
+PLUS_STORAGE_BYTES = 10 * 1024 * 1024 * 1024
+PRO_STORAGE_BYTES = 30 * 1024 * 1024 * 1024
+# 试用结束后免费账号仍可提问，但额度收紧，避免注册即弃用。
+FREE_QUESTIONS_AFTER_TRIAL = 50
+
 MEMBERSHIP_LIMITS = {
-    'free': {'label': '免费版', 'knowledge_bases': 1, 'storage_bytes': 300 * 1024 * 1024},
-    'plus': {'label': 'Plus 会员', 'knowledge_bases': 5, 'storage_bytes': 3 * 1024 * 1024 * 1024},
-    'pro': {'label': 'Pro 会员', 'knowledge_bases': 20, 'storage_bytes': 10 * 1024 * 1024 * 1024},
+    'free': {'label': '免费试用', 'knowledge_bases': 1, 'storage_bytes': FREE_STORAGE_BYTES, 'monthly_questions': 200, 'max_file_bytes': 50 * 1024 * 1024, 'skills': 1},
+    'plus': {'label': 'Plus 会员', 'knowledge_bases': 10, 'storage_bytes': PLUS_STORAGE_BYTES, 'monthly_questions': 1000, 'max_file_bytes': 100 * 1024 * 1024, 'skills': 5},
+    'pro': {'label': 'Pro 会员', 'knowledge_bases': 50, 'storage_bytes': PRO_STORAGE_BYTES, 'monthly_questions': 5000, 'max_file_bytes': 300 * 1024 * 1024, 'skills': 10},
 }
 
 PLAN_CATALOG = {
-    'plus_monthly': (690, 'Plus 会员月度', 'plus', 31), 'plus_quarterly': (1800, 'Plus 会员季度', 'plus', 92), 'plus_yearly': (6900, 'Plus 会员年度', 'plus', 365),
-    'pro_monthly': (990, 'Pro 会员月度', 'pro', 31), 'pro_quarterly': (2500, 'Pro 会员季度', 'pro', 92), 'pro_yearly': (9900, 'Pro 会员年度', 'pro', 365),
+    'plus_monthly': (1200, 'Plus 会员月度', 'plus', 31), 'plus_quarterly': (3000, 'Plus 会员季度', 'plus', 92), 'plus_yearly': (10800, 'Plus 会员年度', 'plus', 365),
+    'pro_monthly': (2900, 'Pro 会员月度', 'pro', 31), 'pro_quarterly': (7500, 'Pro 会员季度', 'pro', 92), 'pro_yearly': (25800, 'Pro 会员年度', 'pro', 365),
 }
 
 DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
@@ -52,6 +72,84 @@ def membership_for_user(row: Any) -> str:
 def limits_for_user(row: Any) -> dict:
     tier = membership_for_user(row)
     return {'tier': tier, **MEMBERSHIP_LIMITS[tier]}
+
+
+def parse_moment(value: Any) -> datetime | None:
+    """把库里的 ISO 时间串解析成带时区的 datetime；坏数据返回 None。"""
+    try:
+        parsed = datetime.fromisoformat(str(value or ''))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def trial_state(row: Any) -> dict:
+    """新用户免费试用倒计时：注册起 TRIAL_DAYS 天，会员不参与倒计时。"""
+    created = parse_moment(row['created_at']) if row is not None and 'created_at' in row.keys() else None
+    if not created:
+        return {'active': True, 'days_left': TRIAL_DAYS, 'ends_at': ''}
+    ends_at = created + timedelta(days=TRIAL_DAYS)
+    seconds_left = (ends_at - datetime.now(timezone.utc)).total_seconds()
+    return {'active': seconds_left > 0, 'days_left': max(0, math.ceil(seconds_left / 86400)), 'ends_at': ends_at.isoformat()}
+
+
+def human_size(value: int) -> str:
+    if value >= 1024 * 1024 * 1024:
+        size = value / (1024 * 1024 * 1024)
+        return f'{size:.0f}GB' if size >= 10 else f'{size:.1f}GB'
+    return f'{max(1, round(value / (1024 * 1024)))}MB'
+
+
+async def questions_this_month(db, user_id: str) -> int:
+    """本月已提问题数（自然月，UTC），用于会员/试用的月度问答额度。"""
+    period_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    row = await fetchone(db, "SELECT COUNT(*) AS used FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.user_id=? AND m.role='user' AND m.created_at>=?", (user_id, period_start))
+    return int(row['used'] or 0) if row else 0
+
+
+async def owned_skill_count(db, user_id: str) -> int:
+    """自己创建（不含内置）的技能数量，用于会员技能配额。"""
+    row = await fetchone(db, "SELECT COUNT(*) AS used FROM skills WHERE user_id=? AND status='active' AND source!='builtin'", (user_id,))
+    return int(row['used'] or 0) if row else 0
+
+
+def account_state(row: Any, questions_used: int = 0, skills_used: int = 0) -> dict:
+    """会员 + 试用倒计时 + 月度问答额度 + 技能配额合成一份状态，前后端共用同一套口径。"""
+    tier = membership_for_user(row)
+    limits = MEMBERSHIP_LIMITS[tier]
+    trial = trial_state(row)
+    trial_active = tier == 'free' and trial['active']
+    quota = limits['monthly_questions'] if (tier != 'free' or trial_active) else FREE_QUESTIONS_AFTER_TRIAL
+    expires_at = str(row['membership_expires_at'] or '') if row is not None and 'membership_expires_at' in row.keys() else ''
+    days_left = 0
+    if tier != 'free':
+        expiry = parse_moment(expires_at)
+        days_left = max(0, math.ceil((expiry - datetime.now(timezone.utc)).total_seconds() / 86400)) if expiry else 0
+    else:
+        days_left = trial['days_left']
+    return {
+        'tier': tier,
+        'label': limits['label'],
+        'trial': {'active': trial_active, 'days_left': trial['days_left'], 'days': TRIAL_DAYS, 'ends_at': trial['ends_at']},
+        'period': {'days_left': days_left, 'expires_at': expires_at},
+        'limits': {'knowledge_bases': limits['knowledge_bases'], 'storage_bytes': limits['storage_bytes'], 'max_file_bytes': limits['max_file_bytes'], 'monthly_questions': quota, 'skills': limits['skills']},
+        'quota': {'questions_limit': quota, 'questions_used': questions_used, 'questions_left': max(0, quota - questions_used), 'skills_limit': limits['skills'], 'skills_used': skills_used, 'skills_left': max(0, limits['skills'] - skills_used)},
+        'entitlements': {
+            'can_upload': tier != 'free' or trial_active,
+            'can_create_knowledge': tier != 'free' or trial_active,
+            'can_ask': questions_used < quota,
+            'member': tier != 'free',
+        },
+    }
+
+
+def stored_preferences(raw: Any) -> dict:
+    """把 users.preferences 解析成字典；损坏或为空时回退成空字典。"""
+    try:
+        value = json.loads(raw or '{}')
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 async def ensure_default_knowledge(db, user_id: str):
@@ -120,6 +218,18 @@ async def lifespan(app: FastAPI):
         await ensure_default_knowledge(db, user["id"])
     await db.commit()
     await db.close()
+    # 使用技巧等内容：源文件在 content/ 目录，运行时统一从数据库读。
+    # 首次启动发现库里没有内容时自动导入一次（可重复执行，指纹一致即跳过），
+    # 因此部署时既有显式脚本这一步，也不会因为漏跑脚本导致接口 503。
+    try:
+        from .services.content_import import ensure_content_imported, import_warnings
+        imported = await ensure_content_imported()
+        for item in imported:
+            print(f"[content] 已从本地源文件导入 {item['slug']}：{item['entries']} 篇正文、{item['assets']} 张配图（版本 {item['version']}）", flush=True)
+        for warning in import_warnings():
+            print(f"[content][合规待办] {warning}", flush=True)
+    except content_service.ContentError as exc:
+        print(f"[content] 内容未导入：{exc}", flush=True)
     if harness_configured():
         # 每轮问答新建 harness 会话（记忆由 DB 承载），启动时清扫 24h 前的过期会话目录
         from .services.harness import cleanup_stale_sessions
@@ -199,7 +309,7 @@ async def deliver_membership(db, order, wx_order_id: str, quantity: int) -> None
     if tier == 'free' or days <= 0:
         return
     base = datetime.now(timezone.utc)
-    user = await fetchone(db, "SELECT membership,membership_expires_at FROM users WHERE id=?", (order['user_id'],))
+    user = await fetchone(db, "SELECT * FROM users WHERE id=?", (order['user_id'],))
     if user and str(user['membership'] or '') == tier:
         try:
             current_expiry = datetime.fromisoformat(str(user['membership_expires_at'] or ''))
@@ -218,6 +328,67 @@ async def deliver_membership(db, order, wx_order_id: str, quantity: int) -> None
 def fts_literal(query: str) -> str:
     # User input is a phrase, not FTS query syntax (quotes, minus, OR, etc.).
     return '"' + query.replace('"', '""') + '"'
+
+
+_TERM_SPLIT = re.compile(r"[^0-9A-Za-z\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+
+
+def query_terms(query: str, limit: int = 24) -> list[str]:
+    """把用户问题拆成可用于检索的词。
+
+    FTS5 默认分词器会把一整串连续汉字当成一个整词，中文问句几乎永远命不中，
+    所以这里退回到子串检索：按空白与标点切段，长段再切成重叠二元组，
+    这样「六险二金」「中粮集团」这类片段都能被命中。
+    """
+    terms: list[str] = []
+    for piece in _TERM_SPLIT.split(query or ''):
+        if not piece:
+            continue
+        if len(piece) <= 6:
+            terms.append(piece)
+            continue
+        terms.extend(piece[i:i + 2] for i in range(len(piece) - 1))
+    seen: set[str] = set()
+    picked: list[str] = []
+    for term in terms:
+        if len(term) < 2 or term in seen:
+            continue
+        seen.add(term)
+        picked.append(term)
+    return picked[:limit]
+
+
+async def retrieve_chunks(db, query: str, user_id: str, knowledge_id: str | None = None, folder_id: str | None = None, limit: int = 5) -> list[dict]:
+    """按命中词数给切片打分；命不中就是命不中，不再拿「最近几条」冒充出处。"""
+    terms = query_terms(query)
+    if not terms:
+        return []
+    score_sql = ' + '.join("CASE WHEN instr(lower(c.content),lower(?))>0 THEN 1 ELSE 0 END" for _ in terms)
+    total = len(terms)
+    min_hits = 1 if total <= 2 else max(2, round(total * 0.25))
+    where = ["k.user_id=?", "d.status!='deleted'"]
+    scope: list[Any] = [*terms, user_id]
+    if knowledge_id:
+        where.append('c.knowledge_id=?')
+        scope.append(knowledge_id)
+    if folder_id is not None:
+        where.append('d.folder_id=?')
+        scope.append(folder_id)
+    sql = (
+        "SELECT * FROM (SELECT c.content AS content,c.id AS chunk_id,c.document_id AS document_id,c.page_number AS page_number,d.filename AS filename,k.name AS knowledge_name," + score_sql + " AS hits "
+        "FROM chunks c JOIN documents d ON d.id=c.document_id JOIN knowledge_bases k ON k.id=c.knowledge_id WHERE " + ' AND '.join(where) + ") WHERE hits>=? "
+        "ORDER BY hits DESC, page_number ASC LIMIT ?"
+    )
+    rows = await fetchall(db, sql, (*scope, min_hits, limit))
+    return [
+        {
+            'id': row['chunk_id'], 'document_id': row['document_id'], 'filename': row['filename'],
+            'knowledge_name': row['knowledge_name'],
+            'page_number': row['page_number'], 'content': row['content'], 'hits': int(row['hits'] or 0),
+            'score': round(min(0.98, 0.7 + 0.28 * int(row['hits'] or 0) / total), 2),
+        }
+        for row in rows
+    ]
 
 
 def document_view(row) -> dict:
@@ -295,10 +466,19 @@ async def me(user_id: str = Depends(current_user)) -> dict:
     row = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
     knowledge_usage = await fetchone(db, "SELECT COUNT(*) AS knowledge_bases FROM knowledge_bases WHERE user_id=? AND status='active'", (user_id,))
     document_usage = await fetchone(db, "SELECT COUNT(*) AS documents, COALESCE(SUM(file_size),0) AS storage_bytes FROM documents WHERE user_id=? AND status!='deleted'", (user_id,))
+    questions_used = await questions_this_month(db, user_id)
+    skills_used = await owned_skill_count(db, user_id)
     await db.close()
     if not row: raise HTTPException(404, "用户不存在")
-    limits = limits_for_user(row)
-    return {"id": row["id"], "nickname": row["nickname"], "avatar": row["avatar"], "membership": limits['tier'], "membership_label": limits['label'], "membership_expires_at": row['membership_expires_at'] or '', "limits": {"knowledge_bases": limits['knowledge_bases'], "storage_bytes": limits['storage_bytes']}, "usage": {"knowledge_bases": int(knowledge_usage['knowledge_bases'] or 0), "documents": int(document_usage['documents'] or 0), "storage_bytes": int(document_usage['storage_bytes'] or 0)}}
+    state = account_state(row, questions_used, skills_used)
+    return {
+        "id": row["id"], "nickname": row["nickname"], "avatar": row["avatar"],
+        "membership": state['tier'], "membership_label": state['label'],
+        "membership_expires_at": row['membership_expires_at'] or '',
+        "trial": state['trial'], "period": state['period'], "quota": state['quota'], "entitlements": state['entitlements'],
+        "limits": state['limits'],
+        "usage": {"knowledge_bases": int(knowledge_usage['knowledge_bases'] or 0), "documents": int(document_usage['documents'] or 0), "storage_bytes": int(document_usage['storage_bytes'] or 0)},
+    }
 
 
 @app.patch("/api/me")
@@ -312,6 +492,44 @@ async def update_me(payload: ProfileUpdate, user_id: str = Depends(current_user)
     return row_dict(row)
 
 
+@app.get("/api/me/preferences")
+async def read_preferences(user_id: str = Depends(current_user)) -> dict:
+    """用户偏好。skills 为 null 表示用户从未设置过，前端据此决定是否用本地值播种。"""
+    db = await connect()
+    row = await fetchone(db, "SELECT preferences FROM users WHERE id=? AND status='active'", (user_id,))
+    await db.close()
+    if not row:
+        raise HTTPException(404, "用户不存在")
+    return {'skills': stored_preferences(row['preferences']).get('skills')}
+
+
+@app.put("/api/me/preferences")
+async def update_preferences(payload: PreferenceUpdate, user_id: str = Depends(current_user)) -> dict:
+    """只更新本次传入的字段；未传的字段保持原值，避免误清空用户设定。"""
+    db = await connect()
+    row = await fetchone(db, "SELECT preferences FROM users WHERE id=? AND status='active'", (user_id,))
+    if not row:
+        await db.close()
+        raise HTTPException(404, "用户不存在")
+    stored = stored_preferences(row['preferences'])
+    if payload.skills is not None:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for raw in payload.skills:
+            slug = (raw or '').strip()
+            if not slug or len(slug) > 40 or slug in seen or not re.fullmatch(r'[a-z0-9-]+', slug):
+                continue
+            seen.add(slug)
+            cleaned.append(slug)
+            if len(cleaned) >= MAX_TURN_SKILLS:
+                break
+        stored['skills'] = cleaned
+    await db.execute("UPDATE users SET preferences=?, updated_at=? WHERE id=?", (json.dumps(stored, ensure_ascii=False), now(), user_id))
+    await db.commit()
+    await db.close()
+    return {'skills': stored.get('skills')}
+
+
 @app.delete("/api/me")
 async def delete_me(user_id: str = Depends(current_user)) -> dict:
     db = await connect()
@@ -323,6 +541,32 @@ async def delete_me(user_id: str = Depends(current_user)) -> dict:
         try: settings.resolve_path(row["storage_path"]).unlink(missing_ok=True)
         except OSError: pass
     return {"ok": True}
+
+
+@app.get('/api/pay/plans')
+async def pay_plans() -> dict:
+    """会员方案与权益。改价只需改 PLAN_CATALOG，前台文案与价格都从这里取。"""
+    tiers = []
+    for tier in ('plus', 'pro'):
+        limits = MEMBERSHIP_LIMITS[tier]
+        plans = [
+            {'id': plan, 'amount': amount, 'price': f'{amount / 100:.2f}', 'days': days, 'available': virtual_configured(plan)}
+            for plan, (amount, _desc, plan_tier, days) in PLAN_CATALOG.items() if plan_tier == tier
+        ]
+        tiers.append({
+            'id': tier, 'label': limits['label'], 'storage_bytes': limits['storage_bytes'], 'storage_label': human_size(limits['storage_bytes']),
+            'knowledge_bases': limits['knowledge_bases'], 'monthly_questions': limits['monthly_questions'],
+            'max_file_label': human_size(limits['max_file_bytes']), 'plans': plans,
+        })
+    free = MEMBERSHIP_LIMITS['free']
+    return {
+        'trial_days': TRIAL_DAYS,
+        'free': {
+            'label': free['label'], 'storage_label': human_size(free['storage_bytes']), 'knowledge_bases': free['knowledge_bases'],
+            'monthly_questions': free['monthly_questions'], 'monthly_questions_after_trial': FREE_QUESTIONS_AFTER_TRIAL,
+        },
+        'tiers': tiers,
+    }
 
 
 @app.post("/api/pay/orders")
@@ -485,9 +729,11 @@ async def create_knowledge(payload: KnowledgeCreate, user_id: str = Depends(curr
         raise HTTPException(422, "资料库名称不能为空")
     db = await connect()
     await ensure_default_knowledge(db, user_id)
-    user = await fetchone(db, "SELECT membership,membership_expires_at FROM users WHERE id=?", (user_id,))
+    user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
     count = await fetchone(db, "SELECT COUNT(*) AS count FROM knowledge_bases WHERE user_id=? AND status='active'", (user_id,))
     limits = limits_for_user(user)
+    if not account_state(user, 0)['entitlements']['can_create_knowledge']:
+        await db.close(); raise HTTPException(403, "免费试用已结束，开通会员后可继续新建资料库")
     if int(count['count']) >= limits['knowledge_bases']:
         await db.close(); raise HTTPException(403, f"{limits['label']}最多创建 {limits['knowledge_bases']} 个资料库，请升级会员")
     if name == DEFAULT_KNOWLEDGE_NAME:
@@ -500,7 +746,7 @@ async def create_knowledge(payload: KnowledgeCreate, user_id: str = Depends(curr
 
 @app.delete("/api/knowledge/{knowledge_id}")
 async def delete_knowledge(knowledge_id: str, user_id: str = Depends(current_user)) -> dict:
-    db = await connect(); kb = await fetchone(db, "SELECT id FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id)); user = await fetchone(db, "SELECT membership,membership_expires_at FROM users WHERE id=?", (user_id,))
+    db = await connect(); kb = await fetchone(db, "SELECT id FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id)); user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
     if not kb:
         await db.close(); raise HTTPException(404, "资料库不存在")
     files = await fetchall(db, "SELECT storage_path FROM documents WHERE knowledge_id=? AND user_id=?", (knowledge_id, user_id))
@@ -667,23 +913,25 @@ async def move_document(document_id: str, payload: DocumentMove, user_id: str = 
 
 @app.post("/api/knowledge/{knowledge_id}/documents")
 async def upload_document(background_tasks: BackgroundTasks, knowledge_id: str, file: UploadFile = File(...), folder_id: str = Form(default=""), x_upload_filename: str | None = Header(default=None), user_id: str = Depends(current_user)) -> dict:
-    db = await connect(); kb = await fetchone(db, "SELECT id FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id)); user = await fetchone(db, "SELECT membership,membership_expires_at FROM users WHERE id=?", (user_id,))
+    db = await connect(); kb = await fetchone(db, "SELECT id FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id)); user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
     if not kb: await db.close(); raise HTTPException(404, "知识库不存在")
     if folder_id:
         folder = await fetchone(db, "SELECT id FROM folders WHERE id=? AND user_id=? AND knowledge_id=?", (folder_id, user_id, knowledge_id))
         if not folder: await db.close(); raise HTTPException(404, "目标文件夹不存在")
+    limits = limits_for_user(user)
+    if not account_state(user, 0)['entitlements']['can_upload']:
+        await db.close(); raise HTTPException(403, "免费试用已结束，开通会员后可继续添加资料")
     client_name = unquote(x_upload_filename) if x_upload_filename else file.filename
     safe_name = Path(client_name or "upload").name; document_id = uuid.uuid4().hex; destination = settings.upload_path / f"{document_id}_{safe_name}"
     suffix = destination.suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
         await db.close(); raise HTTPException(415, "暂不支持该文件类型")
     data = await file.read()
-    if len(data) > 50 * 1024 * 1024:
-        await db.close(); raise HTTPException(413, "单文件不能超过 50MB")
+    if len(data) > limits['max_file_bytes']:
+        await db.close(); raise HTTPException(413, f"单文件不能超过 {human_size(limits['max_file_bytes'])}")
     used = await fetchone(db, "SELECT COALESCE(SUM(file_size),0) AS bytes FROM documents WHERE user_id=? AND status!='deleted'", (user_id,))
-    limits = limits_for_user(user)
     if int(used['bytes']) + len(data) > limits['storage_bytes']:
-        await db.close(); raise HTTPException(413, f"{limits['label']}存储空间为 {limits['storage_bytes'] // (1024 * 1024)}MB，当前空间不足，请升级会员")
+        await db.close(); raise HTTPException(413, f"{limits['label']}可用空间 {human_size(limits['storage_bytes'])} 已满，升级会员可继续添加")
     destination.write_bytes(data); timestamp = now()
     await db.execute("INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (document_id, knowledge_id, user_id, safe_name, suffix, len(data), str(destination), "processing", 15, folder_id, timestamp, timestamp)); await db.commit(); await db.close()
     status = "completed"
@@ -715,12 +963,15 @@ async def import_article(payload: ArticleImportRequest, background_tasks: Backgr
     rate_limit(f"import:{user_id}", 10, 60, "导入太频繁了，请稍后再试")
     db = await connect()
     kb = await fetchone(db, "SELECT id FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
-    user = await fetchone(db, "SELECT membership,membership_expires_at FROM users WHERE id=?", (user_id,))
+    user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
+    limits = limits_for_user(user)
     if not kb:
         await db.close(); raise HTTPException(404, "知识库不存在")
     if payload.folder_id:
         folder = await fetchone(db, "SELECT id FROM folders WHERE id=? AND user_id=? AND knowledge_id=?", (payload.folder_id, user_id, knowledge_id))
         if not folder: await db.close(); raise HTTPException(404, "目标文件夹不存在")
+    if not account_state(user, 0)['entitlements']['can_upload']:
+        await db.close(); raise HTTPException(403, "免费试用已结束，开通会员后可继续添加资料")
     document_id = uuid.uuid4().hex
     assets_dir = settings.upload_path / "article_assets" / document_id
     try:
@@ -733,9 +984,8 @@ async def import_article(payload: ArticleImportRequest, background_tasks: Backgr
     destination.write_text(full_html, encoding="utf-8")
     file_size = destination.stat().st_size + sum(f.stat().st_size for f in assets_dir.glob("*") if f.is_file())
     used = await fetchone(db, "SELECT COALESCE(SUM(file_size),0) AS bytes FROM documents WHERE user_id=? AND status!='deleted'", (user_id,))
-    limits = limits_for_user(user)
     if int(used['bytes']) + file_size > limits['storage_bytes']:
-        await db.close(); raise HTTPException(413, f"{limits['label']}存储空间为 {limits['storage_bytes'] // (1024 * 1024)}MB，当前空间不足，请升级会员")
+        await db.close(); raise HTTPException(413, f"{limits['label']}可用空间 {human_size(limits['storage_bytes'])} 已满，升级会员可继续添加")
     timestamp = now()
     await db.execute("INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (document_id, knowledge_id, user_id, safe_name, ".html", file_size, str(destination), "processing", 15, payload.folder_id, timestamp, timestamp))
     await db.commit(); await db.close()
@@ -770,6 +1020,74 @@ async def article_asset(document_id: str, filename: str) -> FileResponse:
         raise HTTPException(404, "资源不存在")
     media_type = mimetypes.guess_type(safe)[0] or "application/octet-stream"
     return FileResponse(path, media_type=media_type)
+
+
+# --- 运营文案（使用技巧） -------------------------------------------------
+# 内容源文件在仓库 content/ 目录里维护，部署时导入数据库（scripts/import_content.py，
+# 或服务首次启动的自动导入），运行时统一从数据库读：
+#   * 改文案不需要发版，也不需要把 content/ 目录带进容器；
+#   * 正文的 Markdown 在导入时解析成 blocks 存库，请求时不重复解析。
+# 这三条接口不挂登录态：内容不含用户数据，且小程序 <image> 无法携带
+# Authorization 头，配图必须能匿名取到。
+
+
+@app.get("/api/content/tips")
+async def tips_index() -> dict:
+    try:
+        return await content_service.tips_index()
+    except content_service.ContentError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.get("/api/content/tips/{entry_id}")
+async def tips_entry(entry_id: str) -> dict:
+    try:
+        entry = await content_service.tip_entry(entry_id)
+    except content_service.ContentError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if not entry:
+        raise HTTPException(404, "技巧不存在")
+    return entry
+
+
+@app.get("/api/content/legal")
+async def legal_index() -> dict:
+    """合规文档清单（标题、摘要、更新日期）。
+
+    与使用技巧一样匿名可读：内容里没有用户数据，而且是「上线审核要能直接看到」
+    的材料，不能因为没登录就打不开。
+    """
+    try:
+        return await content_service.legal_index()
+    except content_service.ContentError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.get("/api/content/legal/{doc_id}")
+async def legal_document(doc_id: str) -> dict:
+    """合规文档正文：按 block 结构下发，前端用原生组件渲染。"""
+    try:
+        doc = await content_service.legal_doc(doc_id)
+    except content_service.ContentError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if not doc:
+        raise HTTPException(404, "文档不存在")
+    return doc
+
+
+@app.get("/api/content/assets/{filename}")
+async def content_asset(filename: str) -> Response:
+    asset = await content_service.asset(filename)
+    if not asset:
+        raise HTTPException(404, "资源不存在")
+    return Response(
+        content=asset["bytes"],
+        media_type=asset["mime"],
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "ETag": f'"{hashlib.sha1(asset["bytes"]).hexdigest()}"',
+        },
+    )
 
 
 @app.post("/api/documents/{document_id}/retry")
@@ -820,6 +1138,35 @@ async def download_document(document_id: str, user_id: str = Depends(current_use
     return FileResponse(settings.resolve_path(row["storage_path"]), filename=row["filename"], media_type=mimetypes.guess_type(row["filename"])[0] or "application/octet-stream")
 
 
+@app.get("/api/artifacts/{artifact_id}/download")
+async def download_artifact(artifact_id: str, user_id: str = Depends(current_user)) -> FileResponse:
+    """下载 / 转发工具产物：产物按用户收窄，别人的 id 拿不到文件。"""
+    db = await connect(); row = await artifact_service.owned(db, artifact_id, user_id); await db.close()
+    if not row:
+        raise HTTPException(404, "文件不存在")
+    path = artifact_service.stored_path(row)
+    if not path.is_file():
+        raise HTTPException(404, "文件已不在服务器上")
+    return FileResponse(path, filename=str(row["filename"]), media_type=str(row["mime"] or "application/octet-stream"))
+
+
+@app.get("/api/artifacts/{artifact_id}/preview")
+async def preview_artifact(artifact_id: str, user_id: str = Depends(current_user)) -> dict:
+    """站内预览：文本类产物直接给正文（Markdown / 纯文本 / 代码）；
+    图片与文档类交前端走微信原生预览（图片预览 / 内置文档渲染器）。"""
+    db = await connect(); row = await artifact_service.owned(db, artifact_id, user_id); await db.close()
+    if not row:
+        raise HTTPException(404, "文件不存在")
+    view = artifact_service.view(row)
+    if not artifact_service.stored_path(row).is_file():
+        raise HTTPException(404, "文件已不在服务器上")
+    if view["kind"] == "text":
+        text, complete = artifact_service.preview_text(artifact_service.stored_path(row))
+        view["text"] = text
+        view["truncated"] = not complete
+    return view
+
+
 @app.get("/api/documents/{document_id}")
 async def document_detail(document_id: str, user_id: str = Depends(current_user)) -> dict:
     db = await connect(); row = await fetchone(db, "SELECT id,filename,file_type,file_size,page_count,status,progress,error_message,extracted_text,organized_title,summary,tags_json,key_points_json,organize_status,organize_method,organize_error,organized_at,created_at,updated_at,storage_path FROM documents WHERE id=? AND user_id=? AND status!='deleted'", (document_id, user_id)); await db.close()
@@ -863,15 +1210,10 @@ async def list_models() -> list[dict]:
 
 @app.get("/api/search")
 async def search(q: str = Query(min_length=1), knowledge_id: str | None = None, user_id: str = Depends(current_user)) -> list[dict]:
-    base_sql = "SELECT f.content,f.filename,f.page_number,f.chunk_id,c.document_id,k.name AS knowledge_name FROM chunks_fts f JOIN chunks c ON c.id=f.chunk_id JOIN documents d ON d.id=c.document_id JOIN knowledge_bases k ON k.id=f.knowledge_id WHERE k.user_id=? AND d.status!='deleted'"
-    params: tuple = (user_id,)
-    if knowledge_id:
-        base_sql += " AND f.knowledge_id=?"
-        params = (user_id, knowledge_id)
-    db = await connect(); rows = await fetchall(db, base_sql + " AND f.content MATCH ? LIMIT 30", params + (fts_literal(q),)); await db.close()
-    if not rows:
-        db = await connect(); rows = await fetchall(db, base_sql + " AND f.content LIKE ? LIMIT 30", params + (f"%{q}%",)); await db.close()
-    return [{"id": r["chunk_id"], "document_id": r["document_id"], "content": r["content"], "filename": r["filename"], "page_number": r["page_number"], "knowledge_name": r["knowledge_name"], "score": 0.9} for r in rows]
+    db = await connect()
+    rows = await retrieve_chunks(db, q, user_id, knowledge_id, None, limit=30)
+    await db.close()
+    return [{"id": r["id"], "document_id": r["document_id"], "content": r["content"], "filename": r["filename"], "page_number": r["page_number"], "knowledge_name": r["knowledge_name"], "score": r["score"]} for r in rows]
 
 
 @app.get("/api/recent")
@@ -905,20 +1247,30 @@ async def recent_overview(limit: int = Query(default=30, ge=1, le=100), user_id:
 
 
 async def make_sources(db, knowledge_id: str, query: str, user_id: str, folder_id: str = '') -> list[dict]:
-    # 文件夹隔离：传入 folder_id 时只检索该文件夹内文档；根目录问答只检索未入夹文档
-    scope = "f.knowledge_id=? AND k.user_id=? AND d.status!='deleted' AND d.folder_id=?"
-    params: tuple = (knowledge_id, user_id, folder_id)
-    base = "SELECT f.content,f.filename,f.page_number,f.chunk_id,c.document_id FROM chunks_fts f JOIN chunks c ON c.id=f.chunk_id JOIN documents d ON d.id=c.document_id JOIN knowledge_bases k ON k.id=f.knowledge_id WHERE "
-    rows = await fetchall(db, base + scope + " AND f.content MATCH ? LIMIT 5", params + (fts_literal(query),))
-    if not rows: rows = await fetchall(db, base + scope + " AND f.content LIKE ? LIMIT 5", params + (f"%{query}%",))
-    if not rows: rows = await fetchall(db, base + scope + " ORDER BY f.rowid DESC LIMIT 3", params)
-    return [{"id": r["chunk_id"], "document_id": r["document_id"], "filename": r["filename"], "page_number": r["page_number"], "quote": r["content"][:180], "score": round(max(0.78, 0.98 - i * 0.05), 2)} for i, r in enumerate(rows)]
+    # 范围语义（与产品入口一致）：
+    #   从知识库首页进入的对话（folder_id 为空）= 整个知识库，根目录和各文件夹里的资料都算数；
+    #   从某个文件夹进入的对话 = 只检索该文件夹，不外溢到根目录或其它文件夹。
+    rows = await retrieve_chunks(db, query, user_id, knowledge_id, folder_id or None, limit=5)
+    return [{"id": r["id"], "document_id": r["document_id"], "filename": r["filename"], "page_number": r["page_number"], "quote": r["content"][:180], "score": r["score"]} for r in rows]
+
+
+async def remaining_storage(db, user_id: str, limits: dict) -> int:
+    """该用户当前还剩多少可用空间（每次登记产物都重算，一轮内多个产物不会超配额）。"""
+    row = await fetchone(db, "SELECT COALESCE(SUM(file_size),0) AS bytes FROM documents WHERE user_id=? AND status!='deleted'", (user_id,))
+    return max(0, int(limits['storage_bytes']) - int((row['bytes'] if row else 0) or 0))
 
 
 @app.post("/api/chat/stream")
-async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)) -> StreamingResponse:
+async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, user_id: str = Depends(current_user)) -> StreamingResponse:
     rate_limit(f"chat:{user_id}", 15, 60, "提问太频繁啦，喝口水休息一下再试")
     db = await connect()
+    account = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
+    state = account_state(account, await questions_this_month(db, user_id))
+    limits = limits_for_user(account)
+    if not state['entitlements']['can_ask']:
+        limit = state['quota']['questions_limit']
+        await db.close()
+        raise HTTPException(429, f"本月 {limit} 次问答额度已用完，开通会员可继续提问")
     if payload.knowledge_id:
         kb = await fetchone(db, "SELECT id,name FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (payload.knowledge_id, user_id))
     else:
@@ -1006,13 +1358,17 @@ async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)
                 "并在后续回答中自然使用，无需声明无法保存。"
             )
     else:
-        organized = await fetchall(db, "SELECT filename,organized_title,summary,tags_json,key_points_json FROM documents WHERE knowledge_id=? AND status='completed' AND organize_status='completed' AND folder_id=? ORDER BY organized_at DESC LIMIT 20", (knowledge_id, folder_id))
+        # 已整理知识按同一套范围语义取：整库范围不看文件夹，文件夹范围只看该文件夹。
+        organized_sql = ("SELECT filename,organized_title,summary,tags_json,key_points_json FROM documents WHERE knowledge_id=? AND status='completed' AND organize_status='completed'"
+                         + (" AND folder_id=?" if folder_id else "") + " ORDER BY organized_at DESC LIMIT 20")
+        organized = await fetchall(db, organized_sql, (knowledge_id, folder_id) if folder_id else (knowledge_id,))
         wiki_context = "\n\n".join(f"《{r['organized_title'] or r['filename']}》\n摘要：{r['summary']}\n要点：{'；'.join(json_list(r['key_points_json']))}" for r in organized)
         context = "\n\n".join(f"[{i+1}] {s['filename']} 第{s['page_number']}页\n{s['quote']}" for i, s in enumerate(sources))
-        scope_note = f"当前问答范围限定在文件夹「{folder_name}」内：只能依据该文件夹中的文件回答，不得引用本知识库其它文件夹或根目录的文件。" if folder_id else "当前问答范围限定在知识库根目录：只能依据未放入文件夹的文件回答，不得引用各文件夹内的文件。"
+        scope_note = (f"当前问答范围限定在文件夹「{folder_name}」内：只能依据该文件夹中的文件回答，不得引用本知识库其它文件夹或根目录的文件。" if folder_id else "当前问答范围是整个知识库：根目录和各文件夹中的文件都可以作为依据。")
+        scope_label = f"文件夹「{folder_name}」" if folder_id else "资料库"
         if not wiki_context and not context:
             system_content = (
-                "你是 cola 知识库的资料助手。当前资料库暂无可用文件内容，"
+                f"你是 cola 知识库的资料助手。当前{scope_label}暂无可用文件内容，"
                 "因此本轮可以直接根据通用模型能力回答用户问题。不要提到“全网问答”、"
                 "“切换模式”或“没有文件所以切换”，也不要编造资料库引用。使用中文，回答要简洁、清楚。"
                 "对话中用户主动提供的信息（称呼、偏好、需求）可以直接记住，"
@@ -1030,12 +1386,13 @@ async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)
     messages += recent_context(history)
     # 本轮技能：只有用户明确选择的技能才会注入——内置技能走技能包，我的技能走技能指令。
     # 别人的私有技能在这里解析为空，保证「我的技能」严格隔离。
-    turn_skill_info = await resolve_turn_skill(db, user_id, payload.skill)
-    turn_skill = turn_skill_info['skill']
-    turn_skill_prompt = turn_skill_info['prompt']
-    turn_skill_label = turn_skill_info['label']
-    if turn_skill_info['id']:
-        await db.execute('UPDATE skills SET use_count=COALESCE(use_count,0)+1 WHERE id=?', (turn_skill_info['id'],))
+    # 本轮技能（可多选）：payload.skills 优先，为空时兼容旧的单选 skill 字段。
+    # 只有用户明确选择的技能才会注入；别人的私有技能在这里解析为空，保证「我的技能」严格隔离。
+    requested_skills = [item for item in (payload.skills or []) if item] or ([payload.skill] if payload.skill else [])
+    turn_skills = await resolve_turn_skills(db, user_id, requested_skills)
+    for item in turn_skills:
+        await db.execute('UPDATE skills SET use_count=COALESCE(use_count,0)+1 WHERE id=?', (item['id'],))
+    if turn_skills:
         await db.commit()
     async def events():
         answer = ""
@@ -1044,20 +1401,31 @@ async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)
         started_at = time.monotonic()
         trace_items: list[dict] = []
         reason_parts: list[str] = []
+        # 工具产物：agent 本轮生成的文件（报告 / 表格 / 演示稿 / 图 …）随消息落库。
+        # 知识库问答里的产物同时登记进知识库，纯对话（执行规划）只在对话里给出文件。
+        produced_artifacts: list[dict] = []
+        save_artifacts_to_kb = bool(state['entitlements']['can_upload']) and payload.mode != 'web'
         yield f"data: {json.dumps({'type':'meta','conversation_id':conversation_id,'sources':sources}, ensure_ascii=False)}\n\n"
         try:
             # harness 模型统一取后端配置（深度思考即 deepseek-flash，见 HARNESS_MODEL）
             turn_model = settings.harness_model if harness_configured() else payload.model
             # 技能已在进入流之前解析好：内置技能 = 技能包 slug，我的技能 = 技能指令文本
+            # 计划模式：执行规划通道打开官方 plan mode（计划先评审、批准后再执行）。
+            # 请求显式带 plan 时以请求为准，便于前端按入口切换。
+            turn_plan = (
+                payload.plan
+                if payload.plan is not None
+                else (settings.harness_plan_mode and payload.mode == 'web')
+            )
             async for event in stream_answer(
                 messages,
                 turn_model,
                 conversation_id,
                 thinking=payload.thinking,
-                skill=turn_skill,
-                skill_prompt=turn_skill_prompt,
-                skill_label=turn_skill_label,
+                skills=turn_skills,
                 mode='planner' if payload.mode == 'web' else 'knowledge',
+                user_id=user_id,
+                plan=bool(turn_plan),
             ):
                 kind = event.get('kind')
                 if kind == 'progress':
@@ -1073,6 +1441,27 @@ async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)
                             trace_items.append(item)
                         yield f"data: {json.dumps({'type':'trace', **item}, ensure_ascii=False)}\n\n"
                     continue
+                if kind == 'artifact':
+                    # 工具产物回流：把运行时工作区里新生成的文件收成可预览/下载的产物。
+                    # 收不动（空文件 / 过大 / 已消失 / 超出一轮上限）时静默跳过，不影响回答正文。
+                    discovery = event.get('artifact') or {}
+                    record = await artifact_service.register(
+                        user_id=user_id,
+                        source=Path(str(discovery.get('path') or '')),
+                        conversation_id=conversation_id,
+                        knowledge_id=knowledge_id,
+                        folder_id=folder_id,
+                        save_to_knowledge=save_artifacts_to_kb,
+                        storage_room=await remaining_storage(db, user_id, limits),
+                    )
+                    if not record:
+                        continue
+                    produced_artifacts.append(record)
+                    # 生成物入库后照旧做一次整理（与上传同一条链路）：摘要 / 标签 / 要点
+                    if record.get('document_id') and background_tasks is not None:
+                        background_tasks.add_task(organize_document, record['document_id'])
+                    yield f"data: {json.dumps({'type':'artifact','artifact':record}, ensure_ascii=False)}\n\n"
+                    continue
                 piece = event['text']
                 answer += piece; yield f"data: {json.dumps({'type':'delta','content':piece}, ensure_ascii=False)}\n\n"
             if not answer.strip():
@@ -1081,13 +1470,14 @@ async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)
                 yield f"data: {json.dumps({'type':'error','message':'网络波动，本次回答未完成，请重新发送。'}, ensure_ascii=False)}\n\n"
                 return
             await db.execute(
-                "INSERT INTO messages(id,conversation_id,role,content,sources_json,trace_json,reason,duration_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO messages(id,conversation_id,role,content,sources_json,trace_json,reason,duration_ms,artifacts_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
                     uuid.uuid4().hex, conversation_id, "assistant", answer,
                     json.dumps(sources, ensure_ascii=False),
                     json.dumps(trace_items, ensure_ascii=False),
                     "".join(reason_parts).strip(),
                     int((time.monotonic() - started_at) * 1000),
+                    json.dumps(produced_artifacts, ensure_ascii=False),
                     now(),
                 ),
             ); await db.commit()
@@ -1103,6 +1493,22 @@ async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)
         finally:
             await db.close()
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "X-Accel-Buffering":"no"})
+
+
+@app.post("/api/chat/plan-review")
+async def plan_review(payload: PlanReviewRequest, user_id: str = Depends(current_user)) -> dict:
+    """计划评审：把用户在计划卡片上的结论回写给运行时。
+
+    计划卡片出现时，运行时的 ``exit_plan_mode`` 正阻塞等待评审通道；这里把结论写入
+    该租户的计划桥目录，运行时读到即继续（批准=退出计划模式并开始执行；
+    未批准=带上反馈重新规划）。评审已超时/不存在时返回 accepted=false，
+    前端提示用户重新提问，绝不假装已批准。
+    """
+    review_id = payload.review_id.strip()
+    if pending_plan_review(user_id, review_id) is None:
+        return {"accepted": False, "reason": "expired"}
+    accepted = submit_plan_review(user_id, review_id, payload.approved, payload.feedback)
+    return {"accepted": accepted, "reason": "" if accepted else "expired"}
 
 
 @app.get("/api/conversations")
@@ -1180,6 +1586,8 @@ async def conversation_detail(conversation_id: str, user_id: str = Depends(curre
             "sources": decode_sources(row["sources_json"]),
             "trace": trace if isinstance(trace, list) else [],
             "reason": view.get("reason") or "",
+            # 工具产物（生成的文件）与过程区一样回放：重进对话时文件卡还在，可以继续预览/下载
+            "artifacts": [item for item in artifact_service.decode(view.get("artifacts_json")) if isinstance(item, dict)],
             "duration_ms": int(view.get("duration_ms") or 0),
         })
     return messages
@@ -1236,7 +1644,7 @@ async def read_share(share_id: str, request: Request) -> dict:
 # 与前端技能编辑页的可选图标一致；保留早期用过的图标名，避免旧技能在编辑时被改写
 SKILL_ICONS = {'skill-node', 'knowledge-pick', 'book', 'ppt', 'image', 'sousuo', 'sliders', 'wangluo', 'atom', 'robot', 'liebiao', 'shuju', 'history', 'dui', 'dengpao', 'tag'}
 SKILL_NAME_MAX = 30
-SKILL_OWNED_MAX = 50
+# 技能配额不再写死在这里：跟随会员档位（MEMBERSHIP_LIMITS[*]['skills']）
 
 
 def skill_payload(row: Any, viewer: str) -> dict:
@@ -1276,27 +1684,43 @@ def clean_skill_form(payload: SkillForm) -> dict[str, str]:
     }
 
 
-async def resolve_turn_skill(db, user_id: str, skill_id: str) -> dict[str, str]:
-    """把前端选中的技能解析成本轮要注入的内容。
+MAX_TURN_SKILLS = 8
 
-    只有用户明确选择（skill 非空）才会注入：内置技能走仓库内的技能包 slug，
+
+async def resolve_turn_skills(db, user_id: str, skill_ids: list[str]) -> list[dict[str, str]]:
+    """把前端选中的技能（可多选）解析成本轮要注入的内容。
+
+    只有用户明确选择（id 非空）才会注入：内置技能走仓库内的技能包 slug，
     我的技能走技能指令文本；别人的私有技能在这里解析为空，保证用户级隔离。
+    重复 id 只保留一次，顺序保持用户选择的先后。
     """
-    slug = (skill_id or '').strip()
-    empty = {'id': '', 'skill': '', 'prompt': '', 'label': ''}
-    if not slug or len(slug) > 40:
-        return empty
-    row = await fetchone(db, "SELECT * FROM skills WHERE id=? AND status='active'", (slug,))
-    if not row:
-        return empty
-    owner = row['user_id'] or ''
-    if owner and owner != user_id and (row['visibility'] or '') != 'public':
-        return empty
-    harness = row['harness'] or ''
-    label = row['name'] or ''
-    if harness and harness in SKILL_LABELS:
-        return {'id': slug, 'skill': harness, 'prompt': '', 'label': label}
-    return {'id': slug, 'skill': '', 'prompt': row['prompt'] or '', 'label': label}
+    resolved: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in skill_ids or []:
+        slug = (raw or '').strip()
+        if not slug or len(slug) > 40 or slug in seen:
+            continue
+        seen.add(slug)
+        row = await fetchone(db, "SELECT * FROM skills WHERE id=? AND status='active'", (slug,))
+        if not row:
+            continue
+        owner = row['user_id'] or ''
+        if owner and owner != user_id and (row['visibility'] or '') != 'public':
+            continue
+        harness = (row['harness'] or '').strip()
+        # 内置技能包走仓库里的 slug；用户自建技能走 skill-creator 生成的技能包
+        # （harness=usr-xxx，安装在该租户的技能根下）。两者都是「真技能包加载」，
+        # 只有技能包缺失（被人为删掉、导入的历史数据）时才回落到指令注入。
+        packaged = bool(harness) and (
+            harness in SKILL_LABELS or skill_build.package_installed(user_id, harness)
+        )
+        if packaged:
+            resolved.append({'id': slug, 'harness': harness, 'prompt': '', 'label': row['name'] or ''})
+        else:
+            resolved.append({'id': slug, 'harness': '', 'prompt': row['prompt'] or '', 'label': row['name'] or ''})
+        if len(resolved) >= MAX_TURN_SKILLS:
+            break
+    return resolved
 
 
 @app.get('/api/skills')
@@ -1346,6 +1770,16 @@ async def read_skill(skill_id: str, user_id: str = Depends(current_user)) -> dic
         await db.close(); raise HTTPException(404, '技能不存在')
     payload = skill_payload(row, user_id)
     await db.close()
+    # 技能包型技能：编辑页要看到真实内容与包内文件，而不是一条空指令
+    slug = (row['harness'] or '').strip()
+    if slug and skill_build.package_installed(user_id, slug):
+        payload['files'] = skill_build.package_files(user_id, slug)
+        payload['package'] = True
+        if not payload.get('prompt'):
+            payload['prompt'] = skill_build.read_package_text(user_id, slug)
+    else:
+        payload['files'] = []
+        payload['package'] = False
     return payload
 
 @app.post('/api/skills')
@@ -1354,9 +1788,12 @@ async def create_skill(payload: SkillForm, user_id: str = Depends(current_user))
     rate_limit(f"skill-write:{user_id}", 30, 3600, '新建技能过于频繁，请稍后再试')
     form = clean_skill_form(payload)
     db = await connect()
-    owned = await fetchone(db, "SELECT COUNT(*) AS c FROM skills WHERE user_id=? AND status='active'", (user_id,))
-    if int((owned['c'] if owned else 0) or 0) >= SKILL_OWNED_MAX:
-        await db.close(); raise HTTPException(400, f'技能数量已达上限（{SKILL_OWNED_MAX} 个）')
+    # 技能配额按会员档位走：试用 1 个、Plus 5 个、Pro 10 个
+    account = await fetchone(db, 'SELECT * FROM users WHERE id=?', (user_id,))
+    limit = limits_for_user(account)['skills']
+    if await owned_skill_count(db, user_id) >= limit:
+        await db.close()
+        raise HTTPException(400, f'当前会员可创建 {limit} 个技能，已用完。升级会员可以创建更多。')
     skill_id = f"sk-{uuid.uuid4().hex[:12]}"
     stamp = now()
     await db.execute(
@@ -1384,23 +1821,33 @@ async def update_skill(skill_id: str, payload: SkillForm, user_id: str = Depends
     await db.commit()
     updated = await fetchone(db, 'SELECT * FROM skills WHERE id=?', (skill_id,))
     await db.close()
+    # 技能包型技能：编辑页改完要同步回 SKILL.md，否则文件与数据库会静默不一致
+    slug = (row['harness'] or '').strip()
+    if slug and skill_build.package_installed(user_id, slug):
+        skill_build.write_package_text(user_id, slug, form['name'], form['summary'], form['prompt'])
     return skill_payload(updated, user_id)
 
 
 @app.delete('/api/skills/{skill_id}')
 async def delete_skill(skill_id: str, user_id: str = Depends(current_user)) -> dict:
-    """删除自己的技能：连带清掉点赞 / 收藏记录。"""
+    """删除自己的技能：连带清掉点赞 / 收藏记录，以及 harness 生成的技能包文件。
+
+    已发布到技能广场的会一并下架——广场列表就是这张表，行删掉即不再公开；
+    技能包（SKILL.md 与脚本）与构建残留同时删除，不在磁盘上留垃圾文件。
+    """
     db = await connect()
     row = await fetchone(db, "SELECT * FROM skills WHERE id=? AND status='active'", (skill_id,))
     if not row or (row['user_id'] or '') != user_id:
         await db.close(); raise HTTPException(404, '技能不存在或不属于你')
     if (row['source'] or '') == 'builtin':
         await db.close(); raise HTTPException(400, '内置技能不可删除')
+    slug = (row['harness'] or '').strip()
     await db.execute('DELETE FROM skill_likes WHERE skill_id=?', (skill_id,))
     await db.execute('DELETE FROM skill_favorites WHERE skill_id=?', (skill_id,))
     await db.execute('DELETE FROM skills WHERE id=? AND user_id=?', (skill_id, user_id))
     await db.commit(); await db.close()
-    return {'ok': True}
+    removed = skill_build.remove_package(user_id, slug) if slug else False
+    return {'ok': True, 'files_removed': removed}
 
 
 @app.post('/api/skills/{skill_id}/publish')
@@ -1456,3 +1903,152 @@ async def favorite_skill(skill_id: str, payload: SkillFlagUpdate, user_id: str =
     rate_limit(f"skill-favorite:{user_id}", 80, 60, '操作过于频繁，请稍后再试')
     result = await toggle_skill_flag('skill_favorites', skill_id, user_id, payload.active)
     return {**result, 'field': 'favorite_count'}
+
+
+# ---- 制作技能：由 harness 加载 skill-creator 真的写出技能包 ----
+
+# 增强提示词用的模板：和目标技能包的 SKILL.md 结构保持一致，两条路径产出同一种形状。
+SKILL_PROMPT_TEMPLATE = (
+    '你是技能说明书编辑。用户会给你一句技能想法，你要把它改写成一段可直接执行的技能指令。\n'
+    '严格按下面四个小标题输出，不要开场白、不要解释你在做什么：\n'
+    '## 目标\n用一句话说明这个技能交付什么。\n'
+    '## 执行步骤\n3-6 步，动词开头，每步具体到能照做。\n'
+    '## 输出格式\n写清输出分几节、每节放什么；有固定版式就直接给骨架。\n'
+    '## 注意事项\n2-4 条边界，例如资料不足怎么写、不要编造什么。\n'
+    '只使用简体中文；不要引入用户没提到的功能；用户写得含糊的地方按最合理的常见做法定下来，不要反问；全文控制在 400 字以内。'
+)
+
+
+@app.post('/api/skills/enhance')
+async def enhance_skill_prompt(payload: SkillEnhanceRequest, user_id: str = Depends(current_user)) -> dict:
+    """增强提示词：把随手写的一句话按技能模板改写成可执行的技能指令。
+
+    走直连模型通道而不是 harness：这是一次纯文本改写，秒级返回即可，
+    没必要为它付运行时冷启动的成本。
+    """
+    rate_limit(f"skill-enhance:{user_id}", 20, 600, '增强提示词过于频繁，请稍后再试')
+    text = (payload.instruction or '').strip()
+    if not text:
+        raise HTTPException(400, '先写一句技能要求，再点增强提示词')
+    from .services.llm import provider_config
+    config = provider_config('')
+    if not config:
+        raise HTTPException(503, '模型尚未配置，暂时无法增强提示词')
+    base_url, api_key, model = config
+    root = base_url.rstrip('/')
+    endpoint = f"{root}/chat/completions" if root.endswith('/v1') else f"{root}/v1/chat/completions"
+    subject = f'技能名称：{payload.name.strip()}\n' if (payload.name or '').strip() else ''
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(40, connect=10)) as client:
+            response = await client.post(endpoint, headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}, json={
+                'model': model, 'temperature': 0.4, 'max_tokens': 900,
+                'messages': [
+                    {'role': 'system', 'content': SKILL_PROMPT_TEMPLATE},
+                    {'role': 'user', 'content': f'{subject}用户的想法：{text}'},
+                ],
+            })
+            response.raise_for_status()
+            enhanced = str(response.json()['choices'][0]['message']['content'] or '').strip()
+    except Exception as exc:
+        print(f'[skill] 增强提示词失败：{exc}', flush=True)
+        raise HTTPException(503, '增强提示词暂时不可用，请稍后重试') from exc
+    if not enhanced:
+        raise HTTPException(503, '增强提示词暂时不可用，请稍后重试')
+    return {'instruction': enhanced[:4000]}
+
+
+@app.post('/api/skills/build')
+async def build_skill(payload: SkillBuildRequest, user_id: str = Depends(current_user)) -> StreamingResponse:
+    """新建技能：让 harness 加载 skill-creator，按用户要求生成并安装技能包。
+
+    生成技能要跑完整一轮 agent（思考 → 写文件 → 自检），耗时以十秒计，所以过程用
+    SSE 推给前端：``stage``（当前在做什么）、``skill``（成品）、``error``。
+    """
+    rate_limit(f"skill-build:{user_id}", 6, 900, '制作技能过于频繁，请稍后再试')
+    instruction = (payload.instruction or '').strip()
+    if len(instruction) < 4:
+        raise HTTPException(400, '请把技能要求写清楚一些')
+    if not harness_configured():
+        raise HTTPException(503, '技能制作依赖 Harness 运行时，当前未启用')
+    db = await connect()
+    try:
+        account = await fetchone(db, 'SELECT * FROM users WHERE id=?', (user_id,))
+        limits = limits_for_user(account)
+        used = await owned_skill_count(db, user_id)
+    finally:
+        await db.close()
+    if used >= limits['skills']:
+        raise HTTPException(400, f"当前会员可创建 {limits['skills']} 个技能，已用完。升级会员可以创建更多。")
+
+    form = clean_skill_form(SkillForm(
+        name=(payload.name or '').strip() or '新技能',
+        summary=(payload.summary or '').strip(),
+        prompt=instruction,
+        developer_wechat=(payload.developer_wechat or '').strip(),
+        icon=payload.icon,
+    ))
+    slug = skill_build.new_slug()
+    prompt = skill_build.build_prompt(instruction, payload.name, payload.summary, slug)
+    session_id = f'skillbuild-{slug}'
+
+    async def events():
+        yield f"data: {json.dumps({'type':'stage','label':'正在准备制作技能…'}, ensure_ascii=False)}\n\n"
+        try:
+            async for event in stream_raw_prompt(
+                prompt, session_id, settings.harness_model,
+                thinking='deep', user_id=user_id,
+                skills=[{
+                    'id': 'builtin-skill-creator',
+                    'harness': skill_build.BUILTIN_SKILL_SLUG,
+                    'prompt': '',
+                    'label': skill_build.BUILTIN_SKILL_LABEL,
+                }],
+            ):
+                if event.get('kind') == 'trace':
+                    label = skill_build.stage_label(event.get('item') or {})
+                    if label:
+                        yield f"data: {json.dumps({'type':'stage','label':label}, ensure_ascii=False)}\n\n"
+                    continue
+            yield f"data: {json.dumps({'type':'stage','label':'正在安装技能包…'}, ensure_ascii=False)}\n\n"
+            source = skill_build.workspace_build_dir(user_id, slug)
+            degraded = not (source / skill_build.SKILL_FILE).is_file()
+            if degraded:
+                # 模型没写出技能包（抖动/超时）：用用户填的内容合成一份结构合规的 SKILL.md，
+                # 不让用户白填一遍表单。前端会拿到 degraded=true，可以提示重新生成。
+                skill_build.synthesize_package(user_id, slug, payload.name, payload.summary, instruction)
+            info = skill_build.install_package(user_id, slug, source)
+            meta = info.get('meta') or {}
+            # frontmatter 的 name 现在固定是技能 slug（kebab-case 英文，运行时靠它加载），
+            # 展示名只能用用户填的 / 表单里的中文名，不能拿 frontmatter 的 name 兜底。
+            name = (form['name'] or '').strip()[:SKILL_NAME_MAX] or '我的技能'
+            summary = (form['summary'] or (meta.get('description') or '').strip())[:80]
+            body = skill_build.read_package_text(user_id, slug)
+            skill_id = f"sk-{uuid.uuid4().hex[:12]}"
+            stamp = now()
+            store = await connect()
+            try:
+                await store.execute(
+                    "INSERT INTO skills(id,user_id,name,summary,prompt,icon,developer_wechat,harness,visibility,source,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'private','custom','active',?,?)",
+                    (skill_id, user_id, name, summary, body, form['icon'], form['developer_wechat'], slug, stamp, stamp),
+                )
+                await store.commit()
+                row = await fetchone(store, 'SELECT * FROM skills WHERE id=?', (skill_id,))
+            finally:
+                await store.close()
+            # 安装完就把工作区里的构建残留删掉，避免同一份技能留两份文件
+            skill_build.remove_build_dir(user_id, slug)
+            card = skill_payload(row, user_id)
+            card['files'] = skill_build.package_files(user_id, slug)
+            card['package'] = True
+            card['degraded'] = degraded
+            card['note'] = '技能包已生成' if not degraded else '模型没写完技能包，已按你填写的内容生成基础技能'
+            yield f"data: {json.dumps({'type':'skill','skill':card,'note':card['note'],'degraded':degraded}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type':'done'}, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            # 失败不落库：技能包与构建残留一起清掉，不留半成品文件
+            skill_build.remove_package(user_id, slug)
+            message = str(exc).strip() or '技能制作失败，请重试'
+            yield f"data: {json.dumps({'type':'error','message':message}, ensure_ascii=False)}\n\n"
+        return
+
+    return StreamingResponse(events(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})

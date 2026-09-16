@@ -2,7 +2,7 @@
   <!-- 与「问AI」问答页同一套结构：不留标题栏，只保留返回 + 上下文的胶囊安全高度 -->
   <view class="qa-nav" style="height:{{navHeight}}px;">
     <button class="qa-back" bindtap="goBack" aria-label="返回"><ui-icon name="back" size="{{36}}" rpx /></button>
-    <button class="qa-history" bindtap="openHistory" aria-label="历史对话"><ui-icon name="menu" size="{{34}}" rpx /></button>
+    <button class="qa-history" bindtap="openHistory" aria-label="历史对话"><ui-icon name="menu" size="{{41}}" rpx /></button>
     <view class="qa-context">
       <text class="qa-context-title">{{folderName || '文件夹'}}</text>
       <text class="qa-context-sub">{{knowledgeName || '微信用户的知识库'}}</text>
@@ -37,33 +37,48 @@
           </view>
         </view>
         <view wx:else class="qa-answer">
-          <!-- 过程区：思考 / 步骤 / 工具 / 技能 / 子智能体，与问AI页完全一致 -->
-          <view wx:if="{{item.trace.length || item.reason}}" class="qa-trace">
+          <!-- 思维链折叠成一行摘要（点开才看全文）；执行步骤独立成一区、始终可见，与问AI页一致 -->
+          <view wx:if="{{item.reason}}" class="qa-trace">
             <view class="qa-trace-head {{item.running ? 'live' : ''}}" bindtap="toggleTrace" data-id="{{item.id}}">
               <view class="qa-trace-icon"><ui-icon name="{{item.traceIcon || 'dengpao'}}" size="{{30}}" rpx /></view>
               <text class="qa-trace-title">{{item.traceTitle || '思考中'}}</text>
-              <text wx:if="{{item.traceSummary && (!item.traceOpen || item.running)}}" class="qa-trace-summary">{{item.traceSummary}}</text>
+              <text wx:if="{{item.traceSummary}}" class="qa-trace-summary">{{item.traceSummary}}</text>
               <view wx:else class="qa-trace-spacer"></view>
               <text wx:if="{{item.traceElapsed}}" class="qa-trace-elapsed">{{item.traceElapsed}}</text>
-              <view class="qa-trace-chevron"><ui-icon name="{{item.traceOpen ? 'chevron-up' : 'chevron-down'}}" size="{{22}}" rpx /></view>
+              <view class="qa-trace-chevron"><ui-icon name="{{item.reasonOpen ? 'chevron-up' : 'chevron-down'}}" size="{{22}}" rpx /></view>
             </view>
-            <view wx:if="{{item.traceOpen}}" class="qa-trace-body">
-              <text wx:if="{{item.reason}}" class="qa-reason">{{item.reason}}</text>
-              <view wx:for="{{item.trace}}" wx:for-item="node" wx:key="key" class="qa-node {{node.kind}} {{node.state}}">
-                <view class="qa-node-icon"><ui-icon name="{{node.icon || 'atom'}}" size="{{28}}" rpx /></view>
-                <view class="qa-node-copy">
-                  <text class="qa-node-title">{{node.title}}</text>
-                  <text wx:if="{{node.detail}}" class="qa-node-detail">{{node.detail}}</text>
-                </view>
-                <text wx:if="{{node.stateLabel}}" class="qa-node-state {{node.state}}">{{node.stateLabel}}</text>
-              </view>
+            <view wx:if="{{item.reasonOpen}}" class="qa-trace-body">
+              <text class="qa-reason">{{item.reason}}</text>
             </view>
           </view>
+          <view wx:if="{{item.trace.length}}" class="qa-process">
+            <view wx:for="{{item.trace}}" wx:for-item="node" wx:key="key" class="qa-node {{node.kind}} {{node.state}} {{node.depth ? 'nested' : ''}}">
+              <view class="qa-node-icon"><ui-icon name="{{node.icon || 'atom'}}" size="{{28}}" rpx /></view>
+              <view class="qa-node-copy">
+                <text class="qa-node-title">{{node.title}}</text>
+                <text wx:if="{{node.detail}}" class="qa-node-detail">{{node.detail}}</text>
+              </view>
+              <text wx:if="{{node.stateLabel}}" class="qa-node-state {{node.state}}">{{node.stateLabel}}</text>
+            </view>
+          </view>
+          <plan-card wx:if="{{item.planNode}}" node="{{item.planNode}}" message-id="{{item.id}}" open="{{item.planOpen}}" bind:review="onPlanReview" bind:toggle="onPlanToggle" />
           <view wx:if="{{!item.content && !item.trace.length && !item.reason}}" class="qa-progress">
             <view class="qa-progress-icon"><ui-icon name="dengpao" size="{{26}}" rpx /></view>
             <text class="qa-progress-text">{{item.progress || '正在思考…'}}</text>
           </view>
           <rich-text wx:if="{{item.content}}" class="qa-answer-text" nodes="{{item.html || item.content}}"></rich-text>
+          <!-- 生成的文件：agent 本轮真的写出来的文件。点卡片预览，右侧按钮保存到微信 -->
+          <view wx:if="{{item.artifacts.length}}" class="qa-files">
+            <text class="qa-files-title">生成的文件 · {{item.artifacts.length}}</text>
+            <view wx:for="{{item.artifacts}}" wx:for-item="file" wx:key="id" class="qa-file" hover-class="qa-file-hover" hover-stay-time="60" bindtap="openArtifact" data-id="{{file.id}}">
+              <view class="qa-file-icon"><ui-icon name="{{file.icon || 'recent-text'}}" size="{{52}}" rpx /></view>
+              <view class="qa-file-copy">
+                <text class="qa-file-name">{{file.name}}</text>
+                <text class="qa-file-meta">{{file.meta}}</text>
+              </view>
+              <button class="qa-file-save" catchtap="saveArtifact" data-id="{{file.id}}" aria-label="保存到微信"><ui-icon name="download" size="{{30}}" rpx /></button>
+            </view>
+          </view>
           <view wx:if="{{item.sources.length}}" class="qa-sources">
             <text class="qa-source-title">参考出处 · {{item.sources.length}} 条</text>
             <view wx:for="{{item.sources}}" wx:for-item="source" wx:key="id" class="qa-source" bindtap="openSource" data-id="{{source.document_id || source.id}}" data-url="{{source.url || ''}}">
@@ -92,10 +107,7 @@
   </scroll-view>
   <view class="qa-footer">
     <view class="qa-composer">
-      <view wx:if="{{pendingSkillName}}" class="qa-skill-chip">
-        <text class="qa-skill-chip-text">技能 · {{pendingSkillName}}</text>
-        <button class="qa-skill-chip-close" bindtap="clearSkill" aria-label="取消技能"><ui-icon name="close" size="{{20}}" rpx /></button>
-      </view>
+      <!-- 选中的技能不显示在对话里：技能图标线条变蓝即表示本轮已启用 -->
       <textarea class="qa-input" value="{{input}}" placeholder="{{placeholder}}" placeholder-style="color:#8c8c8c;font-size:30rpx;line-height:1.32;" auto-height maxlength="8000" focus="{{autoFocus}}" adjust-position="{{true}}" show-confirm-bar="{{false}}" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
       <view class="qa-bar">
         <button class="qa-logic {{askMode}}" bindtap="toggleAskLogic" aria-label="切换问答逻辑">
@@ -103,7 +115,7 @@
           <ui-icon name="chevron-down" size="{{16}}" rpx />
         </button>
         <button class="qa-skill" bindtap="openSkillSheet" disabled="{{sending}}" aria-label="技能">
-          <ui-icon name="skill" size="{{34}}" rpx />
+          <ui-icon name="{{selectedSkillIds.length ? 'skill-blue' : 'skill'}}" size="{{34}}" rpx />
           <ui-icon name="chevron-down" size="{{15}}" rpx />
         </button>
         <button class="qa-scope {{askMode}}" bindtap="openScopeSheet" disabled="{{sending}}" aria-label="本文件夹与本文件夹资料">
@@ -138,7 +150,7 @@
 
   <!-- 技能：与问AI页共用同一份技能清单与后端技能包 -->
   <!-- 技能：与问AI页共用同一份数据源，只有选中的才会随本轮对话注入后端 -->
-  <skill-picker visible="{{skillSheetVisible}}" selected="{{selectedSkillId}}" bind:close="closeSheets" bind:select="onSkillSelect" bind:create="onSkillCreate" bind:edit="onSkillEdit" />
+  <skill-picker visible="{{skillSheetVisible}}" selected="{{selectedSkillIds}}" bind:close="closeSheets" bind:select="onSkillSelect" bind:create="onSkillCreate" bind:edit="onSkillEdit" />
 
   <!-- 选择知识：文件夹会话里换成「本文件夹资料 + 回到知识库」，范围始终锁定在当前文件夹 -->
   <view wx:if="{{scopeSheetVisible}}" class="sheet-layer">

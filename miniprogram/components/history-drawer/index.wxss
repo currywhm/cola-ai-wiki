@@ -16,9 +16,13 @@ button.hd-new:active { background: #f7f7f7; }
 .hd-group { display: block; margin: 26rpx 0 4rpx; color: #a4a9ae; font-size: 26rpx; line-height: 1.4; }
 /* 每一行：右侧藏「置顶 / 删除」操作区，行体左滑后整体平移露出 */
 /* 列表不使用任何分隔线：行与行之间只靠留白和选中态区分，避免出现「表格线」的观感 */
-.hd-row { position: relative; overflow: hidden; border: 0 none; border-radius: 0; background: #fff; box-shadow: none; }
-.hd-row + .hd-row { border: 0 none; }
-.hd-actions { position: absolute; top: 0; right: 0; bottom: 0; display: flex; align-items: stretch; width: 240rpx; }
+/* line-height/font-size 归零：行高与行体完全重合，不让操作区在行体下露出 1px 细边（看上去像表格线） */
+.hd-row { position: relative; display: block; overflow: hidden; border: 0 none; border-radius: 0; background: #fff; box-shadow: none; font-size: 0; line-height: 0; }
+/* 抽屉内所有按钮禁用伪元素描边（微信默认 button::after 会画一圈细边框） */
+.hd-panel button::before, .hd-panel button::after { display: none; content: none; border: 0 none; box-shadow: none; }
+/* 操作区只在左滑后存在：没滑开时完全不渲染，从根上消除“表格线”观感 */
+.hd-actions { position: absolute; z-index: 1; top: 0; right: 0; bottom: 0; display: none; align-items: stretch; width: 240rpx; }
+.hd-row.swiped .hd-actions { display: flex; }
 button.hd-action { display: flex; align-items: center; justify-content: center; flex: 1 1 0; min-width: 0; margin: 0; padding: 0; border: 0; border-radius: 0; font-size: 26rpx; font-weight: 500; line-height: 1.3; }
 button.hd-action::after { border: 0; }
 button.hd-pin { background: #ececec; color: #242424; }
@@ -26,7 +30,7 @@ button.hd-pin.is-on { background: #e0e0e0; color: #6f6f6f; }
 button.hd-del { background: #e64340; color: #fff; }
 button.hd-action:active { opacity: .82; }
 /* 行体保持直角：既能完整盖住右侧操作区（滑开时不露出碎边），选中态色块又与面板正文等宽 */
-button.hd-item { position: relative; display: flex; align-items: center; justify-content: flex-start; gap: 10rpx; width: 100%; min-height: 84rpx; margin: 0; padding: 22rpx 0; border: 0 none; border-radius: 0; background: #fff; color: #22262b; font-size: 30rpx; font-weight: 400; line-height: 1.45; text-align: left; box-shadow: none; transition: transform .2s ease, background-color .18s ease; }
+button.hd-item { position: relative; z-index: 2; display: flex; align-items: center; justify-content: flex-start; gap: 10rpx; width: 100%; min-height: 84rpx; margin: 0; padding: 22rpx 0; border: 0 none; border-radius: 0; background: #fff; color: #22262b; font-size: 30rpx; font-weight: 400; line-height: 1.45; text-align: left; box-shadow: none; transition: transform .2s ease, background-color .18s ease; }
 button.hd-item::before, button.hd-item::after { border: 0 none; box-shadow: none; }
 .hd-item-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 button.hd-item:active { background: #f4f4f4; color: #079c5a; }

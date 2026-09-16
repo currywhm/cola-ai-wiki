@@ -50,7 +50,7 @@
         <view class="directory-list">
           <block wx:if="{{!currentFolderId}}">
             <block wx:for="{{documentGroups}}" wx:key="key" wx:for-item="group">
-              <view wx:if="{{group.key}}" class="dir-swipe-row">
+              <view wx:if="{{group.key}}" class="dir-swipe-row {{group.swipeX ? 'swiped' : ''}}">
                 <view class="dir-actions">
                   <button class="dir-action pin-action {{group.pinned ? 'is-on' : ''}}" catchtap="pinFolder" data-key="{{group.key}}">{{group.pinned ? '取消置顶' : '置顶'}}</button>
                   <button class="dir-action delete-action" catchtap="confirmDeleteFolder" data-key="{{group.key}}" data-name="{{group.name}}">删除</button>
@@ -69,7 +69,7 @@
               </view>
             </block>
           </block>
-          <view wx:for="{{visibleDocuments}}" wx:key="id" wx:for-item="item" class="dir-swipe-row">
+          <view wx:for="{{visibleDocuments}}" wx:key="id" wx:for-item="item" class="dir-swipe-row {{item.swipeX ? 'swiped' : ''}}">
             <view class="dir-actions">
               <button class="dir-action pin-action {{item.pinned ? 'is-on' : ''}}" catchtap="pinDocument" data-id="{{item.id}}">{{item.pinned ? '取消置顶' : '置顶'}}</button>
               <button class="dir-action delete-action" catchtap="confirmDeleteDocument" data-id="{{item.id}}" data-name="{{item.filename}}">删除</button>

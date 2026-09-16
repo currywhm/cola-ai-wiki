@@ -21,17 +21,20 @@ button.toolbar-button { display:flex; align-items:center; justify-content:center
 .empty-import { display:flex; align-items:center; justify-content:center; gap:10rpx; min-height:72rpx; margin-top:30rpx; padding:0 34rpx; border:1rpx solid #e3e5e6; border-radius:20rpx; background:#fff; color:#23262b; font-size:30rpx; font-weight:600; }
 .directory-panel { width:100%; align-self:flex-start; }
 .directory-list { overflow:hidden; border:0; border-radius:0; background:transparent; box-shadow:none; }
-.dir-swipe-row { position:relative; overflow:hidden; border-bottom:1rpx solid #eef0f1; }
-.dir-swipe-row:last-child { border-bottom:0; }
+/* 列表不画分隔线；行高归零让操作区与行体完全重合，避免漏出 1px 细边像表格线 */
+.dir-swipe-row { position:relative; display:block; overflow:hidden; border:0 none; font-size:0; line-height:0; }
+.dir-swipe-row button::before, .dir-swipe-row button::after { display:none; content:none; border:0 none; box-shadow:none; }
 /* 左滑露出的操作区：整行高的文字块，和「历史对话」抽屉用同一套视觉 */
-.dir-actions { position:absolute; top:0; right:0; bottom:0; display:flex; align-items:stretch; width:232rpx; }
+/* 操作区只在左滑后存在，收起时完全不渲染 */
+.dir-actions { position:absolute; z-index:1; top:0; right:0; bottom:0; display:none; align-items:stretch; width:232rpx; }
+.dir-swipe-row.swiped .dir-actions { display:flex; }
 button.dir-action { display:flex; align-items:center; justify-content:center; flex:1 1 0; min-width:0; margin:0; padding:0; border:0; border-radius:0; font-size:25rpx; font-weight:500; line-height:1.3; }
 button.dir-action::after { border:0; }
 button.dir-action:active { opacity:.82; }
 .dir-action.pin-action { background:#ececec; color:#242424; }
 .dir-action.pin-action.is-on { background:#e2e2e2; color:#71767c; font-size:23rpx; }
 .dir-action.delete-action { background:#e64340; color:#fff; }
-.dir-swipe-card { position:relative; z-index:1; background:#f7f7f7; transition:transform .18s ease; }
+.dir-swipe-card { position:relative; z-index:2; background:#f7f7f7; transition:transform .18s ease; }
 .directory-item { display:flex; align-items:center; min-height:136rpx; gap:20rpx; padding:18rpx 8rpx; }
 .directory-file-icon { display:flex; align-items:center; justify-content:center; flex:0 0 92rpx; width:92rpx; min-width:92rpx; height:104rpx; overflow:hidden; border-radius:3rpx; background:#fff; box-shadow:0 1rpx 4rpx rgba(0,0,0,.07); color:#454f5b; }
 .directory-file-icon image { width:100%; height:100%; }

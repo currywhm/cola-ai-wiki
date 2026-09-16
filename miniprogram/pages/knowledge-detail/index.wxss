@@ -12,15 +12,18 @@ button.library-switch { display:flex; align-items:center; justify-content:center
 button.toolbar-button { display:flex; align-items:center; justify-content:center; flex:0 0 58rpx; width:58rpx; height:58rpx; min-height:58rpx; border-radius:18rpx; background:transparent; color:#20242b; }
 button.toolbar-button.add-button { background:#ededed; }
 .document-list { margin:0 0 30rpx; overflow:hidden; }
-.doc-swipe-row { position:relative; min-height:142rpx; overflow:hidden; border-bottom:1rpx solid #e7e7e7; background:#f7f7f7; }
+/* 不画分隔线；行高与行体重合，操作区收起时不渲染，避免“表格线”观感 */
+.doc-swipe-row { position:relative; display:block; min-height:142rpx; overflow:hidden; border:0 none; font-size:0; line-height:0; background:#f7f7f7; }
+.doc-swipe-row button::before, .doc-swipe-row button::after { display:none; content:none; border:0 none; box-shadow:none; }
 /* 左滑操作区：和知识库目录、历史对话抽屉统一为「整行高文字块」 */
-.doc-actions { position:absolute; top:0; right:0; bottom:0; display:flex; align-items:stretch; width:232rpx; }
+.doc-actions { position:absolute; z-index:1; top:0; right:0; bottom:0; display:none; align-items:stretch; width:232rpx; }
+.doc-swipe-row.swiped .doc-actions { display:flex; }
 button.doc-action { display:flex; align-items:center; justify-content:center; flex:1 1 0; min-width:0; margin:0; padding:0; border:0; border-radius:0; color:#fff; font-size:25rpx; font-weight:500; line-height:1.3; }
 button.doc-action::after { border:0; }
 button.doc-action:active { opacity:.82; }
 .tag-action { background:#ececec; color:#242424; }
 .delete-action { background:#e64340; color:#fff; }
-.doc-card { position:relative; z-index:1; display:flex; align-items:center; gap:22rpx; min-height:142rpx; padding:20rpx 0; background:#f7f7f7; transition:transform .18s ease; }
+.doc-card { position:relative; z-index:2; display:flex; align-items:center; gap:22rpx; min-height:142rpx; padding:20rpx 0; background:#f7f7f7; transition:transform .18s ease; }
 .doc-card:active { opacity:.7; }
 .doc-thumb { display:flex; align-items:center; justify-content:center; flex:0 0 92rpx; width:92rpx; height:104rpx; overflow:hidden; border-radius:3rpx; background:#fff; box-shadow:0 1rpx 4rpx rgba(0,0,0,.07); }
 .doc-thumb image { width:100%; height:100%; }

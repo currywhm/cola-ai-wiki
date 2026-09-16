@@ -18,7 +18,7 @@
       <view wx:if="{{loading && !groups.length}}" class="hd-empty">正在加载历史对话…</view>
       <block wx:for="{{groups}}" wx:key="key" wx:for-item="group">
         <text class="hd-group">{{group.label}}</text>
-        <view wx:for="{{group.items}}" wx:key="id" wx:for-item="entry" class="hd-row">
+        <view wx:for="{{group.items}}" wx:key="id" wx:for-item="entry" class="hd-row {{openId === entry.id ? 'swiped' : ''}}">
           <!-- 左滑露出的操作：置顶 / 删除，删除前由页面弹窗二次确认 -->
           <view class="hd-actions">
             <button class="hd-action hd-pin {{entry.pinned ? 'is-on' : ''}}" catchtap="pin" data-id="{{entry.id}}" data-pinned="{{entry.pinned ? 1 : 0}}">{{entry.pinned ? '取消置顶' : '置顶'}}</button>

@@ -6,7 +6,7 @@
   <block wx:else>
     <view class="library-toolbar"><view class="library-title-wrap"><text class="library-title">{{knowledge.name || '微信用户的知识库'}}</text><button class="library-switch" bindtap="switchKnowledge" aria-label="选择知识库"><ui-icon name="chevron-down" size="{{15}}" /></button></view><view class="toolbar-actions"><button class="toolbar-button" bindtap="goSearch" aria-label="搜索文档"><ui-icon name="search" size="{{23}}" /></button><button class="toolbar-button add-button" bindtap="upload" aria-label="添加文档"><ui-icon name="upload" size="{{22}}" /></button><button class="toolbar-button" bindtap="showActions" aria-label="更多功能"><ui-icon name="menu" size="{{23}}" /></button></view></view>
     <view class="document-list">
-      <view wx:for="{{documents}}" wx:key="id" class="doc-swipe-row" data-index="{{index}}" bindtouchstart="onDocTouchStart" bindtouchmove="onDocTouchMove" bindtouchend="onDocTouchEnd">
+      <view wx:for="{{documents}}" wx:key="id" class="doc-swipe-row {{item.swipeX ? 'swiped' : ''}}" data-index="{{index}}" bindtouchstart="onDocTouchStart" bindtouchmove="onDocTouchMove" bindtouchend="onDocTouchEnd">
         <view class="doc-actions">
           <button class="doc-action tag-action" catchtap="tagDocument" data-id="{{item.id}}">标签</button>
           <button class="doc-action delete-action" catchtap="confirmDeleteDocument" data-id="{{item.id}}">删除</button>

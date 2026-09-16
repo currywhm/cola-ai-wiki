@@ -76,9 +76,9 @@ button.shortcut { display:flex; flex-direction:column; align-items:center; justi
 .section-block .section-heading { margin-bottom:14rpx; }
 .section-link { flex:0 0 auto; color:#079c5a; font-size:21rpx; line-height:1.3; }
 .tips-card,.files-card { padding:0 28rpx; border:0; border-radius:18rpx; background:#fff; box-shadow:none; }
-.tip-row { display:flex; align-items:center; min-width:0; gap:18rpx; min-height:148rpx; padding:22rpx 0; border-bottom:1rpx solid #ececec; }
-.file-row { display:flex; align-items:center; min-width:0; gap:14rpx; min-height:94rpx; padding:16rpx 0; border-bottom:1rpx solid #eef1f2; }
-.tip-row.last,.file-row.last { border-bottom:0; }
+/* 列表不画分隔线：靠留白与行内图标区分条目，避免“表格线”观感 */
+.tip-row { display:flex; align-items:center; min-width:0; gap:18rpx; min-height:148rpx; padding:22rpx 0; border:0 none; }
+.file-row { display:flex; align-items:center; min-width:0; gap:14rpx; min-height:94rpx; padding:16rpx 0; border:0 none; }
 .tip-title,.tip-desc,.file-name,.file-meta { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tip-title { color:#101214; font-size:31rpx; font-weight:650; line-height:1.4; letter-spacing:-.4rpx; }
 .tip-desc { margin-top:8rpx; color:#9098a2; font-size:22rpx; line-height:1.35; }

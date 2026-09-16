@@ -52,8 +52,8 @@
             <block wx:for="{{documentGroups}}" wx:key="key" wx:for-item="group">
               <view wx:if="{{group.key}}" class="dir-swipe-row">
                 <view class="dir-actions">
-                  <button class="dir-action pin-action" catchtap="pinFolder" data-key="{{group.key}}" aria-label="置顶"><ui-icon name="pin-white" size="{{30}}" /></button>
-                  <button class="dir-action delete-action" catchtap="confirmDeleteFolder" data-key="{{group.key}}" data-name="{{group.name}}" aria-label="删除"><ui-icon name="trash" size="{{31}}" /></button>
+                  <button class="dir-action pin-action {{group.pinned ? 'is-on' : ''}}" catchtap="pinFolder" data-key="{{group.key}}">{{group.pinned ? '取消置顶' : '置顶'}}</button>
+                  <button class="dir-action delete-action" catchtap="confirmDeleteFolder" data-key="{{group.key}}" data-name="{{group.name}}">删除</button>
                 </view>
                 <view class="directory-folder-head dir-swipe-card" style="transform:translateX({{group.swipeX || 0}}rpx);" bindtap="enterFolder" data-key="{{group.key}}" bindtouchstart="onDirTouchStart" bindtouchmove="onDirTouchMove" bindtouchend="onDirTouchEnd" data-rowtype="folder" data-rowkey="{{group.key}}">
                   <view class="directory-folder-icon"><ui-icon name="folder-green" size="{{84}}" rpx /></view>
@@ -71,8 +71,8 @@
           </block>
           <view wx:for="{{visibleDocuments}}" wx:key="id" wx:for-item="item" class="dir-swipe-row">
             <view class="dir-actions">
-              <button class="dir-action pin-action" catchtap="pinDocument" data-id="{{item.id}}" aria-label="置顶"><ui-icon name="pin-white" size="{{30}}" /></button>
-              <button class="dir-action delete-action" catchtap="confirmDeleteDocument" data-id="{{item.id}}" data-name="{{item.filename}}" aria-label="删除"><ui-icon name="trash" size="{{31}}" /></button>
+              <button class="dir-action pin-action {{item.pinned ? 'is-on' : ''}}" catchtap="pinDocument" data-id="{{item.id}}">{{item.pinned ? '取消置顶' : '置顶'}}</button>
+              <button class="dir-action delete-action" catchtap="confirmDeleteDocument" data-id="{{item.id}}" data-name="{{item.filename}}">删除</button>
             </view>
             <view class="directory-item dir-swipe-card" style="transform:translateX({{item.swipeX || 0}}rpx);" bindtap="openDocument" data-id="{{item.id}}" bindlongpress="showDocumentActions" data-id="{{item.id}}" bindtouchstart="onDirTouchStart" bindtouchmove="onDirTouchMove" bindtouchend="onDirTouchEnd" data-rowtype="doc" data-rowkey="{{item.id}}">
               <view class="directory-file-icon {{item.preview_url ? '' : 'thumb-fallback'}}">

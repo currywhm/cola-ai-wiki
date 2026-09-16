@@ -8,8 +8,8 @@
     <view class="document-list">
       <view wx:for="{{documents}}" wx:key="id" class="doc-swipe-row" data-index="{{index}}" bindtouchstart="onDocTouchStart" bindtouchmove="onDocTouchMove" bindtouchend="onDocTouchEnd">
         <view class="doc-actions">
-          <button class="doc-action tag-action" catchtap="tagDocument" data-id="{{item.id}}"><ui-icon name="tag" size="{{28}}" /><text>标签</text></button>
-          <button class="doc-action delete-action" catchtap="confirmDeleteDocument" data-id="{{item.id}}"><ui-icon name="trash" size="{{29}}" /><text>删除</text></button>
+          <button class="doc-action tag-action" catchtap="tagDocument" data-id="{{item.id}}">标签</button>
+          <button class="doc-action delete-action" catchtap="confirmDeleteDocument" data-id="{{item.id}}">删除</button>
         </view>
         <view class="doc-card" style="transform:translateX({{item.swipeX || 0}}rpx);" bindtap="viewDoc" data-id="{{item.id}}">
           <view wx:if="{{item.preview_url}}" class="doc-thumb"><image src="{{item.preview_url}}" mode="aspectFill" /></view>

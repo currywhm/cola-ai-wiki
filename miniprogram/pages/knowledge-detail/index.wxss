@@ -13,10 +13,13 @@ button.toolbar-button { display:flex; align-items:center; justify-content:center
 button.toolbar-button.add-button { background:#ededed; }
 .document-list { margin:0 0 30rpx; overflow:hidden; }
 .doc-swipe-row { position:relative; min-height:142rpx; overflow:hidden; border-bottom:1rpx solid #e7e7e7; background:#f7f7f7; }
-.doc-actions { position:absolute; top:0; right:0; bottom:0; display:flex; align-items:center; justify-content:flex-end; gap:14rpx; padding-right:22rpx; width:248rpx; }
-button.doc-action { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6rpx; width:90rpx; min-width:90rpx; height:108rpx; min-height:108rpx; padding:0; margin:17rpx 0; border-radius:18rpx; color:#fff; font-size:19rpx; font-weight:650; }
-.tag-action { background:#ff8a1d; }
-.delete-action { background:#ff3034; }
+/* 左滑操作区：和知识库目录、历史对话抽屉统一为「整行高文字块」 */
+.doc-actions { position:absolute; top:0; right:0; bottom:0; display:flex; align-items:stretch; width:232rpx; }
+button.doc-action { display:flex; align-items:center; justify-content:center; flex:1 1 0; min-width:0; margin:0; padding:0; border:0; border-radius:0; color:#fff; font-size:25rpx; font-weight:500; line-height:1.3; }
+button.doc-action::after { border:0; }
+button.doc-action:active { opacity:.82; }
+.tag-action { background:#ececec; color:#242424; }
+.delete-action { background:#e64340; color:#fff; }
 .doc-card { position:relative; z-index:1; display:flex; align-items:center; gap:22rpx; min-height:142rpx; padding:20rpx 0; background:#f7f7f7; transition:transform .18s ease; }
 .doc-card:active { opacity:.7; }
 .doc-thumb { display:flex; align-items:center; justify-content:center; flex:0 0 92rpx; width:92rpx; height:104rpx; overflow:hidden; border-radius:3rpx; background:#fff; box-shadow:0 1rpx 4rpx rgba(0,0,0,.07); }

@@ -146,14 +146,14 @@ Page({
     const dx = Number(touch.clientX || 0) - Number(this.data.docTouchStartX || 0)
     const dy = Number(touch.clientY || 0) - Number(this.data.docTouchStartY || 0)
     if (Math.abs(dy) > Math.abs(dx) || Math.abs(dx) < 8) return
-    const swipeX = Math.max(-224, Math.min(0, Math.round(dx)))
+    const swipeX = Math.max(-232, Math.min(0, Math.round(dx)))
     this.setData({ documents: this.data.documents.map((doc: any, i: number) => ({ ...doc, swipeX: i === index ? swipeX : 0 })) })
   },
   onDocTouchEnd(e: any) {
     const index = Number(e.currentTarget.dataset.index)
     const doc = this.data.documents[index]
     if (!doc) return
-    const swipeX = Number(doc.swipeX || 0) <= -100 ? -224 : 0
+    const swipeX = Number(doc.swipeX || 0) <= -100 ? -232 : 0
     this.setData({ documents: this.data.documents.map((item: any, i: number) => ({ ...item, swipeX: i === index ? swipeX : 0 })) })
   },
   closeDocSwipe() {

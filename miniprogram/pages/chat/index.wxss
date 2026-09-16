@@ -23,10 +23,14 @@ button.toolbar-button { display:flex; align-items:center; justify-content:center
 .directory-list { overflow:hidden; border:0; border-radius:0; background:transparent; box-shadow:none; }
 .dir-swipe-row { position:relative; overflow:hidden; border-bottom:1rpx solid #eef0f1; }
 .dir-swipe-row:last-child { border-bottom:0; }
-.dir-actions { position:absolute; top:0; right:0; bottom:0; display:flex; align-items:center; justify-content:flex-end; gap:12rpx; padding-right:16rpx; width:188rpx; }
-button.dir-action { display:flex; align-items:center; justify-content:center; width:80rpx; min-width:80rpx; height:108rpx; min-height:108rpx; margin:14rpx 0; padding:0; border-radius:18rpx; color:#fff; }
-.dir-action.pin-action { background:#ff8a1d; }
-.dir-action.delete-action { background:#ff3034; }
+/* 左滑露出的操作区：整行高的文字块，和「历史对话」抽屉用同一套视觉 */
+.dir-actions { position:absolute; top:0; right:0; bottom:0; display:flex; align-items:stretch; width:232rpx; }
+button.dir-action { display:flex; align-items:center; justify-content:center; flex:1 1 0; min-width:0; margin:0; padding:0; border:0; border-radius:0; font-size:25rpx; font-weight:500; line-height:1.3; }
+button.dir-action::after { border:0; }
+button.dir-action:active { opacity:.82; }
+.dir-action.pin-action { background:#ececec; color:#242424; }
+.dir-action.pin-action.is-on { background:#e2e2e2; color:#71767c; font-size:23rpx; }
+.dir-action.delete-action { background:#e64340; color:#fff; }
 .dir-swipe-card { position:relative; z-index:1; background:#f7f7f7; transition:transform .18s ease; }
 .directory-item { display:flex; align-items:center; min-height:136rpx; gap:20rpx; padding:18rpx 8rpx; }
 .directory-file-icon { display:flex; align-items:center; justify-content:center; flex:0 0 92rpx; width:92rpx; min-width:92rpx; height:104rpx; overflow:hidden; border-radius:3rpx; background:#fff; box-shadow:0 1rpx 4rpx rgba(0,0,0,.07); color:#454f5b; }
@@ -36,7 +40,7 @@ button.dir-action { display:flex; align-items:center; justify-content:center; wi
 .directory-file-icon.thumb-fallback ui-icon { position:relative; z-index:1; margin-top:62rpx; }
 .directory-file-copy { flex:1; min-width:0; }
 .directory-file-name-row { display:flex; align-items:center; gap:10rpx; min-width:0; }
-.pin-badge { flex:0 0 auto; padding:2rpx 10rpx; border-radius:8rpx; background:#fff3e5; color:#e0821a; font-size:19rpx; font-weight:600; line-height:1.4; }
+.pin-badge { flex:0 0 auto; padding:2rpx 10rpx; border-radius:8rpx; background:#f1f2f3; color:#6b7280; font-size:19rpx; font-weight:600; line-height:1.4; }
 .directory-file-name { display:-webkit-box; overflow:hidden; color:#20242b; font-size:32rpx; font-weight:600; line-height:1.35; text-overflow:ellipsis; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
 .directory-file-meta { display:flex; align-items:center; gap:12rpx; margin-top:10rpx; color:#9aa3ad; font-size:23rpx; line-height:1.3; }
 .directory-file-type { color:#9aa3ad; font-weight:500; }

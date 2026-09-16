@@ -225,14 +225,14 @@ Page({
     const dx = Number(touch.clientX || 0) - Number(this.data.dirTouchStartX || 0)
     const dy = Number(touch.clientY || 0) - Number(this.data.dirTouchStartY || 0)
     if (Math.abs(dy) > Math.abs(dx) || Math.abs(dx) < 8) return
-    const swipeX = Math.max(-188, Math.min(0, Math.round(dx)))
+    const swipeX = Math.max(-232, Math.min(0, Math.round(dx)))
     this.applyDirSwipe(String(e.currentTarget.dataset.rowtype || ''), String(e.currentTarget.dataset.rowkey || ''), swipeX)
   },
   onDirTouchEnd(e: any) {
     const type = String(e.currentTarget.dataset.rowtype || '')
     const key = String(e.currentTarget.dataset.rowkey || '')
     const swipeX = this.getDirSwipe(type, key)
-    this.applyDirSwipe(type, key, swipeX <= -86 ? -188 : 0)
+    this.applyDirSwipe(type, key, swipeX <= -100 ? -232 : 0)
   },
   applyDirSwipe(type: string, key: string, value: number) {
     const documentGroups = this.data.documentGroups.map((group: any) => ({

@@ -120,12 +120,25 @@ export function appendTrace(messages: any[], id: string, item: any): TraceResult
     }
   } else if (item.kind === 'tool' || item.kind === 'skill' || item.kind === 'agent') {
     // 同一动作先 run 后 done：按 key 合并状态，避免出现两条重复节点
-    const key = `${item.kind}:${item.name || item.title || ''}`
-    const at = trace.findIndex((node) => node.key === key)
     const state = String(item.state || 'done')
+    const key = `${item.kind}:${item.name || item.title || ''}`
+    let at = trace.findIndex((node) => node.key === key)
+    // 结束事件不一定带 name（技能：run 是「加载技能 · X」、done 是「技能已加载」，
+    // 子智能体同理），key 对不上时回退到同类型最后一个未结束的节点合并，避免多出一行
+    if (at < 0 && (state === 'done' || state === 'error')) {
+      for (let idx = trace.length - 1; idx >= 0; idx -= 1) {
+        if (trace[idx].kind === item.kind && (trace[idx].state === 'run' || trace[idx].state === 'load')) { at = idx; break }
+      }
+    }
     const node: TraceNode = { key, kind: item.kind, state, title: item.title || '', detail: item.detail || '', icon: nodeIcon(item.kind, item.name), stateLabel: nodeStateLabel(state) }
-    if (at >= 0) trace[at] = { ...trace[at], ...node, title: node.title || trace[at].title, detail: node.detail || trace[at].detail }
-    else trace.push(node)
+    if (at >= 0) {
+      const prev = trace[at]
+      // 动作结束后沿用动作本身的标题（「检索全网资料」而不是「检索全网资料完成」），
+      // 是否结束交给右侧状态字；图标也保留 run 那次选中的，不因缺 name 而回退
+      const title = state === 'done' && prev.title ? prev.title : (node.title || prev.title)
+      const icon = item.name ? nodeIcon(item.kind, item.name) : (prev.icon || node.icon)
+      trace[at] = { ...prev, ...node, title, icon, detail: node.detail || prev.detail }
+    } else trace.push(node)
   } else if (item.kind === 'note') {
     // 提示类节点只保留最新一条，避免网络重试等信息堆叠
     trace = trace.filter((node) => node.kind !== 'note')

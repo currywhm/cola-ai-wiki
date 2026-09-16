@@ -4,6 +4,8 @@ page { overflow-x:hidden; }
 .chat-page { display:flex; flex-direction:column; width:100%; height:100vh; min-height:0; overflow:hidden; padding:0 24rpx calc(110rpx + env(safe-area-inset-bottom)); background:#f7f7f7; }
 /* 会话态整页接管版式：通栏白底 + 只留安全区，和问AI问答页完全对齐 */
 .conversation-mode { padding:0 0 env(safe-area-inset-bottom); background:#fff; }
+/* 进入文件夹后不保留底部导航：整页下沉，提问入口贴着底部，与「问AI」首页同一个位置感 */
+.chat-page.folder-mode { padding-bottom:calc(16rpx + env(safe-area-inset-bottom)); }
 .library-toolbar { display:flex; align-items:center; justify-content:space-between; width:100%; min-width:0; gap:20rpx; flex-shrink:0; padding:24rpx 8rpx 8rpx; }
 .library-desc { display:-webkit-box; overflow:hidden; padding:4rpx 8rpx 12rpx; color:#8a919b; font-size:24rpx; line-height:1.5; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
 .library-title-wrap { display:flex; align-items:center; justify-content:flex-start; flex:0 1 auto; width:auto; min-width:0; max-width:calc(100% - 240rpx); gap:8rpx; color:#242424; font-size:54rpx; font-weight:700; line-height:1.25; text-align:left; letter-spacing:-.5rpx; }

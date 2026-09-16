@@ -1,4 +1,4 @@
-<view class="page chat-page {{conversationActive ? 'conversation-mode' : ''}}" style="{{safeBottom ? 'padding-bottom:calc(' + (conversationActive ? 0 : 10) + 'rpx + ' + safeBottom + 'px)' : ''}}">
+<view class="page chat-page {{conversationActive ? 'conversation-mode' : ''}}{{!conversationActive && currentFolderId ? ' folder-mode' : ''}}" style="{{safeBottom ? 'padding-bottom:calc(' + (conversationActive ? 0 : (currentFolderId ? 16 : 10)) + 'rpx + ' + safeBottom + 'px)' : ''}}">
   <view wx:if="{{conversationActive}}" class="qa-nav" style="height:{{navHeight}}px;">
     <button class="qa-back" bindtap="leaveConversation" aria-label="返回"><ui-icon name="back" size="{{36}}" rpx /></button>
     <button class="qa-history" bindtap="openHistory" aria-label="历史对话"><ui-icon name="menu" size="{{34}}" rpx /></button>

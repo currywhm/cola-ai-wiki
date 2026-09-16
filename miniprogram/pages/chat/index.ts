@@ -16,11 +16,13 @@ let bootSplashShown = true
 Page({
   data: { safeBottom: 0, dirTouchStartX: 0, dirTouchStartY: 0, booting: !bootSplashShown, knowledgeId: '', knowledgeName: '', knowledgeDesc: '', conversationId: '', conversationActive: false, selectedIndex: 0, input: '', canSend: false, sending: false, readyForInput: false, lastMessageId: '', model: 'deepseek-flash', selectedModelKey: 'deepseek-flash', modelLabel: '云枢', modelShortLabel: '云枢', thinkingMode: 'quick' as 'quick' | 'deep', modelOptions: FALLBACK_MODEL_OPTIONS, modelPickerVisible: false, askMode: 'knowledge' as 'knowledge' | 'web', modePickerVisible: false, pinned: false, uploadSheetVisible: false, uploadUsedLabel: '0.00GB', uploadLimitLabel: '300MB', loadState:'loading', knowledge:[] as Knowledge[], filteredKnowledge:[] as Knowledge[], pickerQuery:'', pickerVisible:false, documents:[] as any[], documentsLoading:false, documentsError:false, folders:[] as Folder[], documentGroups:[] as any[], visibleDocuments:[] as any[], currentFolderId:'', currentFolderName:'', articleSheetVisible:false, articleUrl:'', articleImporting:false, importMode:false, pendingFileName:'', askLayerVisible:false, askFocus:false, askGreeting:'', suggestions:[] as string[], suggestionsFor:'', suggestionsLoading:false, messages: [] as any[] },
   onLoad() {
-    // tabBar 为自定义组件：会话态需要隐藏它，这里统一拦截 setData 同步，避免逐个调用点遗漏
+    // tabBar 为自定义组件：会话态、提问层、进入文件夹后的目录都要隐藏它，
+    // 这里统一拦截 setData 同步，避免逐个调用点遗漏
     const originalSetData = this.setData.bind(this)
+    const tabBarKeys = ['conversationActive', 'askLayerVisible', 'currentFolderId']
     ;(this as any).setData = (data: any, callback?: () => void) => {
       originalSetData(data, () => {
-        if (data && (Object.prototype.hasOwnProperty.call(data, 'conversationActive') || Object.prototype.hasOwnProperty.call(data, 'askLayerVisible'))) this.syncTabBar()
+        if (data && tabBarKeys.some((key) => Object.prototype.hasOwnProperty.call(data, key))) this.syncTabBar()
         // 会话里只剩下开场白时，顺手拉一次推荐问题（后端按指纹缓存）
         if (data && Array.isArray(data.messages) && data.messages.length === 1 && data.messages[0] && data.messages[0].greeting) this.ensureSuggestions()
         if (callback) callback()
@@ -38,8 +40,8 @@ Page({
     if (typeof this.getTabBar !== 'function') return
     const bar = this.getTabBar() as any
     if (!bar || typeof bar.setData !== 'function') return
-    // 会话视图与提问层都属于「问答页」，全屏展示，不再保留底部 bar；只有四个 tab 首页才有底部导航
-    bar.setData({ selected: 1, hidden: !!(this.data.conversationActive || this.data.askLayerVisible) })
+    // 只有四个 tab 首页保留底部导航：会话页、提问层、以及「进入文件夹后的目录」都是从首页钻进去的视图
+    bar.setData({ selected: 1, hidden: !!(this.data.conversationActive || this.data.askLayerVisible || this.data.currentFolderId) })
   },
   onShow() {
     this.measureNav()

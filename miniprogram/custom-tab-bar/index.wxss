@@ -3,7 +3,8 @@
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 500;
+  /* 底部导航只该盖住页面内容，不该盖住弹层：所有弹层都在 50~210，这里保持在它们之下 */
+  z-index: 40;
   display: flex;
   align-items: center;
   box-sizing: content-box;

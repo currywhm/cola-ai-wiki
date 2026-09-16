@@ -39,29 +39,39 @@
         <view wx:else class="qa-answer">
           <!-- 过程区：思考 / 步骤 / 工具 / 技能 / 子智能体，与问AI页完全一致 -->
           <view wx:if="{{item.trace.length || item.reason}}" class="qa-trace">
-            <view class="qa-trace-head" bindtap="toggleTrace" data-id="{{item.id}}">
-              <view class="qa-trace-dot {{item.running ? 'live' : ''}}"></view>
-              <text class="qa-trace-title">{{item.traceTitle}}</text>
-              <ui-icon name="{{item.traceOpen ? 'chevron-up' : 'chevron-down'}}" size="{{22}}" rpx />
+            <view class="qa-trace-head {{item.running ? 'live' : ''}}" bindtap="toggleTrace" data-id="{{item.id}}">
+              <view class="qa-trace-icon"><ui-icon name="{{item.traceIcon || 'dengpao'}}" size="{{30}}" rpx /></view>
+              <text class="qa-trace-title">{{item.traceTitle || '思考中'}}</text>
+              <text wx:if="{{item.traceSummary && (!item.traceOpen || item.running)}}" class="qa-trace-summary">{{item.traceSummary}}</text>
+              <view wx:else class="qa-trace-spacer"></view>
+              <text wx:if="{{item.traceElapsed}}" class="qa-trace-elapsed">{{item.traceElapsed}}</text>
+              <view class="qa-trace-chevron"><ui-icon name="{{item.traceOpen ? 'chevron-up' : 'chevron-down'}}" size="{{22}}" rpx /></view>
             </view>
             <view wx:if="{{item.traceOpen}}" class="qa-trace-body">
               <text wx:if="{{item.reason}}" class="qa-reason">{{item.reason}}</text>
               <view wx:for="{{item.trace}}" wx:for-item="node" wx:key="key" class="qa-node {{node.kind}} {{node.state}}">
-                <view class="qa-node-mark"></view>
+                <view class="qa-node-icon"><ui-icon name="{{node.icon || 'atom'}}" size="{{28}}" rpx /></view>
                 <view class="qa-node-copy">
                   <text class="qa-node-title">{{node.title}}</text>
                   <text wx:if="{{node.detail}}" class="qa-node-detail">{{node.detail}}</text>
                 </view>
+                <text wx:if="{{node.stateLabel}}" class="qa-node-state {{node.state}}">{{node.stateLabel}}</text>
               </view>
             </view>
           </view>
-          <view wx:if="{{!item.content && !item.trace.length && !item.reason}}" class="qa-progress">{{item.progress || '正在思考'}}</view>
+          <view wx:if="{{!item.content && !item.trace.length && !item.reason}}" class="qa-progress">
+            <view class="qa-progress-icon"><ui-icon name="dengpao" size="{{26}}" rpx /></view>
+            <text class="qa-progress-text">{{item.progress || '正在思考…'}}</text>
+          </view>
           <rich-text wx:if="{{item.content}}" class="qa-answer-text" nodes="{{item.html || item.content}}"></rich-text>
           <view wx:if="{{item.sources.length}}" class="qa-sources">
             <text class="qa-source-title">参考出处 · {{item.sources.length}} 条</text>
             <view wx:for="{{item.sources}}" wx:for-item="source" wx:key="id" class="qa-source" bindtap="openSource" data-id="{{source.document_id || source.id}}" data-url="{{source.url || ''}}">
-              <text class="qa-source-file">{{source.filename}}</text>
-              <text class="qa-source-page">{{source.url ? '公开网页 · 点击复制链接' : '第 ' + source.page_number + ' 页'}}</text>
+              <view class="qa-source-icon"><ui-icon name="{{source.iconName || 'recent-text'}}" size="{{34}}" rpx /></view>
+              <view class="qa-source-copy">
+                <text class="qa-source-file">{{source.filename}}</text>
+                <text class="qa-source-page">{{source.url ? '公开网页 · 点击复制链接' : '第 ' + source.page_number + ' 页'}}</text>
+              </view>
             </view>
           </view>
           <view wx:if="{{item.content && !item.local}}" class="qa-answer-actions">

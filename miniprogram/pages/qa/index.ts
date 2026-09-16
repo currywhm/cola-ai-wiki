@@ -1,5 +1,5 @@
 import { renderMarkdown } from '../../utils/markdown'
-import { appendTrace, assistantMessage, createFlusher, settleTrace } from '../../utils/thread'
+import { appendTrace, assistantMessage, createFlusher, decorateSources, settleTrace } from '../../utils/thread'
 import { deleteConversation, getConversation, getConversations, getKnowledge, getModels, pinConversation, Knowledge, Source, streamChat } from '../../services/api'
 import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER, SKILLS } from '../../utils/skills'
 
@@ -220,7 +220,7 @@ Page({
     this.setData({ historyVisible: false, conversationId: id, messages: [], sending: false, canSend: false }, () => this.syncCanSend())
     getConversation(id).then((messages) => {
       const hydrated = (messages || []).map((message: any) => message.role === 'assistant'
-        ? { ...message, html: renderMarkdown(message.content || ''), trace: [], reason: '', traceTitle: '', traceOpen: false, running: false }
+        ? { ...message, html: renderMarkdown(message.content || ''), sources: decorateSources(message.sources), trace: [], reason: '', traceTitle: '', traceOpen: false, running: false }
         : message)
       this.setData({ messages: hydrated, lastMessageId: hydrated.length ? hydrated[hydrated.length - 1].id : '' }, () => this.syncCanSend())
     }).catch(() => wx.showToast({ title: '历史对话加载失败', icon: 'none' }))
@@ -327,7 +327,7 @@ Page({
     this.setData({ sending: false, messages: nextMessages, lastMessageId: nextMessages.length ? nextMessages[nextMessages.length - 1].id : '' }, () => this.syncCanSend())
   },
   updateAssistant(id: string, content: string, sources?: Source[]) {
-    const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, content, html: renderMarkdown(content), progress: content ? '' : message.progress, sources: sources || message.sources } : message)
+    const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, content, html: renderMarkdown(content), progress: content ? '' : message.progress, sources: sources ? decorateSources(sources) : message.sources } : message)
     this.setData({ messages, lastMessageId: id })
   },
   updateAssistantProgress(id: string, progress: string) {

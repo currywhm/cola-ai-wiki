@@ -1,6 +1,8 @@
 import { consumeChatTarget } from '../../services/navigation'
+import { appendTrace, assistantMessage, createFlusher, settleTrace } from '../../utils/thread'
 import { renderMarkdown } from '../../utils/markdown'
-import { getConversation, getConversations, getKnowledge, getKnowledgeDetail, deleteDocument, deleteKnowledge, getModels, getFolders, getSuggestions, createFolder, deleteFolder, importArticle, moveDocument, uploadLocalFile, Knowledge, ModelOption, Folder, resumeWechatLogin, Source, streamChat, uploadDocument, UploadSource } from '../../services/api'
+import { deleteConversation, getConversation, getConversations, getKnowledge, getKnowledgeDetail, deleteDocument, deleteKnowledge, getModels, getFolders, getSuggestions, createFolder, deleteFolder, importArticle, moveDocument, uploadLocalFile, Knowledge, ModelOption, Folder, resumeWechatLogin, Source, streamChat, uploadDocument, UploadSource } from '../../services/api'
+import { SKILLS } from '../../utils/skills'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
 // 与后端 CHAT_MODELS 一致的兜底清单；正常运行时会被 /api/models 的返回值覆盖
@@ -22,8 +24,14 @@ Page({
         if (callback) callback()
       })
     }
+    this.primeThreadState()
   },
   // 自定义 tabBar 需要页面自己同步选中项与显隐：会话视图为全屏，隐藏底部导航
+  // 会话视图与问AI问答页共用一套交互：技能包、历史对话抽屉、顶部安全高度
+  primeThreadState() {
+    this.setData({ navHeight: 88, skillSheetVisible: false, skills: SKILLS, pendingSkill: '', pendingSkillName: '', historyVisible: false, historyLoading: false, historyItems: [] })
+    this.measureNav()
+  },
   syncTabBar() {
     if (typeof this.getTabBar !== 'function') return
     const bar = this.getTabBar() as any
@@ -32,14 +40,28 @@ Page({
     bar.setData({ selected: 1, hidden: !!(this.data.conversationActive || this.data.askLayerVisible) })
   },
   onShow() {
+    this.measureNav()
     this.syncTabBar()
     this.measureSafeArea()
     const target = consumeChatTarget()
     if (target) this.setData({ knowledgeId:target.knowledgeId, conversationId:target.conversationId || '', conversationActive:true, messages:[], input:'', canSend:false, readyForInput:false, lastMessageId:'' })
     this.load(!!target)
   },
-  // 真机上 env(safe-area-inset-bottom) 偶发失效，这里用窗口信息实测 Home 条高度兜底；
+  // 会话态顶部不排标题栏，按胶囊按钮位置实测高度，和问AI问答页保持同一套版式
+  measureNav() {
+    try {
+      const api = wx as any
+      const info = api.getWindowInfo ? api.getWindowInfo() : wx.getSystemInfoSync()
+      const rect = wx.getMenuButtonBoundingClientRect()
+      const status = info.statusBarHeight || 20
+      const valid = rect && rect.height > 0 && rect.top >= status
+      const height = valid ? Math.max(44, (rect.top - status) * 2 + rect.height) : 44
+      const next = status + height
+      if (next !== (this.data as any).navHeight) this.setData({ navHeight: next })
+    } catch (e) { /* 取不到就沿用默认高度 */ }
+  },
   // 取到值时以内联样式覆盖 CSS 的 env()，取不到时继续走 CSS，不会重复叠加
+  // 真机上 env(safe-area-inset-bottom) 偶发失效，用窗口信息实测 Home 条高度兜底；
   measureSafeArea() {
     try {
       const info = (wx as any).getWindowInfo ? (wx as any).getWindowInfo() : wx.getSystemInfoSync()
@@ -528,6 +550,9 @@ Page({
       Object.assign(next, { conversationActive: true, conversationId: '', messages: [guide], lastMessageId: guide.id, modePickerVisible: false, askMode: mode })
     }
     this.setData(next)
+    // 用户改写输入后若已不含技能模板，就解除本轮技能绑定，避免注入与文本不一致
+    const bound = (this.data as any).pendingSkill ? SKILLS.find((item) => item.harness === (this.data as any).pendingSkill) : undefined
+    if (bound && !String(this.data.input || '').includes(bound.prompt)) this.setData({ pendingSkill: '', pendingSkillName: '' })
     this.syncCanSend()
   },
   useSuggestion(e: any) {
@@ -547,6 +572,11 @@ Page({
   chooseModel() { if (!this.data.sending) this.setData({ modelPickerVisible:true, modePickerVisible:false, pickerVisible:false }) },
   closeModelPicker() { if (!this.data.sending) this.setData({ modelPickerVisible:false }) },
   stopModelPickerBubble() { return },
+  // 与问AI问答页一致：模型页只留一个深度思考开关
+  toggleDeepThinking() {
+    if (this.data.sending) return
+    this.setData({ thinkingMode: this.data.thinkingMode === 'deep' ? 'quick' : 'deep' })
+  },
   selectThinkingMode(e: any) {
     if (this.data.sending) return
     this.setData({ thinkingMode: e.currentTarget.dataset.mode as 'quick' | 'deep' })
@@ -655,39 +685,117 @@ Page({
       }
     })
   },
-  showHistory() {
-    getConversations().then((items) => {
-      // 文件夹会话归属独立文件夹页，不在根目录历史里出现（隔离）
-      const visible = (items || []).filter((item: any) => !(item.folder_id || ''))
-      if (!visible.length) { wx.showToast({ title: '暂无历史对话', icon: 'none' }); return }
-      const labelOf = (item: any) => { const kb = this.data.knowledge.find((k) => k.id === item.knowledge_id); return `${kb ? `「${kb.name}」` : ''}${item.title || '未命名对话'}` }
-      wx.showActionSheet({ itemList: visible.slice(0, 6).map(labelOf), success: ({ tapIndex }) => { const item = visible[tapIndex]; if (item) { ;(this as any).userLeftConversation = false; this.setData({ knowledgeId:item.knowledge_id, conversationId:item.id, conversationActive:true }); this.load(true) } } })
-    }).catch(() => wx.showToast({ title: '历史对话加载失败', icon: 'none' }))
+  // 小机器人两态互切：执行规划（联网/ agent）与基于知识库问答；第三、第四个图标随状态换形
+  toggleAskLogic() {
+    if (this.data.sending) return
+    const next = this.data.askMode === 'web' ? 'knowledge' : 'web'
+    if (next === 'knowledge' && !this.data.knowledgeId) { wx.showToast({ title: '请先创建知识库', icon: 'none' }); return }
+    this.setData({ askMode: next, modePickerVisible: false, skillSheetVisible: false, pickerVisible: false, modelPickerVisible: false }, () => this.syncCanSend())
+  },
+  openSkillSheet() {
+    if (this.data.sending) return
+    this.setData({ skillSheetVisible: true, modePickerVisible: false, pickerVisible: false, modelPickerVisible: false })
+  },
+  closeSheets() { this.setData({ skillSheetVisible: false }) },
+  // 弹层内部点击不穿透到遮罩
+  noop() { return },
+  // 选中技能会把模板写进输入框，同时把包名下发给后端做技能加载与注入
+  useSkill(e: any) {
+    const skill = SKILLS.find((item) => item.id === e.currentTarget.dataset.id)
+    if (!skill) return
+    const base = this.data.input.trim()
+    const input = base ? `${base}\n${skill.prompt}` : skill.prompt
+    this.setData({ input, skillSheetVisible: false, readyForInput: true, pendingSkill: skill.harness, pendingSkillName: skill.name }, () => this.syncCanSend())
+  },
+  clearSkill() {
+    const bound = (this.data as any).pendingSkill ? SKILLS.find((item) => item.harness === (this.data as any).pendingSkill) : undefined
+    const input = bound ? this.data.input.replace(bound.prompt, '').trim() : this.data.input
+    this.setData({ input, pendingSkill: '', pendingSkillName: '' }, () => this.syncCanSend())
+  },
+  // 历史对话抽屉：数据来自服务端 /api/conversations，按用户 + 知识库收窄，只显示根目录会话
+  openHistory() {
+    if (this.data.sending) return
+    this.setData({ historyVisible: true, historyLoading: true })
+    getConversations({ knowledgeId: this.data.knowledgeId, folderId: '' }).then((items) => {
+      this.setData({ historyItems: items || [], historyLoading: false })
+    }).catch(() => this.setData({ historyItems: [], historyLoading: false }))
+  },
+  closeHistory() { this.setData({ historyVisible: false }) },
+  pickHistory(e: any) {
+    const id = String((e.detail && e.detail.id) || '')
+    if (!id) return
+    (this as any).userLeftConversation = false
+    this.setData({ historyVisible: false, conversationId: id, conversationActive: true, messages: [], sending: false, canSend: false })
+    this.loadConversation()
+  },
+  // 长按历史对话 = 删除；会话在服务端，删前必须二次确认
+  removeHistory(e: any) {
+    const id = String((e.detail && e.detail.id) || '')
+    if (!id) return
+    wx.showModal({
+      title: '删除这条对话',
+      content: '对话内容与其中的问答记录会一起删除，且无法恢复。',
+      confirmText: '删除',
+      confirmColor: '#d94545',
+      success: (res) => {
+        if (!res.confirm) return
+        deleteConversation(id).then(() => {
+          const items = (this.data as any).historyItems.filter((item: any) => item.id !== id)
+          const isCurrent = this.data.conversationId === id
+          this.setData({ historyItems: items, conversationId: isCurrent ? '' : this.data.conversationId })
+          if (isCurrent) this.setData({ messages: [], lastMessageId: '' })
+          wx.showToast({ title: '已删除', icon: 'success' })
+        }).catch(() => wx.showToast({ title: '删除失败，请稍后重试', icon: 'none' }))
+      },
+    })
   },
   send() {
     const content = this.data.input.trim()
     if (!this.data.readyForInput || this.data.loadState !== 'ready' || !content || this.data.sending) return
     const mode = this.data.askMode
     if (mode === 'knowledge' && !this.data.knowledgeId) { wx.showToast({ title: '请先创建资料库', icon: 'none' }); return }
-    if (mode === 'knowledge' && !this.data.documentsLoading && !this.data.documents.length) {
-      wx.showModal({
-        title: '知识库为空',
-        content: '当前知识库还没有文件，无法基于资料回答。是否切换到「问全网」？',
-        confirmText: '问全网',
-        cancelText: '取消',
-        success: (res) => { if (res.confirm) { this.setData({ askMode: 'web' }, () => this.doSend('web', content)) } },
-      })
-      return
-    }
+    // 知识库为空也允许直接提问：后端在没有资料时会退化为通用能力回答，
+    // 不再弹「是否切换到全网」这类打断式提示。
     this.doSend(mode, content)
   },
   doSend(mode: 'knowledge' | 'web', content: string) {
     const userId = `m${Date.now()}`; const assistantId = `m${Date.now() + 1}`
-    this.setData({ input: '', conversationActive:true, sending: true, canSend: false, messages: [...this.data.messages, { id: userId, role: 'user', content, sources: [] }, { id: assistantId, role: 'assistant', content: '', html: '', progress: '正在检索资料并组织回答…', sources: [] }], lastMessageId: assistantId })
+    const skill = (this.data as any).pendingSkill
+    this.setData({ input: '', conversationActive:true, sending: true, canSend: false, messages: [...this.data.messages, { id: userId, role: 'user', content, sources: [] }, assistantMessage(assistantId)], lastMessageId: assistantId })
+    this.setData({ pendingSkill: '', pendingSkillName: '' })
     let assistant = ''
     const payload: any = { mode, conversation_id: this.data.conversationId || undefined, content, model: this.data.model, thinking: this.data.thinkingMode }
+    // 选中的 harness 技能随请求下发，后端先加载并注入技能再执行任务
+    if (skill) payload.skill = skill
     if (mode === 'knowledge') payload.knowledge_id = this.data.knowledgeId
-    ;(this as any).cancelStream = streamChat(payload, (meta) => { this.setData({ conversationId: meta.conversation_id }); this.updateAssistant(assistantId, assistant, meta.sources as Source[]) }, (delta) => { assistant += delta; this.updateAssistant(assistantId, assistant) }, () => { (this as any).cancelStream = null; this.setData({ sending: false }); this.syncCanSend() }, (error) => { (this as any).cancelStream = null; this.setData({ sending: false }); this.updateAssistant(assistantId, assistant || '回答未完成，请稍后重新提问。'); this.syncCanSend(); wx.showToast({ title: error.message || error.errMsg || '回答失败', icon: 'none' }) }, (label) => { if (label) this.updateAssistantProgress(assistantId, label) })
+    ;(this as any).cancelStream = streamChat(
+      payload,
+      (meta) => { this.setData({ conversationId: meta.conversation_id }); this.updateAssistant(assistantId, assistant, meta.sources as Source[]) },
+      (delta) => { assistant += delta; this.flushDelta(assistantId, () => assistant) },
+      () => { (this as any).cancelStream = null; this.flushReset(assistantId); this.updateAssistant(assistantId, assistant); this.settleAnswer(assistantId); this.setData({ sending: false }); this.syncCanSend() },
+      (error) => { (this as any).cancelStream = null; this.flushReset(assistantId); this.updateAssistant(assistantId, assistant || '回答未完成，请稍后重新提问。'); this.settleAnswer(assistantId); this.setData({ sending: false }); this.syncCanSend(); wx.showToast({ title: error.message || error.errMsg || '回答失败', icon: 'none' }) },
+      (label) => { if (label) this.updateAssistantProgress(assistantId, label) },
+      (item) => this.pushTrace(assistantId, item),
+    )
+  },
+  // 过程区与增量节流统一走 utils/thread，与问AI页、文件夹会话共用同一实现
+  ensureFlusher() {
+    if (!(this as any).flusher) {
+      (this as any).flusher = createFlusher((id: string, content: string) => this.updateAssistant(id, content))
+    }
+    return (this as any).flusher
+  },
+  flushDelta(id: string, read: () => string) { this.ensureFlusher().schedule(id, read) },
+  flushReset(id: string) { const flusher = (this as any).flusher; if (flusher) flusher.clear(id) },
+  settleAnswer(id: string) { this.setData({ messages: settleTrace(this.data.messages, id) }) },
+  pushTrace(id: string, item: any) {
+    const result = appendTrace(this.data.messages, id, item)
+    if (result.changed) this.setData({ messages: result.messages, lastMessageId: id })
+  },
+  toggleTrace(e: any) {
+    const id = String(e.currentTarget.dataset.id || '')
+    const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, traceOpen: !message.traceOpen } : message)
+    this.setData({ messages })
   },
   stopSend() {
     const cancel = (this as any).cancelStream
@@ -703,7 +811,10 @@ Page({
       lastMessageId: nextMessages.length ? nextMessages[nextMessages.length - 1].id : ''
     }, () => this.syncCanSend())
   },
-  onUnload() { const cancel = (this as any).cancelStream; if (cancel) cancel() },
+  onUnload() {
+    const cancel = (this as any).cancelStream; if (cancel) cancel()
+    const flusher = (this as any).flusher; if (flusher) flusher.reset()
+  },
   updateAssistant(id: string, content: string, sources?: Source[]) { const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, content, html: renderMarkdown(content), progress: content ? '' : message.progress, sources: sources || message.sources } : message); this.setData({ messages, lastMessageId: id }) },
   updateAssistantProgress(id: string, progress: string) { const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, progress } : message); this.setData({ messages }) },
   openSource(e: any) {

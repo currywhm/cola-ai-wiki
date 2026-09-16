@@ -1,39 +1,83 @@
-"""DeepSeek Harness bridge: agent turns with session persistence, tools and skills.
+"""DeepSeek Harness bridge: full agent turns with session persistence, tools and skills.
 
-对齐 deepseek-harness 完整版核心链路：
-- 多轮对话：session_id 复用（JSONL 事件日志自动持久化到 DSH_HOME）
-- 智能体：profile 分流——快速= sdk-minimal（精简组合，无 web/skill/plan-mode，
-  includeHarnessIdentity/RuntimeContext 关闭，prompt 小、启动快）；
-  深度= sdk 完整 profile（fs/shell/web 工具与技能加载）
-- 上下文压缩：由运行时按压力自动 compaction
-- 流式：订阅 session.event 的 assistant/chunk(text-delta)，token 级真流式；
-  消息级 assistant/message 与 final_response 仅作兜底，不重复转发
+对齐 deepseek-harness 完整版核心链路（输入 → 思考 → 任务分发 → 技能加载/注入 →
+工具执行 → 回答），把运行时事件如实转成前端可渲染的「过程流」：
 
-性能设计：Harness 运行时（Node 子进程）启动成本高（profile 组装数十秒），
-因此按 (profile, model) 缓存单例 DeepSeekHarness 跨轮复用；知识库上下文以内联
-方式注入 prompt（DSH_SYSTEM_PROMPT 只在进程启动时生效，无法按轮更新）。
+- 智能体：统一走完整 ``sdk`` profile（fs/shell/web/skill/plan/subagent 工具全量），
+  运行时按 (profile, model) 单例缓存，跨轮复用，冷启动成本只付一次。
+- 思考过程：``assistant/message.stream`` 里的 ``reasoning-chunks`` / ``text-chunks``
+  是运行时压缩保存的「带时序的原始流」，按 ``dt`` 节奏回放，前端即可得到与
+  harness 前端一致的逐字输出，而不是等整段回答结束才出现。
+- 执行过程：``step/start`` ``tool/call`` ``tool/result`` ``compaction/*``
+  ``subagent.started`` ``subagent.finished`` 逐条转成中文过程节点。
+- 技能：技能包放在 ``app/harness_skills/``，启动/每轮同步到 ``$DSH_HOME/skills``
+  （filesystem provider 的 user-dsh 根），运行时的 skill 目录注入会产生
+  ``user/message``（source.kind=skill-catalog），模型再通过 ``skill`` 工具加载；
+  前端选中的技能由后端写成「先加载该技能」的硬性指令，保证真的加载与注入。
+
+性能与稳定性：运行时（Node 子进程）启动成本高，因此按 (profile, model)
+缓存单例；知识库上下文以内联方式注入 prompt（``DSH_SYSTEM_PROMPT`` 只在进程
+启动时生效，无法按轮更新）。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
+from pathlib import Path
 
 from ..config import settings
 
 # airouter 等网关在历史含 reasoning 块时偶发直接关闭流（STREAM_CLOSED），
 # 失败且无任何输出时自动重试一次。
 _MAX_ATTEMPTS = 2
-_SLICE = 16
 
-# 快速模式用 sdk-minimal（精简独立树，无 web 搜索/skill/plan-mode，显著更快）；
-# 深度模式用完整 sdk profile（工具/技能/agent-loop 全量）。
-QUICK_PROFILE = 'sdk-minimal'
+# 回放节奏：运行时把整段模型流（含时序）存在 assistant/message 里，这里按
+# 分组回放。目标：既有逐字观感，又不会把整轮耗时再叠加一遍。
+_TEXT_GROUP = 6
+_TEXT_PACE = 0.035
+_REASON_GROUP = 8
+_REASON_PACE = 0.02
+_PACE_BUDGET = 2.4
 
+# 前端技能面板 <-> 磁盘技能包（app/harness_skills/<slug>/SKILL.md）
+SKILL_LABELS = {
+    'organize-knowledge': '整理知识库',
+    'write-report': '撰写报告',
+    'make-deck': '生成 PPT',
+    'knowledge-diagram': '知识图解',
+}
+
+# 工具名 -> 中文动作。未列出的工具统一显示「调用工具」。
+_TOOL_TITLES = {
+    'skill': '加载技能',
+    'web_search': '检索全网资料',
+    'web_fetch': '读取网页内容',
+    'bash': '执行命令',
+    'read': '读取文件',
+    'write': '写入文件',
+    'edit': '修改文件',
+    'grep': '检索文件内容',
+    'glob': '查找文件',
+    'read_image': '识别图片',
+    'subagent': '派遣子智能体',
+    'subagent_fork': '派遣子智能体',
+    'send_message': '与子智能体通信',
+    'todo_write': '更新任务清单',
+    'create_goal': '设定任务目标',
+    'update_goal': '更新任务目标',
+    'get_goal': '读取任务目标',
+    'workflow': '执行工作流',
+    'plan': '制定执行计划',
+    'exit_plan_mode': '完成计划',
+}
+
+_SKILLS_SYNCED: set[str] = set()
 _clients: dict[str, object] = {}
 _clients_lock = threading.Lock()
 
@@ -41,6 +85,54 @@ _clients_lock = threading.Lock()
 def configured() -> bool:
     """Return whether the Harness bridge is explicitly enabled."""
     return bool(settings.harness_enabled and settings.harness_home.strip())
+
+
+def skills_source_dir() -> Path:
+    return Path(__file__).resolve().parent.parent / 'harness_skills'
+
+
+def skills_target_dir() -> Path:
+    """``$DSH_HOME/skills``：dsh-skill-filesystem 的 user-dsh 扫描根。"""
+    return settings.resolve_path(settings.harness_home) / 'skills'
+
+
+def sync_skills(force: bool = False) -> int:
+    """把仓库内的技能包同步到运行时技能根目录（幂等，内容变化即覆盖）。
+
+    技能属于「运行时资产」：智能体对工作目录有写权限，因此每轮都从仓库
+    源目录重新同步一次，避免被误改后影响后续问答。返回同步的技能数量。
+    """
+    source = skills_source_dir()
+    if not source.is_dir():
+        return 0
+    target = skills_target_dir()
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return 0
+    synced = 0
+    for entry in sorted(source.iterdir()):
+        if entry.name.startswith('.'):
+            continue
+        if entry.is_dir():
+            if not (entry / 'SKILL.md').is_file():
+                continue
+            dest = target / entry.name
+            try:
+                # 先清后拷：技能包内容变更（含删除的资源）必须完整生效
+                if dest.exists():
+                    shutil.rmtree(dest, ignore_errors=True)
+                shutil.copytree(entry, dest)
+                synced += 1
+            except OSError:
+                continue
+        elif entry.suffix == '.md' and entry.name != 'README.md':
+            try:
+                shutil.copyfile(entry, target / entry.name)
+                synced += 1
+            except OSError:
+                continue
+    return synced
 
 
 def cleanup_stale_sessions(max_age_hours: int = 24) -> int:
@@ -77,7 +169,8 @@ def cleanup_stale_sessions(max_age_hours: int = 24) -> int:
 
 
 def profile_for_thinking(thinking: str) -> str:
-    return QUICK_PROFILE if thinking == 'quick' else (settings.harness_profile or 'sdk')
+    """统一使用完整 profile：快速与深度都需要技能/工具/思考过程可见。"""
+    return settings.harness_profile or 'sdk'
 
 
 def _credentials() -> tuple[str, str]:
@@ -95,24 +188,38 @@ def _credentials() -> tuple[str, str]:
     return api_key, base
 
 
-def _shared_workspace():
+def _shared_workspace() -> Path:
     root = settings.resolve_path('./harness-workspaces') / 'shared'
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
+def _ensure_sdk_paths() -> None:
+    """允许直接用仓库内的 SDK 源码运行：把配置的源码目录加入 sys.path。
+
+    生产部署推荐 ``pip install`` 对应的 SDK 包，那时这两个配置留空即可。
+    """
+    import sys
+
+    for raw in (settings.harness_sdk_path, settings.harness_runtime_sdk_path):
+        value = (raw or '').strip()
+        if not value:
+            continue
+        path = settings.resolve_path(value)
+        if path.is_dir() and str(path) not in sys.path:
+            sys.path.append(str(path))
+
+
 def _build_client(model: str, profile: str):
+    _ensure_sdk_paths()
     try:
         from deepseek_harness import DeepSeekHarness
     except ImportError as exc:
         raise RuntimeError('Harness SDK 未安装，请部署 deepseek-harness-sdk/runtime') from exc
     api_key, base_url = _credentials()
     home = settings.resolve_path(settings.harness_home)
-    # sdk-minimal 的会话存储压缩格式与完整 profile 不同，共用 home 会互相报
-    # "uses .jsonl.zstd ... compression none"，按 profile 隔离子目录
-    if profile == QUICK_PROFILE:
-        home = home / 'sdk-minimal'
     home.mkdir(parents=True, exist_ok=True)
+    sync_skills()
     kwargs: dict = {
         'provider': settings.harness_provider,
         'model': model or settings.harness_model,
@@ -124,15 +231,16 @@ def _build_client(model: str, profile: str):
         'max_tokens': settings.harness_max_tokens,
         'env': {
             'DSH_SYSTEM_PROMPT': (
-                '你是 cola 知识库的智能助手。你的回答使用中文，简洁准确。'
-                '用户消息中可能附带「资料库上下文」或「全网检索要求」，请严格遵循其中的指示。'
+                '【语言要求】你的思考过程（reasoning）与最终回答都必须使用简体中文，思考过程中不要写英文。'
+                '你是 cola 知识库的智能助手，回答结论先行、排版清晰。'
+                '用户消息中会给出本轮的「任务上下文与要求」，请严格遵循其中的指示：'
+                '是否需要联网检索、是否只能依据给定资料作答、是否必须先加载某个技能。'
+                '只有在任务确实需要时才调用工具，不要为了了解环境而反复执行命令。'
             ),
             'DSH_MAX_TOKENS_AS_SUCCESS': 'true',
-            # agent web_search 工具（Exa）的密钥；空串时工具不可用，模型自行降级
-            **({'EXA_API_KEY': settings.exa_api_key} if settings.exa_api_key else {}),
         },
-        'initialize_timeout_seconds': 120,
-        'request_timeout_seconds': 240,
+        'initialize_timeout_seconds': 180,
+        'request_timeout_seconds': 600,
     }
     if base_url:
         kwargs['base_url'] = base_url
@@ -179,70 +287,310 @@ def _drop_client(model: str, profile: str) -> None:
             pass
 
 
-def _forward(notification, emit: Callable[[str, str], None]) -> None:
-    """把 session.event 通知分类为 ('text', 增量文本) 或 ('progress', 进度标签)。
+def close_clients() -> None:
+    with _clients_lock:
+        clients = list(_clients.items())
+        _clients.clear()
+    for _key, client in clients:
+        try:
+            client.close()
+        except Exception:
+            pass
 
-    - assistant/chunk(text-delta)：token 级增量文本，直出
-    - step/start、tool/call、tool/result、llm/retry-started、compaction/start：
-      转为中文进度标签，供前端对齐 harness 前端的过程展示
-    - 完整 assistant/message 不转发（增量已覆盖时会重复）；若运行时不发
-      chunk，由 stream_answer 的 final_response 兜底补发
+
+class _TraceState:
+    """一轮问答里过程节点的去重与配对状态。"""
+
+    __slots__ = ('step', 'tools', 'reason_streamed', 'text_streamed', 'skills', 'pace_spent')
+
+    def __init__(self) -> None:
+        self.step = 0
+        self.tools: dict[str, tuple[str, str]] = {}
+        self.reason_streamed = False
+        self.text_streamed = False
+        self.skills: set[str] = set()
+        self.pace_spent = 0.0
+
+
+def _parse_arguments(raw) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        return {}
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _shorten(value, limit: int = 48) -> str:
+    text = str(value or '').replace('\n', ' ').strip()
+    return text if len(text) <= limit else text[: limit - 1] + '…'
+
+
+def _tool_detail(name: str, args: dict) -> str:
+    """只暴露对用户有意义的参数，不把命令原文/文件内容丢给前端。"""
+    if name == 'web_search':
+        return _shorten(args.get('query') or args.get('q'), 40)
+    if name == 'web_fetch':
+        return _shorten(args.get('url'), 48)
+    if name in ('read', 'write', 'edit', 'read_image'):
+        path = str(args.get('file_path') or args.get('path') or '')
+        return _shorten(path.split('/')[-1], 32) if path else ''
+    if name in ('subagent', 'subagent_fork'):
+        return _shorten(args.get('description') or args.get('prompt'), 40)
+    if name == 'todo_write':
+        todos = args.get('todos')
+        return f'{len(todos)} 项' if isinstance(todos, list) else ''
+    return ''
+
+
+def _skill_label(slug: str) -> str:
+    return SKILL_LABELS.get(slug, slug)
+
+
+def _emit_pieces(state, emit, texts, kind: str, group: int, pace: float) -> None:
+    """把一段打包的增量文本按小组回放，兼顾逐字观感与总耗时。"""
+    if not texts:
+        return
+    pieces = [str(item) for item in texts if item]
+    if not pieces:
+        return
+    groups = [pieces[i:i + group] for i in range(0, len(pieces), group)]
+    # 整轮回放预算有限：预算用尽后直接吐剩余内容，避免叠加过多感知耗时
+    remaining = max(0.0, _PACE_BUDGET - state.pace_spent)
+    step_pace = min(pace, remaining) if remaining > 0 else 0.0
+    state.pace_spent += step_pace * (len(groups) - 1)
+    for index, chunk in enumerate(groups):
+        piece = ''.join(chunk)
+        pace_here = step_pace if index + 1 < len(groups) else 0.0
+        if kind == 'reason':
+            emit('trace', {'item': {'kind': 'reason', 'text': piece}}, pace_here)
+        else:
+            emit('text', {'text': piece}, pace_here)
+    if kind == 'reason':
+        state.reason_streamed = True
+    else:
+        state.text_streamed = True
+
+
+def _walk_message_stream(data: dict, state: _TraceState, emit: Callable) -> None:
+    """解析 assistant/message.stream：运行时保存的带时序原始模型流。"""
+    stream = data.get('stream')
+    if isinstance(stream, list):
+        for record in stream:
+            if not isinstance(record, dict):
+                continue
+            rtype = record.get('type')
+            if rtype == 'reasoning-chunks':
+                _emit_pieces(state, emit, record.get('texts'), 'reason', _REASON_GROUP, _REASON_PACE)
+            elif rtype == 'text-chunks':
+                _emit_pieces(state, emit, record.get('texts'), 'text', _TEXT_GROUP, _TEXT_PACE)
+            # tool-call-chunks 由紧随其后的 tool/call 事件统一上报，避免重复节点
+    # 运行时未保存流（老版本/异常路径）时，退回整段消息内容
+    message = data.get('message') or {}
+    blocks = message.get('content') or []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get('type')
+        text = block.get('text') or ''
+        if btype == 'reasoning' and text and not state.reason_streamed:
+            emit('trace', {'item': {'kind': 'reason', 'text': text}}, 0.0)
+            state.reason_streamed = True
+        elif btype == 'text' and text and not state.text_streamed:
+            emit('text', {'text': text}, 0.0)
+            state.text_streamed = True
+
+
+def _forward(notification, emit: Callable, state: _TraceState) -> None:
+    """把运行时通知分类为前端可渲染的过程节点与回答增量文本。
+
+    - ``assistant/message``：思考过程 + 回答增量（按记录分组回放）
+    - ``step/start``、``tool/call``、``tool/result``、``compaction/*``：
+      执行过程节点
+    - ``user/message``（source.kind=skill-catalog）：技能目录注入
+    - ``subagent.started`` / ``subagent.finished``：任务分发
     """
-    payload = notification.payload
+    method = getattr(notification, 'method', '') or ''
+    payload = getattr(notification, 'payload', None) or {}
+    if method == 'subagent.started':
+        emit('trace', {'item': {'kind': 'agent', 'state': 'run', 'title': '派遣子智能体处理子任务'}}, 0.0)
+        return
+    if method == 'subagent.finished':
+        emit('trace', {'item': {'kind': 'agent', 'state': 'done', 'title': '子智能体已返回结果'}}, 0.0)
+        return
+    if method != 'session.event':
+        return
     event = payload.get('event') if isinstance(payload, dict) else None
     if not isinstance(event, dict):
         return
     etype = event.get('type') or ''
     data = event.get('data') or {}
-    if etype == 'assistant/chunk':
-        chunk = data.get('chunk') or {}
-        if chunk.get('type') == 'text-delta':
-            text = chunk.get('text') or ''
-            if text:
-                emit('text', text)
+    if not isinstance(data, dict):
         return
+
+    if etype == 'user/message':
+        source = data.get('source') or {}
+        skind = source.get('kind') if isinstance(source, dict) else ''
+        if skind == 'skill-catalog':
+            entries = source.get('entries') or []
+            names = [ _skill_label(str(e.get('name') or '')) for e in entries if isinstance(e, dict) ]
+            emit('trace', {'item': {
+                'kind': 'skill', 'state': 'catalog',
+                'title': f'已注入 {len(names)} 项技能' if names else '已注入技能目录',
+                'detail': '、'.join(names[:4]),
+            }}, 0.0)
+        elif skind == 'skill-invocation':
+            name = str(source.get('name') or source.get('skill') or '')
+            emit('trace', {'item': {'kind': 'skill', 'state': 'load', 'title': f'加载技能 · {_skill_label(name)}'}}, 0.0)
+        return
+
     if etype == 'step/start':
-        emit('progress', '正在思考…')
-    elif etype == 'tool/call':
-        name = data.get('tool') or data.get('name') or data.get('toolName') or ''
-        emit('progress', f'正在调用工具 {name}…' if name else '正在调用工具…')
-    elif etype == 'tool/result':
-        emit('progress', '工具执行完成，正在整理回答…')
-    elif etype in ('llm/retry', 'llm/retry-started'):
-        emit('progress', '网络波动，正在重试…')
-    elif etype == 'compaction/start':
-        emit('progress', '正在压缩上下文…')
-    elif etype == 'subagent/descriptor':
-        emit('progress', '正在派遣子智能体…')
+        state.step = int(data.get('step') or state.step + 1)
+        emit('trace', {'item': {'kind': 'step', 'index': state.step, 'title': f'第 {state.step} 步'}}, 0.0)
+        return
+
+    if etype == 'assistant/message':
+        _walk_message_stream(data, state, emit)
+        return
+
+    if etype == 'assistant/attempt':
+        state.reason_streamed = False
+        _walk_message_stream(data, state, emit)
+        return
+
+    if etype == 'tool/call':
+        call_id = str(data.get('callId') or '')
+        name = str(data.get('name') or '')
+        args = _parse_arguments(data.get('arguments'))
+        title = _TOOL_TITLES.get(name, '调用工具')
+        detail = _tool_detail(name, args)
+        state.tools[call_id] = (name, title)
+        if name == 'skill':
+            slug = str(args.get('name') or '')
+            state.skills.add(slug)
+            emit('trace', {'item': {
+                'kind': 'skill', 'state': 'load',
+                'title': f'加载技能 · {_skill_label(slug)}' if slug else '加载技能',
+                'detail': '',
+            }}, 0.0)
+        else:
+            emit('trace', {'item': {'kind': 'tool', 'state': 'run', 'name': name, 'title': title, 'detail': detail}}, 0.0)
+        return
+
+    if etype == 'tool/result':
+        message = data.get('message') or {}
+        source = message.get('source') or {}
+        call_id = str(source.get('callId') or '')
+        blocks = message.get('content') or []
+        if not call_id and blocks and isinstance(blocks[0], dict):
+            call_id = str(blocks[0].get('toolCallId') or '')
+        name, title = state.tools.get(call_id, ('', ''))
+        failed = bool(data.get('error')) or any(
+            isinstance(block, dict) and block.get('isError') for block in blocks
+        )
+        if name == 'skill':
+            emit('trace', {'item': {
+                'kind': 'skill', 'state': 'error' if failed else 'done',
+                'title': '技能加载失败' if failed else (f'{title}完成' if title else '技能已加载'),
+            }}, 0.0)
+        elif name:
+            emit('trace', {'item': {
+                'kind': 'tool', 'state': 'error' if failed else 'done',
+                'name': name, 'title': f'{title}失败' if failed else f'{title}完成',
+            }}, 0.0)
+        return
+
+    if etype == 'compaction/start':
+        emit('trace', {'item': {'kind': 'note', 'state': 'run', 'title': '正在压缩上下文'}}, 0.0)
+        return
+    if etype == 'compaction/end':
+        emit('trace', {'item': {'kind': 'note', 'state': 'done', 'title': '上下文已压缩'}}, 0.0)
+        return
+    if etype in ('llm/retry', 'llm/retry-started'):
+        emit('trace', {'item': {'kind': 'note', 'state': 'run', 'title': '网络波动，正在重试'}}, 0.0)
+        return
+    if etype == 'turn/end':
+        reason = (data.get('reason') or {}) if isinstance(data.get('reason'), dict) else {}
+        error = reason.get('error') or {}
+        if reason.get('kind') == 'error' and isinstance(error, dict) and error.get('message'):
+            emit('trace', {'item': {'kind': 'note', 'state': 'error', 'title': _shorten(error.get('message'), 120)}}, 0.0)
 
 
-def _run_turn(prompt: str, session_id: str, model: str, profile: str, emit: Callable[[str, str], None]):
+def _run_turn(prompt: str, session_id: str, model: str, profile: str, emit: Callable):
     """同步执行一轮 Harness agent turn（在线程中调用）。子进程级错误时重建单例并重抛。"""
     client = _get_client(model, profile)
+    state = _TraceState()
     try:
-        return client.run(prompt, session_id=session_id, on_notification=lambda n: _forward(n, emit))
+        return client.run(prompt, session_id=session_id, on_notification=lambda n: _forward(n, emit, state))
     except Exception:
         _drop_client(model, profile)
         raise
 
 
-async def stream_answer(question: str, system: str, session_id: str = '', model: str = '', thinking: str = 'quick') -> AsyncIterator[dict]:
+def _skill_instruction(skill: str) -> str:
+    slug = (skill or '').strip()
+    if not slug:
+        return ''
+    label = _skill_label(slug)
+    return (
+        f'本轮必须使用技能「{label}」（skill 名称：{slug}）：'
+        f'第一步就调用 skill 工具加载它，再严格按照该技能的步骤与输出格式完成任务，'
+        f'不要跳过技能直接自由发挥。'
+    )
+
+
+def _build_prompt(question: str, system: str, skill: str, mode: str) -> str:
+    parts: list[str] = []
+    if system.strip():
+        parts.append(system.strip())
+    if mode == 'planner':
+        parts.append(
+            '本轮任务模式：执行规划（通用智能体）。可以使用可用工具（联网检索、网页读取、技能、'
+            '任务清单、子智能体等）先规划再执行；需要外部事实时必须检索，不得编造；'
+            '不要为了了解环境而反复执行命令，工具调用应服务于任务本身。'
+        )
+    else:
+        parts.append(
+            '本轮任务模式：基于知识库资料问答。请直接依据上方给出的资料作答，'
+            '不要为了了解环境而执行命令或浏览文件系统；资料不足时明确说明。'
+            '如果任务需要写作/整理类产出，可以调用 skill 工具加载对应技能。'
+        )
+    if skill.strip():
+        parts.append(_skill_instruction(skill))
+    parts.append('思考与推理过程请使用简体中文（便于用户阅读过程），最终回答同样使用简体中文。')
+    parts.append('用户问题：\n' + question)
+    return '\n\n'.join(parts)
+
+
+async def stream_answer(
+    question: str,
+    system: str,
+    session_id: str = '',
+    model: str = '',
+    thinking: str = 'quick',
+    skill: str = '',
+    mode: str = 'knowledge',
+) -> AsyncIterator[dict]:
     """流式执行一轮 Harness agent turn。
 
-    产出 {'kind':'text','text':...}（增量文本）与 {'kind':'progress','text':...}
-    （过程标签）。text-delta 直出；无增量时 final_response 兜底切片补发。
+    产出 ``{'kind':'text','text':...}``（回答增量）与 ``{'kind':'trace','item':{...}}``
+    （过程节点：step / reason / tool / skill / agent / note）。
     """
     if not configured():
         raise RuntimeError('Harness 未启用')
+    sync_skills()
     session_id = session_id or uuid.uuid4().hex
     profile = profile_for_thinking(thinking)
-    prompt = f'{system}\n\n用户问题：{question}' if system.strip() else question
+    prompt = _build_prompt(question, system, skill, mode)
 
     loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+    queue: asyncio.Queue[tuple[str, dict, float]] = asyncio.Queue()
 
-    def emit(kind: str, text: str) -> None:
-        loop.call_soon_threadsafe(queue.put_nowait, (kind, text))
+    def emit(kind: str, payload: dict, pace: float = 0.0) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, (kind, payload, pace))
 
     streamed: list[str] = []
     last_error: Exception | None = None
@@ -254,17 +602,21 @@ async def stream_answer(question: str, system: str, session_id: str = '', model:
         task = asyncio.ensure_future(asyncio.to_thread(_run_turn, prompt, turn_session, model, profile, emit))
         while not task.done():
             try:
-                kind, text = await asyncio.wait_for(queue.get(), timeout=0.2)
+                kind, payload, pace = await asyncio.wait_for(queue.get(), timeout=0.2)
             except asyncio.TimeoutError:
                 continue
             if kind == 'text':
-                streamed.append(text)
-            yield {'kind': kind, 'text': text}
+                streamed.append(payload.get('text', ''))
+            yield {'kind': kind, **payload}
+            if pace:
+                await asyncio.sleep(pace)
         while not queue.empty():
-            kind, text = queue.get_nowait()
+            kind, payload, pace = queue.get_nowait()
             if kind == 'text':
-                streamed.append(text)
-            yield {'kind': kind, 'text': text}
+                streamed.append(payload.get('text', ''))
+            yield {'kind': kind, **payload}
+            if pace:
+                await asyncio.sleep(pace)
         try:
             result = task.result()
         except Exception as exc:  # SDK/运行时级错误
@@ -275,10 +627,10 @@ async def stream_answer(question: str, system: str, session_id: str = '', model:
               f'elapsed={time.monotonic() - started:.1f}s', flush=True)
         if result is not None and result.finish_reason == 'completed':
             final = (result.final_response or '').strip()
-            # 兜底：运行时未发 text-delta（或通知丢失）时，用最终答复补发
+            # 兜底：运行时未发增量文本（或通知丢失）时，用最终答复补发
             if final and not any(final in s or s in final for s in streamed):
-                for i in range(0, len(final), _SLICE):
-                    yield {'kind': 'text', 'text': final[i:i + _SLICE]}
+                for i in range(0, len(final), 24):
+                    yield {'kind': 'text', 'text': final[i:i + 24]}
             return
         if streamed:
             # 已有内容产出，视为部分成功，不重试
@@ -288,5 +640,5 @@ async def stream_answer(question: str, system: str, session_id: str = '', model:
         # 不在此处丢弃单例——重建需 60s 级冷启动且会引发 session 冲突，
         # 异常级的真损坏由 _run_turn 的 except 分支丢弃
         if _attempt + 1 < _MAX_ATTEMPTS:
-            yield {'kind': 'progress', 'text': '网络波动，正在重试…'}
+            yield {'kind': 'trace', 'item': {'kind': 'note', 'state': 'run', 'title': '网络波动，正在重试'}}
     raise RuntimeError(f'Harness 问答链路失败：{last_error}')

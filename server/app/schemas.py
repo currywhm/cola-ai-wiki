@@ -24,8 +24,10 @@ class ChatRequest(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
     model: str = "deepseek-chat"
     mode: str = Field(default="knowledge", pattern="^(knowledge|web)$")
-    # quick=直连模型（真流式、秒级首字）；deep=走 harness agent 链路（慢但有工具/多轮能力）
+    # quick=直接作答；deep=深度思考（输出思考过程，模型固定为 HARNESS_MODEL=deepseek-flash）
     thinking: str = Field(default="quick", pattern="^(quick|deep)$")
+    # 前端技能面板选中的技能（kebab-case slug），后端据此要求 agent 先加载并注入该技能
+    skill: str = Field(default="", max_length=40, pattern="^[a-z0-9-]*$")
 
 
 class PayCreateRequest(BaseModel):

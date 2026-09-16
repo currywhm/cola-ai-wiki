@@ -9,11 +9,10 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG = os.path.join(ROOT, 'logs', 'api.log')
 PYTHON = '/Users/mac/.workbuddy/binaries/python/versions/3.13.12/bin/python3'
-PYTHONPATH = ':'.join([
-    os.path.join(ROOT, '.venv/lib/python3.13/site-packages'),
-    '/Users/mac/Downloads/deepseek-harness-master/python/sdk/src',
-    '/Users/mac/Downloads/deepseek-harness-master/python/sdk-runtime/src',
-])
+# 本机 venv 的 site-packages 需要显式注入（pyvenv.cfg 指向的 base 已不存在）。
+# deepseek-harness 的 SDK 路径由 .env 的 HARNESS_SDK_PATH / HARNESS_RUNTIME_SDK_PATH 提供，
+# 部署机建议 pip install deepseek-harness-sdk，无需这两项配置。
+PYTHONPATH = os.path.join(ROOT, '.venv/lib/python3.13/site-packages')
 
 
 def main() -> None:

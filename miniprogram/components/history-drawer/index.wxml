@@ -1,0 +1,26 @@
+<view wx:if="{{visible}}" class="hd-layer">
+  <view class="hd-mask" bindtap="close"></view>
+  <view class="hd-panel" catchtap="noop">
+    <view class="hd-head" style="padding-top:{{statusTop}}px;">
+      <text class="hd-title">历史对话</text>
+      <button class="hd-icon" bindtap="toggleSearch" aria-label="搜索历史对话"><ui-icon name="search" size="{{20}}" /></button>
+    </view>
+    <view wx:if="{{searching}}" class="hd-search">
+      <ui-icon name="search" size="{{18}}" />
+      <input class="hd-search-input" value="{{query}}" focus="{{searching}}" placeholder="搜索历史对话" bindinput="onSearchInput" />
+      <button wx:if="{{query}}" class="hd-search-clear" bindtap="clearQuery" aria-label="清空"><ui-icon name="close" size="{{16}}" /></button>
+    </view>
+    <button class="hd-new" bindtap="create">
+      <ui-icon name="plus" size="{{22}}" />
+      <text>新建对话</text>
+    </button>
+    <scroll-view class="hd-list" scroll-y enhanced show-scrollbar="{{false}}">
+      <view wx:if="{{loading && !groups.length}}" class="hd-empty">正在加载历史对话…</view>
+      <block wx:for="{{groups}}" wx:key="key" wx:for-item="group">
+        <text class="hd-group">{{group.label}}</text>
+        <button wx:for="{{group.items}}" wx:key="id" wx:for-item="entry" class="hd-item {{entry.id === activeId ? 'on' : ''}}" bindtap="pick" bindlongpress="remove" data-id="{{entry.id}}">{{entry.title}}</button>
+      </block>
+      <view wx:if="{{!loading && !groups.length}}" class="hd-empty">{{query ? '没有匹配的历史对话' : '还没有历史对话'}}</view>
+    </scroll-view>
+  </view>
+</view>

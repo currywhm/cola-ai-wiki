@@ -58,8 +58,11 @@ const ICONS: Record<string, IconConfig> = {
   camera: { file: 'camera-custom.svg' },
   filter: { file: 'liebiao.svg' },
   chat: { file: 'guanyu.svg' },
-  send: { file: 'send.svg' },
-  'send-white': { file: 'send-white.svg' },
+  send: { file: 'send-ready.svg' },
+  'send-white': { file: 'send-ready.svg' },
+  // 输入框发送键两态：可发送=蓝色实心，待输入=灰色实心（与停止键同一套尺寸）
+  'send-ready': { file: 'send-ready.svg' },
+  'send-idle': { file: 'send-idle.svg' },
   stop: { file: 'stop.svg' },
   tingzhi: { file: 'stop.svg' },
   history: { file: 'history.svg' },
@@ -70,6 +73,7 @@ const ICONS: Record<string, IconConfig> = {
   arrow: { file: 'fanhui.svg', transform: 'transform:scaleX(-1);' },
   'chevron-right': { file: 'fanhui.svg', transform: 'transform:scaleX(-1);' },
   'chevron-down': { file: 'chevron-down.svg' },
+  'chevron-up': { file: 'chevron-down.svg', transform: 'transform:rotate(180deg);' },
   close: { file: 'tianjia.svg', transform: 'transform:rotate(45deg);' },
   // 最近列表使用的文件类型标识（自绘，不含第三方商标）
   'recent-pdf': { file: 'recent-pdf.svg' },

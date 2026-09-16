@@ -1,1 +1,7 @@
-{"navigationBarTitleText":"文件夹问答","usingComponents":{"app-nav":"/components/app-nav/index","ui-icon":"/components/ui-icon/index"}}
+{
+  "navigationBarTitleText": "cola知识库",
+  "usingComponents": {
+    "ui-icon": "/components/ui-icon/index",
+    "history-drawer": "/components/history-drawer/index"
+  }
+}

@@ -40,6 +40,11 @@ function request<T>(path: string, method: 'GET' | 'POST' | 'PATCH' | 'DELETE' = 
 export type Knowledge = { id: string; name: string; description: string; icon: string; document_count: number; updated_at: string }
 export type Document = { id: string; filename: string; file_type: string; file_size: number; page_count: number; status: string; progress: number; error_message: string; organized_title?: string; summary?: string; tags?: string[]; key_points?: string[]; organize_status?: string; organize_method?: string }
 export type Source = { id: string; document_id?: string; filename: string; page_number: number; quote: string; score: number; url?: string }
+
+// 后端 harness 桥的过程节点：与 deepseek-harness 前端一致的过程展示数据
+export type TraceKind = 'step' | 'reason' | 'tool' | 'skill' | 'agent' | 'note'
+export type TraceState = 'run' | 'done' | 'error' | 'catalog' | 'load'
+export type TraceItem = { type?: string; kind: TraceKind; state?: TraceState; title?: string; text?: string; detail?: string; name?: string; index?: number }
 export async function login(code: string) { const result = await rawRequest<{ token: string; user: any }>('/api/auth/login', 'POST', { code }); appInstance().globalData.token = result.token; wx.setStorageSync('llmwiki_token', result.token); wx.setStorageSync('llmwiki_user', result.user); return result }
 export const getMe = () => request<any>('/api/me')
 export const updateMe = (data: { nickname: string; avatar: string }) => request<any>('/api/me', 'PATCH', data)
@@ -58,8 +63,17 @@ export const retryDocument = (id: string) => request<any>(`/api/documents/${id}/
 export const searchKnowledge = (q: string, knowledgeId?: string) => request<any[]>(`/api/search?q=${encodeURIComponent(q)}${knowledgeId ? `&knowledge_id=${knowledgeId}` : ''}`)
 export type ModelOption = { id: string; value: string; name: string; short: string; badge: string }
 export const getModels = () => request<ModelOption[]>('/api/models')
-export const getConversations = () => request<any[]>('/api/conversations')
+// 历史对话：服务端按 user_id + knowledge_id + folder_id 三层收窄。
+// folderId 传空串 = 只看知识库根目录会话；不传 = 不限文件夹。
+export const getConversations = (params: { knowledgeId?: string; folderId?: string; keyword?: string } = {}) => {
+  const query: string[] = []
+  if (params.knowledgeId) query.push(`knowledge_id=${encodeURIComponent(params.knowledgeId)}`)
+  if (params.folderId !== undefined) query.push(`folder_id=${encodeURIComponent(params.folderId)}`)
+  if (params.keyword) query.push(`q=${encodeURIComponent(params.keyword)}`)
+  return request<any[]>(`/api/conversations${query.length ? `?${query.join('&')}` : ''}`)
+}
 export const getConversation = (id: string) => request<any[]>(`/api/conversations/${id}`)
+export const deleteConversation = (id: string) => request<any>(`/api/conversations/${id}`, 'DELETE')
 export const logout = () => request<any>('/api/auth/logout', 'POST').catch(() => ({ ok: false }))
 export type Folder = { id: string; name: string; document_count: number }
 export const getFolders = (knowledgeId: string) => request<Folder[]>(`/api/knowledge/${knowledgeId}/folders`)
@@ -168,10 +182,10 @@ export async function uploadDocument(knowledgeId: string, source?: UploadSource,
   const file = await chooseLocalUpload(selected)
   return uploadPickedFile(knowledgeId, file, folderId)
 }
-export function streamChat(payload: { knowledge_id?: string; conversation_id?: string; folder_id?: string; content: string; model?: string; mode?: 'knowledge' | 'web'; thinking?: 'quick' | 'deep' }, onMeta: (value: any) => void, onDelta: (value: string) => void, onDone: () => void, onError: (error: any) => void, onProgress?: (label: string) => void) {
+export function streamChat(payload: { knowledge_id?: string; conversation_id?: string; folder_id?: string; content: string; model?: string; mode?: 'knowledge' | 'web'; thinking?: 'quick' | 'deep'; skill?: string }, onMeta: (value: any) => void, onDelta: (value: string) => void, onDone: () => void, onError: (error: any) => void, onProgress?: (label: string) => void, onTrace?: (item: TraceItem) => void) {
   let task: any; let finished = false; let receivedChunk = false
   const fail = (error: any) => { if (!finished) { finished = true; onError(error) } }
-  const parser = new EventStream((data) => { if (finished) return; if (data.type === 'meta') onMeta(data); else if (data.type === 'delta') onDelta(data.content || ''); else if (data.type === 'progress') { if (onProgress) onProgress(data.label || '') } else if (data.type === 'error') fail(new Error(data.message || '回答未完成')); else if (data.type === 'done') { finished = true; onDone() } })
+  const parser = new EventStream((data) => { if (finished) return; if (data.type === 'meta') onMeta(data); else if (data.type === 'delta') onDelta(data.content || ''); else if (data.type === 'progress') { if (onProgress) onProgress(data.label || '') } else if (data.type === 'trace') { const item = data as TraceItem; if (onTrace) onTrace(item); else if (onProgress) { if (item.kind === 'tool' || item.kind === 'skill' || item.kind === 'agent') { if (item.state === 'run' || item.state === 'load') onProgress(`${item.title || '处理中'}…`) } else if (item.kind === 'step') onProgress('正在思考…'); else onProgress(item.title || '') } } else if (data.type === 'error') fail(new Error(data.message || '回答未完成')); else if (data.type === 'done') { finished = true; onDone() } })
   ensureAuth().then(() => { if (finished) return; task = wx.request({ url: `${base()}/api/chat/stream`, method: 'POST', enableChunked: true, responseType: 'text', data: payload, timeout: 300000, header: { 'content-type': 'application/json', Authorization: `Bearer ${token()}` }, success: (res: any) => { if (finished) return; if (res.statusCode < 200 || res.statusCode >= 300) { let detail = ''; try { detail = (typeof res.data === 'string' ? JSON.parse(res.data) : res.data)?.detail || '' } catch { /* 非 JSON 错误体 */ } fail(new Error(detail || `回答请求失败（${res.statusCode}）`)); return }; try { if (!receivedChunk && typeof res.data === 'string') parser.push(res.data); if (!finished) fail(new Error('连接已中断，回答未完成，请重新提问。')) } catch { fail(new Error('回答数据格式异常，请重试。')) } }, fail } as any); task.onChunkReceived((chunk: any) => { if (finished) return; receivedChunk = true; try { parser.push(chunk.data) } catch { fail(new Error('回答数据格式异常，请重试。')) } }) }).catch(fail)
   return () => { finished = true; if (task) task.abort() }
 }

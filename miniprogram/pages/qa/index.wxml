@@ -2,6 +2,10 @@
   <!-- 参考设计：问答页不放标题栏，只保留返回与胶囊按钮的安全高度 -->
   <view class="qa-nav" style="height:{{navHeight}}px;">
     <button class="qa-back" bindtap="goBack" aria-label="返回"><ui-icon name="back" size="{{36}}" rpx /></button>
+    <button class="qa-history" bindtap="openHistory" aria-label="历史对话"><ui-icon name="menu" size="{{34}}" rpx /></button>
+    <view class="qa-context">
+      <text class="qa-context-title">{{knowledgeName || '微信用户的知识库'}}</text>
+    </view>
   </view>
 
   <scroll-view class="qa-body" scroll-y scroll-with-animation enhanced show-scrollbar="{{false}}" scroll-into-view="{{lastMessageId}}">
@@ -14,8 +18,26 @@
       <view id="{{item.id}}" class="qa-message {{item.role}}">
         <view wx:if="{{item.role === 'user'}}" class="qa-user-bubble">{{item.content}}</view>
         <view wx:else class="qa-answer">
-          <view wx:if="{{!item.content}}" class="qa-progress">{{item.progress || '正在思考…'}}</view>
-          <rich-text wx:else class="qa-answer-text" nodes="{{item.html || item.content}}"></rich-text>
+          <!-- 过程区：思考 / 步骤 / 工具 / 技能 / 子智能体，对齐 harness 前端的过程展示 -->
+          <view wx:if="{{item.trace.length || item.reason}}" class="qa-trace">
+            <view class="qa-trace-head" bindtap="toggleTrace" data-id="{{item.id}}">
+              <view class="qa-trace-dot {{item.running ? 'live' : ''}}"></view>
+              <text class="qa-trace-title">{{item.traceTitle}}</text>
+              <ui-icon name="{{item.traceOpen ? 'chevron-up' : 'chevron-down'}}" size="{{22}}" rpx />
+            </view>
+            <view wx:if="{{item.traceOpen}}" class="qa-trace-body">
+              <text wx:if="{{item.reason}}" class="qa-reason">{{item.reason}}</text>
+              <view wx:for="{{item.trace}}" wx:for-item="node" wx:key="key" class="qa-node {{node.kind}} {{node.state}}">
+                <view class="qa-node-mark"></view>
+                <view class="qa-node-copy">
+                  <text class="qa-node-title">{{node.title}}</text>
+                  <text wx:if="{{node.detail}}" class="qa-node-detail">{{node.detail}}</text>
+                </view>
+              </view>
+            </view>
+          </view>
+          <view wx:if="{{!item.content && !item.trace.length && !item.reason}}" class="qa-progress">{{item.progress || '正在思考…'}}</view>
+          <rich-text wx:if="{{item.content}}" class="qa-answer-text" nodes="{{item.html || item.content}}"></rich-text>
           <view wx:if="{{item.sources.length}}" class="qa-sources">
             <text class="qa-source-title">参考出处 · {{item.sources.length}} 条</text>
             <view wx:for="{{item.sources}}" wx:for-item="source" wx:key="id" class="qa-source" bindtap="openSource" data-id="{{source.document_id || source.id}}" data-url="{{source.url || ''}}">
@@ -23,7 +45,7 @@
               <text class="qa-source-page">{{source.url ? '公开网页 · 点击复制链接' : '第 ' + source.page_number + ' 页'}}</text>
             </view>
           </view>
-          <view wx:if="{{item.content}}" class="qa-answer-actions">
+          <view wx:if="{{item.content && !item.local}}" class="qa-answer-actions">
             <button class="qa-action" bindtap="copyAnswer" data-content="{{item.content}}" aria-label="复制回答"><ui-icon name="copy" size="{{18}}" />复制</button>
             <button class="qa-action" bindtap="shareAnswer" data-content="{{item.content}}" aria-label="分享回答"><ui-icon name="share" size="{{18}}" />分享</button>
           </view>
@@ -34,18 +56,27 @@
 
   <view class="qa-footer">
     <view class="qa-composer">
+      <view wx:if="{{pendingSkillName}}" class="qa-skill-chip">
+        <text class="qa-skill-chip-text">技能 · {{pendingSkillName}}</text>
+        <button class="qa-skill-chip-close" bindtap="clearSkill" aria-label="取消技能"><ui-icon name="close" size="{{20}}" rpx /></button>
+      </view>
       <textarea class="qa-input" value="{{input}}" placeholder="{{placeholder}}" placeholder-style="color:#8c8c8c;font-size:30rpx;line-height:1.32;" auto-height maxlength="8000" focus="{{autoFocus}}" adjust-position="{{true}}" show-confirm-bar="{{false}}" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
       <view class="qa-bar">
-        <button class="qa-logic {{askMode}}" bindtap="toggleAskLogic" aria-label="切换问答逻辑"><ui-icon name="{{askMode === 'planner' ? 'robot-planner' : 'robot-knowledge'}}" size="{{34}}" rpx /></button>
-        <button class="qa-skill" bindtap="openSkillSheet" disabled="{{sending}}" aria-label="技能"><ui-icon name="skill" size="{{34}}" rpx /></button>
+        <button class="qa-logic {{askMode}}" bindtap="toggleAskLogic" aria-label="切换问答逻辑">
+          <ui-icon name="{{askMode === 'planner' ? 'robot-planner' : 'robot-knowledge'}}" size="{{34}}" rpx />
+          <ui-icon name="chevron-down" size="{{16}}" rpx />
+        </button>
+        <button class="qa-skill" bindtap="openSkillSheet" disabled="{{sending}}" aria-label="技能">
+          <ui-icon name="skill" size="{{34}}" rpx />
+          <ui-icon name="chevron-down" size="{{15}}" rpx />
+        </button>
         <button class="qa-scope {{askMode}}" bindtap="openKnowledgeSheet" disabled="{{sending}}" aria-label="选择知识库">
           <ui-icon name="{{askMode === 'planner' ? 'at' : 'knowledge-pick'}}" size="{{30}}" rpx />
-          <ui-icon name="chevron-down" size="{{16}}" rpx />
         </button>
         <view class="qa-bar-spacer"></view>
         <button class="qa-model" bindtap="openModelSheet" disabled="{{sending}}" aria-label="模型与思考深度"><ui-icon name="model-depth" size="{{34}}" rpx /></button>
-        <button wx:if="{{sending}}" class="qa-send stop" bindtap="stopSend" aria-label="停止"><ui-icon name="stop" size="{{30}}" rpx /></button>
-        <button wx:else class="qa-send {{canSend ? 'active' : ''}}" bindtap="send" disabled="{{!canSend}}" aria-label="发送"><ui-icon name="send-white" size="{{28}}" rpx /></button>
+        <button wx:if="{{sending}}" class="qa-send" bindtap="stopSend" aria-label="停止"><ui-icon name="stop" size="{{58}}" rpx /></button>
+        <button wx:else class="qa-send" bindtap="send" disabled="{{!canSend}}" aria-label="发送"><ui-icon name="{{canSend ? 'send-ready' : 'send-idle'}}" size="{{58}}" rpx /></button>
       </view>
     </view>
   </view>
@@ -117,4 +148,7 @@
       </view>
     </view>
   </view>
+
+  <!-- 历史对话抽屉：/api/conversations 按用户 + 知识库 + 根目录收窄 -->
+  <history-drawer visible="{{historyVisible}}" loading="{{historyLoading}}" active-id="{{conversationId}}" items="{{historyItems}}" bind:close="closeHistory" bind:pick="pickHistory" bind:create="newConversation" bind:remove="removeHistory" />
 </view>

@@ -1,4 +1,5 @@
-.mine-page { background:#f6f6f6; padding-bottom:calc(100rpx + env(safe-area-inset-bottom)); }
+/* 与问AI / 问答页同一底色，并留出左右边距，卡片不再顶到屏幕边缘 */
+.mine-page { background:#f5f6f6; padding:0 24rpx calc(100rpx + env(safe-area-inset-bottom)); }
 .mine-content { padding-top:22rpx; }
 .profile-card { padding:30rpx 28rpx 28rpx; border:0; border-radius:22rpx; background:#fff; box-shadow:none; }
 .profile-main { display:flex; align-items:center; min-width:0; gap:16rpx; }

@@ -22,7 +22,7 @@ from .services.documents import extract_text, split_chunks
 from .services.wechat_article import ArticleFetchError, build_document_html, fetch_wechat_article
 from .services.llm import stream_answer
 from .services.memory import load_history, maybe_compress, recent_context
-from .services.harness import configured as harness_configured
+from .services.harness import SKILL_LABELS, configured as harness_configured
 from .services.organizer import organize_document
 from .services.virtual_pay import calc_pay_sig, calc_user_signature, query_order, sign_data, virtual_configured, virtual_product
 from .services.web_search import WebSearchError, search_web, web_context
@@ -125,16 +125,15 @@ async def lifespan(app: FastAPI):
         removed = cleanup_stale_sessions()
         if removed:
             print(f'[harness] 已清理 {removed} 个过期会话目录', flush=True)
-        # 预热 Harness 运行时：快速（sdk-minimal）与深度（sdk）两个 profile 都后台热身，
+        # 预热 Harness 运行时：运行时是唯一单例（完整 sdk profile），后台热身一次即可，
         # 避免用户第一个问题承担冷启动成本。后台执行，不阻塞服务就绪。
         async def prewarm():
             from .services.harness import stream_answer as harness_warm
-            for thinking in ('quick', 'deep'):
-                try:
-                    async for _ in harness_warm('热身：请只回复「就绪」两个字。', '', f'prewarm-{thinking}-{uuid.uuid4().hex}', '', thinking):
-                        pass
-                except Exception as exc:
-                    print(f'[harness] prewarm({thinking}) failed: {exc}', flush=True)
+            try:
+                async for _ in harness_warm('热身：请只回复「就绪」两个字。', '', f'prewarm-{uuid.uuid4().hex}', '', 'deep'):
+                    pass
+            except Exception as exc:
+                print(f'[harness] prewarm failed: {exc}', flush=True)
         asyncio.create_task(prewarm())
     reconcile_task = None
     if settings.wechat_payment_mode == 'virtual':
@@ -458,22 +457,6 @@ async def list_knowledge(user_id: str = Depends(current_user)) -> list[dict]:
     rows = await fetchall(db, "SELECT * FROM knowledge_bases WHERE user_id=? AND status='active' ORDER BY CASE WHEN name=? THEN 0 ELSE 1 END, updated_at DESC", (user_id, DEFAULT_KNOWLEDGE_NAME))
     await db.close()
     return [row_dict(r) for r in rows]
-
-
-@app.get("/api/recent")
-async def recent(user_id: str = Depends(current_user)) -> dict:
-    """最近使用：知识库按更新时间倒序，文件和文件夹合并后按时间倒序。"""
-    db = await connect()
-    await ensure_default_knowledge(db, user_id)
-    await db.commit()
-    kbs = await fetchall(db, "SELECT id,name,updated_at FROM knowledge_bases WHERE user_id=? AND status='active' ORDER BY updated_at DESC LIMIT 10", (user_id,))
-    docs = await fetchall(db, "SELECT d.id,d.filename,d.file_type,d.folder_id,d.updated_at,d.created_at,d.knowledge_id,k.name AS knowledge_name FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_id WHERE d.user_id=? AND d.status!='deleted' AND k.status='active' ORDER BY d.updated_at DESC LIMIT 40", (user_id,))
-    folders = await fetchall(db, "SELECT f.id,f.name,f.updated_at,f.knowledge_id,k.name AS knowledge_name FROM folders f JOIN knowledge_bases k ON k.id=f.knowledge_id WHERE f.user_id=? AND k.status='active' ORDER BY f.updated_at DESC LIMIT 20", (user_id,))
-    await db.close()
-    items = [{'id': str(r['id']), 'kind': 'document', 'name': str(r['filename'] or ''), 'file_type': str(r['file_type'] or ''), 'knowledge_id': str(r['knowledge_id']), 'knowledge_name': str(r['knowledge_name'] or ''), 'folder_id': str(r['folder_id'] or ''), 'updated_at': str(r['updated_at'] or r['created_at'] or '')} for r in docs]
-    items += [{'id': str(r['id']), 'kind': 'folder', 'name': str(r['name'] or ''), 'file_type': 'folder', 'knowledge_id': str(r['knowledge_id']), 'knowledge_name': str(r['knowledge_name'] or ''), 'folder_id': '', 'updated_at': str(r['updated_at'] or '')} for r in folders]
-    items.sort(key=lambda item: item['updated_at'], reverse=True)
-    return {'knowledge': [row_dict(r) for r in kbs], 'items': items}
 
 
 @app.get("/api/market")
@@ -859,6 +842,36 @@ async def search(q: str = Query(min_length=1), knowledge_id: str | None = None, 
     return [{"id": r["chunk_id"], "document_id": r["document_id"], "content": r["content"], "filename": r["filename"], "page_number": r["page_number"], "knowledge_name": r["knowledge_name"], "score": 0.9} for r in rows]
 
 
+@app.get("/api/recent")
+async def recent_overview(limit: int = Query(default=30, ge=1, le=100), user_id: str = Depends(current_user)) -> dict:
+    """「最近」页数据源：最近更新的资料库 + 最近动过的文档/文件夹。"""
+    db = await connect()
+    await ensure_default_knowledge(db, user_id)
+    await db.commit()
+    kbs = await fetchall(db, "SELECT id,name,description,icon,document_count,updated_at,created_at FROM knowledge_bases WHERE user_id=? AND status='active' ORDER BY updated_at DESC LIMIT 8", (user_id,))
+    docs = await fetchall(db, "SELECT id,knowledge_id,filename,file_type,file_size,status,created_at,updated_at FROM documents WHERE user_id=? AND status!='deleted' ORDER BY updated_at DESC LIMIT ?", (user_id, limit))
+    folders = await fetchall(db, "SELECT id,knowledge_id,name,created_at,updated_at FROM folders WHERE user_id=? ORDER BY updated_at DESC LIMIT ?", (user_id, limit))
+    await db.close()
+    items = [
+        {
+            'id': row['id'], 'kind': 'document', 'name': row['filename'], 'file_type': row['file_type'] or '',
+            'file_size': int(row['file_size'] or 0), 'status': row['status'] or 'uploaded',
+            'knowledge_id': row['knowledge_id'], 'created_at': row['created_at'], 'updated_at': row['updated_at'],
+        }
+        for row in docs
+    ] + [
+        {
+            'id': row['id'], 'kind': 'folder', 'name': row['name'], 'file_type': '',
+            'file_size': 0, 'status': 'folder',
+            'knowledge_id': row['knowledge_id'], 'created_at': row['created_at'], 'updated_at': row['updated_at'],
+        }
+        for row in folders
+    ]
+    # 文档与文件夹混合排序，按最近更新时间统一呈现
+    items.sort(key=lambda item: item['updated_at'] or '', reverse=True)
+    return {'knowledge': [row_dict(row) for row in kbs], 'items': items[:limit]}
+
+
 async def make_sources(db, knowledge_id: str, query: str, user_id: str, folder_id: str = '') -> list[dict]:
     # 文件夹隔离：传入 folder_id 时只检索该文件夹内文档；根目录问答只检索未入夹文档
     scope = "f.knowledge_id=? AND k.user_id=? AND d.status!='deleted' AND d.folder_id=?"
@@ -895,10 +908,10 @@ async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)
             await db.close()
             raise HTTPException(404, "文件夹不存在")
         folder_name = folder["name"]
-    # 问全网：配置了 EXA_API_KEY 才走 harness agent 的 web_search 工具链（真·联网检索）；
-    # 未配置时直接用模型回答——本机 duckduckgo 不可达，不再浪费 12s 超时等待，
-    # 仅当显式配置了 tavily/brave 密钥（web_search_api_key）时才尝试直连搜索
-    web_agent = payload.mode == 'web' and harness_configured() and bool(settings.exa_api_key)
+    # 执行规划模式：走 harness agent 自带的 web_search / web_fetch 工具链（DeepSeek 原生
+    # 搜索，复用 DEEPSEEK_API_KEY，不需要额外的 EXA_API_KEY）——真·联网检索 + 任务规划。
+    # harness 未启用时才回退到直连搜索/纯模型通道。
+    web_agent = payload.mode == 'web' and harness_configured()
     if web_agent:
         # Harness 对齐：问全网由 agent 自带的 web_search/web_fetch 工具完成，绕过不可用的 duckduckgo 直连
         sources = []
@@ -987,9 +1000,27 @@ async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)
         answer = ""
         yield f"data: {json.dumps({'type':'meta','conversation_id':conversation_id,'sources':sources}, ensure_ascii=False)}\n\n"
         try:
-            async for event in stream_answer(messages, payload.model, conversation_id, thinking='deep' if web_agent else payload.thinking):
-                if event.get('kind') == 'progress':
+            # harness 模型统一取后端配置（深度思考即 deepseek-flash，见 HARNESS_MODEL）
+            turn_model = settings.harness_model if harness_configured() else payload.model
+            # 技能白名单：只接受仓库内存在的技能包，杜绝把任意文本�入提示词
+            turn_skill = payload.skill if (harness_configured() and payload.skill in SKILL_LABELS) else ''
+            async for event in stream_answer(
+                messages,
+                turn_model,
+                conversation_id,
+                thinking=payload.thinking,
+                skill=turn_skill,
+                mode='planner' if payload.mode == 'web' else 'knowledge',
+            ):
+                kind = event.get('kind')
+                if kind == 'progress':
                     yield f"data: {json.dumps({'type':'progress','label':event['text']}, ensure_ascii=False)}\n\n"
+                    continue
+                if kind == 'trace':
+                    # 过程节点：思考 / 步骤 / 工具 / 技能 / 子智能体 / 提示
+                    item = event.get('item') or {}
+                    if item:
+                        yield f"data: {json.dumps({'type':'trace', **item}, ensure_ascii=False)}\n\n"
                     continue
                 piece = event['text']
                 answer += piece; yield f"data: {json.dumps({'type':'delta','content':piece}, ensure_ascii=False)}\n\n"
@@ -1014,8 +1045,42 @@ async def chat_stream(payload: ChatRequest, user_id: str = Depends(current_user)
 
 
 @app.get("/api/conversations")
-async def conversations(user_id: str = Depends(current_user)) -> list[dict]:
-    db = await connect(); rows = await fetchall(db, "SELECT * FROM conversations WHERE user_id=? ORDER BY updated_at DESC", (user_id,)); await db.close(); return [row_dict(r) for r in rows]
+async def conversations(
+    knowledge_id: str = Query(default="", max_length=64),
+    folder_id: str | None = Query(default=None, max_length=64),
+    q: str = Query(default="", max_length=80),
+    user_id: str = Depends(current_user),
+) -> list[dict]:
+    """历史对话列表：第一层永远是 user_id，再按知识库 / 文件夹收窄。
+
+    folder_id 区分「未传」与「根目录」：None=不限文件夹；空串=只看知识库根目录会话。
+    """
+    clauses = ["user_id=?"]
+    params: list[Any] = [user_id]
+    if knowledge_id:
+        clauses.append("knowledge_id=?")
+        params.append(knowledge_id)
+    if folder_id is not None:
+        clauses.append("COALESCE(folder_id,'')=?")
+        params.append(folder_id)
+    if q.strip():
+        clauses.append("title LIKE ?")
+        params.append(f"%{q.strip()}%")
+    db = await connect(); rows = await fetchall(db, f"SELECT * FROM conversations WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT 100", tuple(params)); await db.close()
+    return [row_dict(r) for r in rows]
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str, user_id: str = Depends(current_user)) -> dict:
+    """删除历史对话：会话与其中的消息一并删除，删除范围严格限定在当前用户名下。"""
+    db = await connect()
+    owner = await fetchone(db, "SELECT id FROM conversations WHERE id=? AND user_id=?", (conversation_id, user_id))
+    if not owner:
+        await db.close(); raise HTTPException(404, '对话不存在')
+    await db.execute("DELETE FROM messages WHERE conversation_id=?", (conversation_id,))
+    await db.execute("DELETE FROM conversations WHERE id=? AND user_id=?", (conversation_id, user_id))
+    await db.commit(); await db.close()
+    return {'ok': True}
 
 
 @app.get("/api/conversations/{conversation_id}")

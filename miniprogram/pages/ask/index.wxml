@@ -42,9 +42,8 @@
 
   <view class="ask-footer">
     <view class="ask-composer" bindtap="onComposerTap">
+      <!-- 点输入框直接进问答页，这里不放置发送/更多图标，保持纯入口的观感 -->
       <text class="ask-placeholder">基于知识问AI</text>
-      <view wx:if="{{loggedIn}}" class="ask-send"><ui-icon name="send-white" size="{{30}}" rpx /></view>
-      <view wx:else class="ask-plus"><ui-icon name="plus" size="{{44}}" rpx /></view>
     </view>
   </view>
 

@@ -1,113 +1,158 @@
-<view class="page folder-chat-page {{conversationActive ? 'conversation-mode' : ''}}" style="{{safeBottom ? 'padding-bottom:calc(0rpx + ' + safeBottom + 'px)' : ''}}">
-  <app-nav back title="{{knowledgeName || '微信用户的知识库'}}" />
-  <view class="folder-crumb">
-    <text class="crumb-part">{{knowledgeName || '微信用户的知识库'}}</text>
-    <text class="crumb-sep">›</text>
-    <text class="crumb-part crumb-current">{{folderName || '文件夹'}}</text>
-  </view>
-  <scroll-view class="messages" scroll-y scroll-with-animation enhanced show-scrollbar="{{false}}" scroll-into-view="{{lastMessageId}}">
-    <!-- 文件夹文件列表（未进入会话时） -->
-    <view wx:if="{{!conversationActive}}" class="folder-panel">
-      <view wx:if="{{documentsLoading}}" class="folder-state">
-        <view class="folder-skeleton"></view>
-        <view class="folder-skeleton short"></view>
-        <view class="folder-skeleton"></view>
-      </view>
-      <view wx:elif="{{documentsError}}" class="folder-state">
-        <view class="folder-state-icon"><ui-icon name="folder" size="{{28}}" /></view>
-        <text>文件列表加载失败</text>
-        <button class="folder-retry" bindtap="loadFolder">重新加载</button>
-      </view>
-      <view wx:elif="{{!documents.length}}" class="folder-state">
-        <view class="folder-state-icon"><ui-icon name="folder" size="{{28}}" /></view>
-        <text>这个文件夹还是空的</text>
-        <text class="folder-state-desc">回到知识库首页，长按文件移动进来</text>
-      </view>
-      <block wx:else>
-        <view wx:for="{{documents}}" wx:key="id" class="folder-doc" bindtap="openDocument" data-id="{{item.id}}">
-          <view class="folder-doc-icon {{item.preview_url ? '' : 'thumb-fallback'}}">
-            <image wx:if="{{item.preview_url}}" src="{{item.preview_url}}" mode="aspectFill" />
-            <ui-icon wx:else name="file" size="{{30}}" rpx />
-          </view>
-          <view class="folder-doc-copy">
-            <text class="folder-doc-name">{{item.filename}}</text>
-            <view class="folder-doc-meta">
-              <text class="folder-doc-type {{item.typeKind === 'pdf' ? 'type-pdf' : ''}}">{{item.typeLabel}}</text>
-              <text class="folder-meta-sep">|</text>
-              <text wx:if="{{item.status === 'completed'}}">{{item.displayTime}}</text>
-              <text wx:else class="folder-status-text {{item.status}}">{{item.status === 'failed' ? '解析失败' : '解析中'}}</text>
-            </view>
-          </view>
-        </view>
-      </block>
+<view class="qa-page" style="{{safeBottom ? 'padding-bottom:' + safeBottom + 'px;' : ''}}">
+  <!-- 与「问AI」问答页同一套结构：不留标题栏，只保留返回 + 上下文的胶囊安全高度 -->
+  <view class="qa-nav" style="height:{{navHeight}}px;">
+    <button class="qa-back" bindtap="goBack" aria-label="返回"><ui-icon name="back" size="{{36}}" rpx /></button>
+    <button class="qa-history" bindtap="openHistory" aria-label="历史对话"><ui-icon name="menu" size="{{34}}" rpx /></button>
+    <view class="qa-context">
+      <text class="qa-context-title">{{folderName || '文件夹'}}</text>
+      <text class="qa-context-sub">{{knowledgeName || '微信用户的知识库'}}</text>
     </view>
-    <!-- 会话消息 -->
+  </view>
+
+  <!-- 本文件夹资料：保留「这个文件夹里有哪些文件」的可达性，横滑一眼看完 -->
+  <view wx:if="{{documents.length}}" class="qa-docstrip">
+    <scroll-view class="qa-docstrip-scroll" scroll-x enhanced show-scrollbar="{{false}}">
+      <button wx:for="{{documents}}" wx:key="id" class="qa-docstrip-chip" bindtap="openDocument" data-id="{{item.id}}">
+        <ui-icon name="file" size="{{26}}" rpx />
+        <text class="qa-docstrip-name">{{item.filename}}</text>
+      </button>
+    </scroll-view>
+  </view>
+
+  <scroll-view class="qa-body" scroll-y scroll-with-animation enhanced show-scrollbar="{{false}}" scroll-into-view="{{lastMessageId}}">
+    <view wx:if="{{loadState === 'error'}}" class="qa-state">
+      <text class="qa-state-title">暂时无法连接资料</text>
+      <text class="qa-state-desc">登录或网络暂不可用，请稍后重试。</text>
+      <button class="qa-outline-button" bindtap="retry">重新加载</button>
+    </view>
     <block wx:for="{{messages}}" wx:key="id">
-      <view id="{{item.id}}" class="message {{item.role}}">
-        <view wx:if="{{item.role === 'user'}}" class="user-bubble">{{item.content}}</view>
-        <view wx:else class="assistant-message">
-          <view class="assistant-avatar"><image src="/assets/brand/cola-avatar.png" mode="aspectFit" /></view>
-          <view class="assistant-card">
-            <view class="assistant-head"><text class="assistant-name">cola</text></view>
-            <view class="assistant-body">
-              <rich-text wx:if="{{item.content}}" class="assistant-content" nodes="{{item.html || item.content}}"></rich-text>
-              <text wx:else class="assistant-loading">{{item.progress || '正在检索资料并组织回答…'}}</text>
-              <view wx:if="{{item.sources.length}}" class="sources">
-                <text class="source-title">参考出处 · {{item.sources.length}} 条</text>
-                <view wx:for="{{item.sources}}" wx:for-item="source" wx:key="id" class="source-card" bindtap="openSource" data-id="{{source.document_id || source.id}}" data-url="{{source.url || ''}}">
-                  <view class="source-index">{{index + 1}}</view><view class="grow"><text class="source-file">{{source.filename}}</text><text class="source-page">{{source.url ? '公开网页 · 点击复制链接' : '第 ' + source.page_number + ' 页'}}</text></view><ui-icon name="chevron-right" size="{{15}}" />
+      <view id="{{item.id}}" class="qa-message {{item.role}}">
+        <view wx:if="{{item.role === 'user'}}" class="qa-user-bubble">{{item.content}}</view>
+        <view wx:else class="qa-answer">
+          <!-- 过程区：思考 / 步骤 / 工具 / 技能 / 子智能体，与问AI页完全一致 -->
+          <view wx:if="{{item.trace.length || item.reason}}" class="qa-trace">
+            <view class="qa-trace-head" bindtap="toggleTrace" data-id="{{item.id}}">
+              <view class="qa-trace-dot {{item.running ? 'live' : ''}}"></view>
+              <text class="qa-trace-title">{{item.traceTitle}}</text>
+              <ui-icon name="{{item.traceOpen ? 'chevron-up' : 'chevron-down'}}" size="{{22}}" rpx />
+            </view>
+            <view wx:if="{{item.traceOpen}}" class="qa-trace-body">
+              <text wx:if="{{item.reason}}" class="qa-reason">{{item.reason}}</text>
+              <view wx:for="{{item.trace}}" wx:for-item="node" wx:key="key" class="qa-node {{node.kind}} {{node.state}}">
+                <view class="qa-node-mark"></view>
+                <view class="qa-node-copy">
+                  <text class="qa-node-title">{{node.title}}</text>
+                  <text wx:if="{{node.detail}}" class="qa-node-detail">{{node.detail}}</text>
                 </view>
               </view>
             </view>
-            <view wx:if="{{!item.local && item.content}}" class="answer-actions">
-              <button class="action-icon" bindtap="copyAnswer" data-content="{{item.content}}" aria-label="复制回答"><ui-icon name="copy" size="{{18}}" /></button>
-              <button class="action-icon" bindtap="shareAnswer" data-content="{{item.content}}" aria-label="分享回答"><ui-icon name="share" size="{{18}}" /></button>
+          </view>
+          <view wx:if="{{!item.content && !item.trace.length && !item.reason}}" class="qa-progress">{{item.progress || '正在思考'}}</view>
+          <rich-text wx:if="{{item.content}}" class="qa-answer-text" nodes="{{item.html || item.content}}"></rich-text>
+          <view wx:if="{{item.sources.length}}" class="qa-sources">
+            <text class="qa-source-title">参考出处 · {{item.sources.length}} 条</text>
+            <view wx:for="{{item.sources}}" wx:for-item="source" wx:key="id" class="qa-source" bindtap="openSource" data-id="{{source.document_id || source.id}}" data-url="{{source.url || ''}}">
+              <text class="qa-source-file">{{source.filename}}</text>
+              <text class="qa-source-page">{{source.url ? '公开网页 · 点击复制链接' : '第 ' + source.page_number + ' 页'}}</text>
             </view>
+          </view>
+          <view wx:if="{{item.content && !item.local}}" class="qa-answer-actions">
+            <button class="qa-action" bindtap="copyAnswer" data-content="{{item.content}}" aria-label="复制回答"><ui-icon name="copy" size="{{18}}" />复制</button>
+            <button class="qa-action" bindtap="shareAnswer" data-content="{{item.content}}" aria-label="分享回答"><ui-icon name="share" size="{{18}}" />分享</button>
           </view>
         </view>
       </view>
     </block>
   </scroll-view>
-  <view class="chat-footer">
-    <view class="composer">
-      <textarea class="composer-input" value="{{input}}" placeholder="{{documents.length ? '基于本文件夹提问' : '这个文件夹还没有文件'}}" placeholder-style="color:#c7c7c7;font-size:32rpx;" auto-height maxlength="8000" bindtap="enterConversation" bindfocus="enterConversation" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
-      <view class="composer-bar">
-        <button class="model-button" bindtap="chooseModel" disabled="{{sending}}">
-          <text>{{modelShortLabel}} <text class="model-mode">{{thinkingMode === 'deep' ? '深度' : '快速'}}</text></text>
-          <ui-icon name="chevron-down" size="{{11}}" />
-        </button>
-        <view class="composer-bar-spacer"></view>
+
+  <view class="qa-footer">
+    <view class="qa-composer">
+      <view wx:if="{{pendingSkillName}}" class="qa-skill-chip">
+        <text class="qa-skill-chip-text">技能 · {{pendingSkillName}}</text>
+        <button class="qa-skill-chip-close" bindtap="clearSkill" aria-label="取消技能"><ui-icon name="close" size="{{20}}" rpx /></button>
       </view>
-      <button wx:if="{{sending}}" class="send-button active" bindtap="stopSend" aria-label="停止"><ui-icon name="stop" size="{{32}}" rpx /></button>
-      <button wx:else class="send-button {{canSend ? 'active' : ''}}" bindtap="send" disabled="{{!canSend}}" aria-label="发送"><ui-icon name="send" size="{{44}}" rpx /></button>
-    </view>
-    <text wx:if="{{conversationActive}}" class="ai-disclaimer">内容由AI生成仅供参考</text>
-  </view>
-  <view wx:if="{{modelPickerVisible}}" class="model-layer">
-    <view class="model-mask" bindtap="closeModelPicker"></view>
-    <view class="model-sheet" catchtap="stopModelPickerBubble">
-      <view class="sheet-grabber"></view>
-      <view class="model-sheet-title">选择模型</view>
-      <view class="thinking-card">
-        <view class="thinking-copy">
-          <view class="thinking-icon"><ui-icon name="atom" size="{{31}}" /></view>
-          <text class="thinking-title">思考模式</text>
-        </view>
-        <view class="thinking-switch">
-          <button class="thinking-tab {{thinkingMode === 'quick' ? 'active' : ''}}" bindtap="selectThinkingMode" data-mode="quick">快速</button>
-          <button class="thinking-tab {{thinkingMode === 'deep' ? 'active' : ''}}" bindtap="selectThinkingMode" data-mode="deep">深度</button>
-        </view>
-      </view>
-      <text class="model-section-title">选择模型</text>
-      <view class="model-list">
-        <button wx:for="{{modelOptions}}" wx:key="id" class="model-row" bindtap="selectModel" data-id="{{item.id}}">
-          <view class="model-row-copy">
-            <text class="model-row-name">{{item.name}}</text>
-            <text wx:if="{{item.badge}}" class="model-new-badge">{{item.badge}}</text>
-          </view>
-          <text wx:if="{{item.id === selectedModelKey}}" class="model-check">✓</text>
+      <textarea class="qa-input" value="{{input}}" placeholder="{{placeholder}}" placeholder-style="color:#8c8c8c;font-size:30rpx;line-height:1.32;" auto-height maxlength="8000" focus="{{autoFocus}}" adjust-position="{{true}}" show-confirm-bar="{{false}}" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
+      <view class="qa-bar">
+        <button class="qa-logic {{askMode}}" bindtap="toggleAskLogic" aria-label="切换问答逻辑">
+          <ui-icon name="{{askMode === 'planner' ? 'robot-planner' : 'robot-knowledge'}}" size="{{34}}" rpx />
+          <ui-icon name="chevron-down" size="{{16}}" rpx />
         </button>
+        <button class="qa-skill" bindtap="openSkillSheet" disabled="{{sending}}" aria-label="技能">
+          <ui-icon name="skill" size="{{34}}" rpx />
+          <ui-icon name="chevron-down" size="{{15}}" rpx />
+        </button>
+        <button class="qa-scope {{askMode}}" bindtap="openScopeSheet" disabled="{{sending}}" aria-label="本文件夹与本文件夹资料">
+          <ui-icon name="{{askMode === 'planner' ? 'at' : 'knowledge-pick'}}" size="{{30}}" rpx />
+        </button>
+        <view class="qa-bar-spacer"></view>
+        <button class="qa-model" bindtap="openModelSheet" disabled="{{sending}}" aria-label="模型与思考深度"><ui-icon name="model-depth" size="{{34}}" rpx /></button>
+        <button wx:if="{{sending}}" class="qa-send" bindtap="stopSend" aria-label="停止"><ui-icon name="stop" size="{{58}}" rpx /></button>
+        <button wx:else class="qa-send" bindtap="send" disabled="{{!canSend}}" aria-label="发送"><ui-icon name="{{canSend ? 'send-ready' : 'send-idle'}}" size="{{58}}" rpx /></button>
       </view>
     </view>
   </view>
+
+  <!-- 更多选项：模型与思考深度（只保留深度思考） -->
+  <view wx:if="{{modelSheetVisible}}" class="sheet-layer">
+    <view class="sheet-mask" bindtap="closeSheets"></view>
+    <view class="sheet-panel option-panel" catchtap="noop">
+      <view class="sheet-head">
+        <text class="sheet-title">更多选项</text>
+        <button class="sheet-close" bindtap="closeSheets" aria-label="关闭"><ui-icon name="close" size="{{28}}" rpx /></button>
+      </view>
+      <view class="option-card" bindtap="toggleDeepThinking">
+        <view class="option-icon"><ui-icon name="atom" size="{{52}}" rpx /></view>
+        <view class="option-copy">
+          <text class="option-name">深度思考</text>
+          <text class="option-desc">输出思考过程并回答</text>
+        </view>
+        <text class="option-pill {{deepThinking ? 'on' : ''}}">{{deepThinking ? '自动' : '已关闭'}}</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 技能：与问AI页共用同一份技能清单与后端技能包 -->
+  <view wx:if="{{skillSheetVisible}}" class="sheet-layer">
+    <view class="sheet-mask" bindtap="closeSheets"></view>
+    <view class="sheet-panel option-panel" catchtap="noop">
+      <view class="sheet-head">
+        <text class="sheet-title">技能</text>
+        <button class="sheet-close" bindtap="closeSheets" aria-label="关闭"><ui-icon name="close" size="{{28}}" rpx /></button>
+      </view>
+      <button wx:for="{{skills}}" wx:key="id" class="skill-row" bindtap="useSkill" data-id="{{item.id}}">
+        <view class="skill-icon"><ui-icon name="{{item.icon}}" size="{{40}}" rpx /></view>
+        <view class="skill-copy">
+          <text class="skill-name">{{item.name}}</text>
+          <text class="skill-desc">{{item.desc}}</text>
+        </view>
+      </button>
+    </view>
+  </view>
+
+  <!-- 选择知识：文件夹会话里换成「本文件夹资料 + 回到知识库」，范围始终锁定在当前文件夹 -->
+  <view wx:if="{{scopeSheetVisible}}" class="sheet-layer">
+    <view class="sheet-mask" bindtap="closeSheets"></view>
+    <view class="sheet-panel scope-panel" catchtap="noop">
+      <view class="sheet-head">
+        <text class="sheet-title">本文件夹资料</text>
+        <button class="sheet-close" bindtap="closeSheets" aria-label="关闭"><ui-icon name="close" size="{{28}}" rpx /></button>
+      </view>
+      <text class="scope-hint">提问范围锁定在「{{folderName || '当前文件夹'}}」，只依据这些文件回答。</text>
+      <scroll-view class="scope-list" scroll-y enhanced show-scrollbar="{{false}}">
+        <button wx:for="{{documents}}" wx:key="id" class="scope-doc" bindtap="openDocument" data-id="{{item.id}}">
+          <ui-icon name="file" size="{{32}}" rpx />
+          <text class="scope-doc-name">{{item.filename}}</text>
+          <text class="scope-doc-type">{{item.typeLabel}}</text>
+        </button>
+        <view wx:if="{{!documents.length}}" class="scope-empty">这个文件夹还是空的，先把文件移动进来，问答就会自动带上它们。</view>
+      </scroll-view>
+      <button class="scope-dir" bindtap="backToDirectory">
+        <text>回到知识库目录</text>
+        <ui-icon name="chevron-right" size="{{28}}" rpx />
+      </button>
+    </view>
+  </view>
+
+  <!-- 历史对话抽屉：只看当前文件夹的会话，与根目录会话天然隔离 -->
+  <history-drawer visible="{{historyVisible}}" loading="{{historyLoading}}" active-id="{{conversationId}}" items="{{historyItems}}" bind:close="closeHistory" bind:pick="pickHistory" bind:create="newConversation" bind:remove="removeHistory" />
 </view>

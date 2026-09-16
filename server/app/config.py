@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     harness_max_tokens: int = 4096
     harness_runtime_mode: Literal['exe', 'node'] = 'exe'
     harness_dsh_bin: str = ""
+    # 本地开发：deepseek-harness python SDK / SDK runtime 源码路径。
+    # 生产环境可改为 pip install deepseek-harness-sdk（无需配置这两项）。
+    harness_sdk_path: str = ""
+    harness_runtime_sdk_path: str = ""
     harness_reasoning_effort: str = "low"
     harness_strict: bool = True
     # 对话记忆（参考 deepseek-harness 的 session 持久化 + compaction）：

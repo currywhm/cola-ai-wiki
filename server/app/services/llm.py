@@ -49,10 +49,10 @@ def provider_config(model: str) -> tuple[str, str, str] | None:
     return None
 
 
-async def stream_answer(messages: list[dict], model: str, session_id: str = '', thinking: str = 'quick') -> AsyncIterator[dict]:
-    # thinking=quick 走 sdk-minimal 精简组合（快），deep 走完整 sdk profile（工具全）；
-    # 两条路都在 harness 内，失败时非严格模式回落直连通道。
-    # 产出 {'kind':'text'|'progress','text':...}：progress 为 agent 过程标签。
+async def stream_answer(messages: list[dict], model: str, session_id: str = '', thinking: str = 'quick',
+                    skill: str = '', mode: str = 'knowledge') -> AsyncIterator[dict]:
+    # 统一走完整 harness profile（技能/工具/思考过程全量），失败时非严格模式回落直连通道。
+    # 产出 {'kind':'text','text':...}（回答增量）与 {'kind':'trace','item':{...}}（过程节点）。
     if harness_configured():
         produced = False
         try:
@@ -61,7 +61,7 @@ async def stream_answer(messages: list[dict], model: str, session_id: str = '', 
             # harness 会话每轮新建（上下文由 DB 注入）：避免跨轮复用引发的
             # "session already exists" 冲突，且重试/回落后记忆不丢失
             turn_session = f'{session_id}-{uuid.uuid4().hex[:8]}' if session_id else ''
-            async for event in harness_stream_answer(question, system, turn_session, model, thinking):
+            async for event in harness_stream_answer(question, system, turn_session, model, thinking, skill, mode):
                 if event.get('kind') == 'text' and event.get('text'):
                     produced = True
                 yield event

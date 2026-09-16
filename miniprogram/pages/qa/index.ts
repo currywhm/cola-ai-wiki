@@ -1,19 +1,9 @@
 import { renderMarkdown } from '../../utils/markdown'
-import { getKnowledge, getModels, Knowledge, Source, streamChat } from '../../services/api'
+import { appendTrace, assistantMessage, createFlusher, settleTrace } from '../../utils/thread'
+import { deleteConversation, getConversation, getConversations, getKnowledge, getModels, Knowledge, Source, streamChat } from '../../services/api'
+import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER, SKILLS } from '../../utils/skills'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
-const PLANNER_PLACEHOLDER = '告诉我想做什么，我来规划执行——查询知识、生成PPT、撰写报告、整理知识库……'
-const KNOWLEDGE_PLACEHOLDER = '基于全部知识，或@指定知识进行提问'
-
-type SkillItem = { id: string; name: string; desc: string; icon: string; prompt: string }
-
-// 技能落在真实动作上：选中后把任务写进输入框，仍由用户确认后发送
-const SKILLS: SkillItem[] = [
-  { id: 'organize', name: '整理知识库', desc: '把资料整理成结构化知识条目', icon: 'knowledge-pick', prompt: '把当前知识库里的资料整理成结构化的知识条目，按主题归类并列出要点。' },
-  { id: 'report', name: '撰写报告', desc: '基于资料输出一份调研报告', icon: 'book', prompt: '基于当前知识库的资料写一份调研报告，包含背景、结论和关键数据。' },
-  { id: 'deck', name: '生成 PPT', desc: '输出分页大纲与每页要点', icon: 'ppt', prompt: '基于当前知识库的资料输出一份 PPT 大纲，按页给出标题与要点。' },
-  { id: 'diagram', name: '知识图解', desc: '把长文梳理成知识结构', icon: 'image', prompt: '把当前知识库里的长文整理成一份知识图解，按主题分组并给出层级关系。' },
-]
 
 Page({
   data: {
@@ -27,6 +17,9 @@ Page({
     pendingKnowledgeId: '',
     knowledgeQuery: '',
     conversationId: '',
+    historyVisible: false,
+    historyLoading: false,
+    historyItems: [] as any[],
     messages: [] as any[],
     lastMessageId: '',
     input: '',
@@ -41,6 +34,9 @@ Page({
     skillSheetVisible: false,
     knowledgeSheetVisible: false,
     deepThinking: true,
+    // 本轮选中的 harness 技能包（发送后清空，避免后续问题被旧技能影响）
+    pendingSkill: '',
+    pendingSkillName: '',
     model: 'deepseek-flash',
     selectedModelKey: 'deepseek-flash',
     skills: SKILLS,
@@ -52,7 +48,12 @@ Page({
     this.load()
   },
   onShow() { this.measureSafeArea() },
-  onUnload() { const cancel = (this as any).cancelStream; if (cancel) cancel() },
+  onUnload() {
+    const cancel = (this as any).cancelStream
+    if (cancel) cancel()
+    const flusher = (this as any).flusher
+    if (flusher) flusher.reset()
+  },
   // 顶部不留标题栏，但必须避让胶囊按钮，高度随机型变化
   measureNav() {
     try {
@@ -94,6 +95,7 @@ Page({
         loadState: 'ready',
         readyForInput: true,
       }, () => {
+        this.seedGreeting()
         this.syncCanSend()
         this.consumeDraft()
       })
@@ -116,8 +118,16 @@ Page({
     })
   },
   onInput(e: any) {
-    this.setData({ input: e.detail.value, readyForInput: true })
-    this.syncCanSend()
+    const input = e.detail.value
+    // 用户改写输入时，若已经不包含技能模板，就取消本轮技能绑定
+    const bound = this.data.pendingSkill ? SKILLS.find((item) => item.harness === this.data.pendingSkill) : undefined
+    const stillBound = bound ? input.includes(bound.prompt) : false
+    this.setData({ input, readyForInput: true, pendingSkill: stillBound ? this.data.pendingSkill : '', pendingSkillName: stillBound ? this.data.pendingSkillName : '' }, () => this.syncCanSend())
+  },
+  clearSkill() {
+    const bound = this.data.pendingSkill ? SKILLS.find((item) => item.harness === this.data.pendingSkill) : undefined
+    const input = bound ? this.data.input.replace(bound.prompt, '').trim() : this.data.input
+    this.setData({ input, pendingSkill: '', pendingSkillName: '' }, () => this.syncCanSend())
   },
   syncCanSend() {
     const scoped = this.data.askMode === 'planner' || !!this.data.knowledgeId
@@ -152,8 +162,10 @@ Page({
   useSkill(e: any) {
     const skill = SKILLS.find((item) => item.id === e.currentTarget.dataset.id)
     if (!skill) return
-    const input = this.data.input.trim() ? `${this.data.input.trim()}\n${skill.prompt}` : skill.prompt
-    this.setData({ input, skillSheetVisible: false, readyForInput: true }, () => this.syncCanSend())
+    const base = this.data.input.trim()
+    const input = base ? `${base}\n${skill.prompt}` : skill.prompt
+    // 绑定后端技能包：发送时随请求下发，后端让 agent 先加载并注入该技能
+    this.setData({ input, skillSheetVisible: false, readyForInput: true, pendingSkill: skill.harness, pendingSkillName: skill.name }, () => this.syncCanSend())
   },
   // 选择知识：与知识库页面同一份数据源
   openKnowledgeSheet() {
@@ -193,6 +205,64 @@ Page({
   goBack() {
     wx.navigateBack({ delta: 1, fail: () => { wx.switchTab({ url: '/pages/ask/index' }) } })
   },
+  // 冷启动进入问答页先给一句开场白：对话不再是一张空屏（本地消息，不写入历史）
+  seedGreeting() {
+    if (this.data.messages.length) return
+    const name = this.data.knowledgeName || DEFAULT_KNOWLEDGE_NAME
+    const greeting = {
+      id: `greeting-${Date.now()}`,
+      role: 'assistant',
+      local: true,
+      sources: [],
+      trace: [],
+      reason: '',
+      content: `我是 cola，已在「${name}」待命。可以直接提问、把资料整理成知识条目，或让我写报告、做 PPT 大纲。`,
+    }
+    this.setData({ messages: [greeting], lastMessageId: greeting.id })
+  },
+  // 历史对话：拉取当前知识库根目录的会话列表（后端按 user_id + knowledge_id + folder_id 收窄）
+  openHistory() {
+    this.setData({ historyVisible: true, historyLoading: true })
+    getConversations({ knowledgeId: this.data.knowledgeId, folderId: '' }).then((items) => {
+      this.setData({ historyItems: items || [], historyLoading: false })
+    }).catch(() => this.setData({ historyItems: [], historyLoading: false }))
+  },
+  closeHistory() { this.setData({ historyVisible: false }) },
+  pickHistory(e: any) {
+    const id = String((e.detail && e.detail.id) || '')
+    if (!id) return
+    this.setData({ historyVisible: false, conversationId: id, messages: [], sending: false, canSend: false }, () => this.syncCanSend())
+    getConversation(id).then((messages) => {
+      const hydrated = (messages || []).map((message: any) => message.role === 'assistant'
+        ? { ...message, html: renderMarkdown(message.content || ''), trace: [], reason: '', traceTitle: '', traceOpen: false, running: false }
+        : message)
+      this.setData({ messages: hydrated, lastMessageId: hydrated.length ? hydrated[hydrated.length - 1].id : '' }, () => this.syncCanSend())
+    }).catch(() => { this.seedGreeting(); wx.showToast({ title: '历史对话加载失败', icon: 'none' }) })
+  },
+  newConversation() {
+    this.setData({ historyVisible: false, conversationId: '', messages: [], input: '', sending: false, canSend: false, readyForInput: true, lastMessageId: '' }, () => { this.seedGreeting(); this.syncCanSend() })
+  },
+  // 长按历史对话 = 删除。历史存在服务端，必须二次确认后再删，且删除范围限定本用户。
+  removeHistory(e: any) {
+    const id = String((e.detail && e.detail.id) || '')
+    if (!id) return
+    wx.showModal({
+      title: '删除这条对话',
+      content: '对话内容与其中的问答记录会一起删除，且无法恢复。',
+      confirmText: '删除',
+      confirmColor: '#d94545',
+      success: (res) => {
+        if (!res.confirm) return
+        deleteConversation(id).then(() => {
+          const items = this.data.historyItems.filter((item: any) => item.id !== id)
+          const isCurrent = this.data.conversationId === id
+          this.setData({ historyItems: items, conversationId: isCurrent ? '' : this.data.conversationId })
+          if (isCurrent) this.setData({ messages: [], lastMessageId: '' }, () => { this.seedGreeting(); this.syncCanSend() })
+          wx.showToast({ title: '已删除', icon: 'success' })
+        }).catch(() => wx.showToast({ title: '删除失败，请稍后重试', icon: 'none' }))
+      },
+    })
+  },
   send() {
     const content = this.data.input.trim()
     if (!this.data.readyForInput || this.data.loadState !== 'ready' || !content || this.data.sending) return
@@ -203,11 +273,14 @@ Page({
   doSend(askMode: 'knowledge' | 'planner', content: string) {
     const userId = `m${Date.now()}`
     const assistantId = `m${Date.now() + 1}`
+    const skill = this.data.pendingSkill
     this.setData({
       input: '',
       sending: true,
       canSend: false,
-      messages: [...this.data.messages, { id: userId, role: 'user', content, sources: [] }, { id: assistantId, role: 'assistant', content: '', html: '', progress: '正在思考…', sources: [] }],
+      pendingSkill: '',
+      pendingSkillName: '',
+      messages: [...this.data.messages, { id: userId, role: 'user', content, sources: [] }, assistantMessage(assistantId)],
       lastMessageId: assistantId,
     })
     let assistant = ''
@@ -218,14 +291,32 @@ Page({
       model: this.data.model,
       thinking: this.data.deepThinking ? 'deep' : 'quick',
     }
+    if (skill) payload.skill = skill
     if (this.data.knowledgeId) payload.knowledge_id = this.data.knowledgeId
     ;(this as any).cancelStream = streamChat(
       payload,
       (meta) => { this.setData({ conversationId: meta.conversation_id }); this.updateAssistant(assistantId, assistant, meta.sources as Source[]) },
-      (delta) => { assistant += delta; this.updateAssistant(assistantId, assistant) },
-      () => { (this as any).cancelStream = null; this.setData({ sending: false }); this.syncCanSend() },
-      (error) => { (this as any).cancelStream = null; this.setData({ sending: false }); this.updateAssistant(assistantId, assistant || '回答未完成，请稍后重新提问。'); this.syncCanSend(); wx.showToast({ title: error.message || error.errMsg || '回答失败', icon: 'none' }) },
+      // 增量文本按 70ms 节流合并提交，避免逐字 setData 引起的掉帧
+      (delta) => { assistant += delta; this.flushDelta(assistantId, () => assistant) },
+      () => {
+        (this as any).cancelStream = null
+        this.flushReset(assistantId)
+        this.updateAssistant(assistantId, assistant)
+        this.settleAnswer(assistantId)
+        this.setData({ sending: false })
+        this.syncCanSend()
+      },
+      (error) => {
+        (this as any).cancelStream = null
+        this.flushReset(assistantId)
+        this.updateAssistant(assistantId, assistant || '回答未完成，请稍后重新提问。')
+        this.settleAnswer(assistantId)
+        this.setData({ sending: false })
+        this.syncCanSend()
+        wx.showToast({ title: error.message || error.errMsg || '回答失败', icon: 'none' })
+      },
       (label) => { if (label) this.updateAssistantProgress(assistantId, label) },
+      (item) => this.pushTrace(assistantId, item),
     )
   },
   stopSend() {
@@ -244,6 +335,25 @@ Page({
   },
   updateAssistantProgress(id: string, progress: string) {
     const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, progress } : message)
+    this.setData({ messages })
+  },
+  // 过程区与增量节流统一走 utils/thread：问答页、知识库会话、文件夹会话共用同一实现
+  ensureFlusher() {
+    if (!(this as any).flusher) {
+      (this as any).flusher = createFlusher((id: string, content: string) => this.updateAssistant(id, content))
+    }
+    return (this as any).flusher
+  },
+  flushDelta(id: string, read: () => string) { this.ensureFlusher().schedule(id, read) },
+  flushReset(id: string) { const flusher = (this as any).flusher; if (flusher) flusher.clear(id) },
+  settleAnswer(id: string) { this.setData({ messages: settleTrace(this.data.messages, id) }) },
+  pushTrace(id: string, item: any) {
+    const result = appendTrace(this.data.messages, id, item)
+    if (result.changed) this.setData({ messages: result.messages, lastMessageId: id })
+  },
+  toggleTrace(e: any) {
+    const id = String(e.currentTarget.dataset.id || '')
+    const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, traceOpen: !message.traceOpen } : message)
     this.setData({ messages })
   },
   copyAnswer(e: any) {

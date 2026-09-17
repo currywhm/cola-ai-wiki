@@ -1,11 +1,9 @@
 """工具产物回流：把 harness agent 本轮在工作区里生成的文件收成「对话产物」。
 
-官方 ``dsh-attachment-local`` 只承接「用户带进对话的附件」（内容寻址在
-``<DSH_HOME>/attachments/v1``），工具产出的文件不会自己出现在对话里。这里补齐这一段：
+官方 ``dsh-tool-present`` 会把 agent 明确交付的文件写成持久
+``deliverables/presented`` 事件。本模块只负责把事件里的路径收成产品侧文件：
 
-- 沙箱固定 ``workspace-write``、工作根由 ``DSH_WORKSPACE_ROOT`` 按租户注入，所以
-  agent 用 write / edit / bash 写出来的文件一定落在该租户的工作区里；
-  后端按 mtime 差量把它们收上来（见 ``harness._ArtifactWatch``）。
+- 事件路径必须是该租户工作区内的 regular file；
 - 收回来的文件复制进 ``uploads/artifacts/<租户>/`` 做内容寻址保存（同一份字节只存一份），
   落 ``artifacts`` 表，随消息一起持久化（``messages.artifacts_json``），
   对话里可以预览、可以保存到微信。
@@ -139,6 +137,7 @@ async def register(
     folder_id: str = '',
     save_to_knowledge: bool = False,
     storage_room: int | None = None,
+    description: str = '',
 ) -> dict | None:
     """把一个工作区文件收成对话产物；不合适（空文件 / 过大 / 已消失）时返回 None。
 
@@ -177,12 +176,13 @@ async def register(
             path=source, storage_ref=storage_ref, name=name, suffix=suffix, size=size,
             enabled=bool(save_to_knowledge), storage_room=storage_room,
         )
+        artifact_note = description.strip() or note
         await db.execute(
             "INSERT INTO artifacts(id,user_id,conversation_id,knowledge_id,folder_id,filename,file_type,file_size,mime,"
             "digest,storage_path,source_path,document_id,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 artifact_id, user_id, conversation_id, knowledge_id, folder_id, name, suffix, size, mime,
-                digest, storage_ref, str(source), document_id, note, timestamp,
+                digest, storage_ref, str(source), document_id, artifact_note, timestamp,
             ),
         )
         await db.commit()

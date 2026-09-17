@@ -99,6 +99,9 @@ class Settings(BaseSettings):
     harness_provider: str = "deepseek-official"
     harness_model: str = "deepseek-v4-flash"
     harness_max_tokens: int = 4096
+    # Official Harness sandbox mode. The SDK still owns the sandbox, approval,
+    # and tool policy; this value is passed through as DSH_PERMISSION_MODE.
+    dsh_permission_mode: Literal['read-only', 'workspace-write', 'danger-full-access'] = 'workspace-write'
     # 积分口径：用户侧的额度单位从「问答次数」改成「积分」，积分与 deepseek-flash
     # 的真实 token 成本挂钩，用户价 = 模型成本 × credit_markup（默认 1.5 倍）。
     # 单价默认取 DeepSeek 官方「模型 & 价格」的 deepseek-flash 高峰价（元 / 百万 tokens），
@@ -113,8 +116,8 @@ class Settings(BaseSettings):
     # dsh_bin is only for a platform-provided official runtime executable.
     harness_dsh_bin: str = ""
     harness_reasoning_effort: str = "low"
-    # 多租户隔离：每个用户独立的工作区与 DSH_HOME（sessions/skills/storages/attachments
-    # 全部私有），运行时按租户池化复用，空闲回收。`profiles/` 作为部署级只读资产共享。
+    # 多租户隔离：每个用户独立的工作区与 DSH_HOME（sessions/skills/storages/
+    # attachments/profile state 全部私有），运行时按租户池化复用，空闲回收。
     harness_workspaces: str = "./harness-workspaces"
     harness_max_runtimes: int = 6
     harness_idle_seconds: int = 1800
@@ -217,6 +220,8 @@ class Settings(BaseSettings):
             raise ValueError('COS_SECRET_ID 与 COS_SECRET_KEY 必须同时配置')
         if self.harness_enabled and self.harness_max_tokens < 256:
             raise ValueError('HARNESS_MAX_TOKENS 必须至少为 256')
+        if self.harness_enabled and self.dsh_permission_mode not in {'read-only', 'workspace-write', 'danger-full-access'}:
+            raise ValueError('DSH_PERMISSION_MODE 必须是 read-only、workspace-write 或 danger-full-access')
 
     @property
     def upload_path(self) -> Path:

@@ -6,6 +6,8 @@ stable call ids, nested tool-result extraction, and typed result metadata.
 """
 import json
 import unittest
+import tempfile
+from pathlib import Path
 
 from app.services import harness
 
@@ -102,6 +104,34 @@ class HarnessEventTests(unittest.TestCase):
         }, [], '')
         self.assertEqual(search_meta['kind'], 'search')
         self.assertEqual(search_meta['sources'][0]['title'], 'Example')
+
+    def test_presented_files_become_artifact_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / 'workspace'
+            workspace.mkdir()
+            report = workspace / 'report.md'
+            report.write_text('# report', encoding='utf-8')
+            outside = Path(tmp) / 'outside.md'
+            outside.write_text('secret', encoding='utf-8')
+
+            state = harness._TraceState('session-1', workspace)
+            emitted = []
+            emit = lambda kind, payload, pace: emitted.append((kind, payload, pace))
+
+            harness._forward(_notification('deliverables/presented', {
+                'turn': 1,
+                'callId': 'present-1',
+                'files': [
+                    {'path': 'report.md', 'description': '最终报告'},
+                    {'path': '../outside.md', 'description': '不得越过租户工作区'},
+                ],
+            }), emit, state)
+
+            artifacts = [payload['artifact'] for kind, payload, _ in emitted if kind == 'artifact']
+            self.assertEqual(len(artifacts), 1)
+            self.assertEqual(artifacts[0]['path'], str(report.resolve()))
+            self.assertEqual(artifacts[0]['name'], 'report.md')
+            self.assertEqual(artifacts[0]['description'], '最终报告')
 
     def test_terminal_exit_code_is_exposed_to_the_card(self):
         result = harness._tool_result_contract(

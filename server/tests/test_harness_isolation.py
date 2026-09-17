@@ -1,8 +1,8 @@
 """Regression tests for official Harness tenant isolation.
 
-The adapter owns tenant paths and the official skill root only. Plan review and
-safety plugins are intentionally absent because they are not public SDK
-surfaces.
+The adapter owns tenant paths and the official skill root only. Profile
+composition, sessions, permissions, tools, retries and compaction are owned by
+the upstream sdk profile.
 """
 import json
 import os
@@ -22,9 +22,6 @@ from app.services import harness
 
 home = Path(os.environ['COLA_TEST_HOME'])
 workspaces = Path(os.environ['COLA_TEST_WORKSPACES'])
-shared_profiles = home / 'profiles'
-shared_profiles.mkdir(parents=True, exist_ok=True)
-(shared_profiles / 'sdk').mkdir(parents=True, exist_ok=True)
 
 out = {}
 out['tenant_escape'] = harness._tenant_id('../../etc/passwd')
@@ -40,16 +37,16 @@ out['home_distinct'] = str(a) != str(b)
 out['home_inside_root'] = str(a).startswith(str(home / 'users'))
 out['workspace_distinct'] = str(wa) != str(wb)
 out['workspace_inside_root'] = str(wa).startswith(str(workspaces / 'users'))
-out['profiles_shared'] = (a / 'profiles').is_symlink() and (a / 'profiles').resolve() == shared_profiles.resolve()
+out['profiles_not_shared'] = not (a / 'profiles').exists()
 out['skills_isolated'] = harness.skills_target_dir('tenant-a') != harness.skills_target_dir('tenant-b')
 
 patch = harness.runtime_patch_path()
 text = patch.read_text(encoding='utf-8') if patch.exists() else ''
-out['assets_synced'] = harness.sync_runtime_assets() > 0
 out['patch_official'] = '@cola/' not in text
-out['patch_has_never'] = 'policy: never' in text
-out['patch_has_workspace_root'] = 'DSH_WORKSPACE_ROOT' in text
-out['patch_disables_fs_search'] = '- id: tool-fs-search\n  disabled: true' in text
+out['patch_has_system_prompt'] = '- id: system-prompt' in text
+out['patch_inserts_official_present'] = "name: '@deepseek-ai/dsh-tool-present'" in text
+out['patch_has_custom_permission'] = '- id: sandbox-policy' in text or '- id: approval' in text or '- id: permission' in text
+out['patch_disables_official_tools'] = 'disabled: true' in text
 
 print('RESULT ' + json.dumps(out, ensure_ascii=False))
 '''
@@ -86,14 +83,14 @@ class HarnessIsolationTest(unittest.TestCase):
         self.assertTrue(result['home_inside_root'])
         self.assertTrue(result['workspace_distinct'])
         self.assertTrue(result['workspace_inside_root'])
-        self.assertTrue(result['profiles_shared'])
+        self.assertTrue(result['profiles_not_shared'])
         self.assertTrue(result['skills_isolated'])
 
-        self.assertTrue(result['assets_synced'])
         self.assertTrue(result['patch_official'])
-        self.assertTrue(result['patch_has_never'])
-        self.assertTrue(result['patch_has_workspace_root'])
-        self.assertTrue(result['patch_disables_fs_search'])
+        self.assertTrue(result['patch_has_system_prompt'])
+        self.assertTrue(result['patch_inserts_official_present'])
+        self.assertFalse(result['patch_has_custom_permission'])
+        self.assertFalse(result['patch_disables_official_tools'])
 
 
 if __name__ == '__main__':

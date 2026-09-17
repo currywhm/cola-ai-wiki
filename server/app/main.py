@@ -273,21 +273,7 @@ async def lifespan(app: FastAPI):
     except content_service.ContentError as exc:
         print(f"[content] 内容未导入：{exc}", flush=True)
     if harness_configured():
-        # 每轮问答新建 harness 会话（记忆由 DB 承载），启动时清扫 24h 前的过期会话目录
-        from .services.harness import cleanup_stale_sessions
-        removed = cleanup_stale_sessions()
-        if removed:
-            print(f'[harness] 已清理 {removed} 个过期会话目录', flush=True)
-        # 预热 Harness 运行时：运行时是唯一单例（完整 sdk profile），后台热身一次即可，
-        # 避免用户第一个问题承担冷启动成本。后台执行，不阻塞服务就绪。
-        async def prewarm():
-            from .services.harness import stream_answer as harness_warm
-            try:
-                async for _ in harness_warm('热身：请只回复「就绪」两个字。', '', f'prewarm-{uuid.uuid4().hex}', '', 'deep'):
-                    pass
-            except Exception as exc:
-                print(f'[harness] prewarm failed: {exc}', flush=True)
-        asyncio.create_task(prewarm())
+        print('[harness] official sdk profile enabled; runtimes start on first turn', flush=True)
     reconcile_task = None
     if settings.wechat_payment_mode == 'virtual':
         # 发货推送丢失时的第二确认路径：每 5 分钟扫一次 2 分钟前创建、24 小时内
@@ -2499,6 +2485,8 @@ async def create_chat_run(payload: ChatRequest, background_tasks: BackgroundTask
                     # 工具产物回流：把运行时工作区里新生成的文件收成可预览/下载的产物。
                     # 收不动（空文件 / 过大 / 已消失 / 超出一轮上限）时静默跳过，不影响回答正文。
                     discovery = event.get('artifact') or {}
+                    if len(produced_artifacts) >= artifact_service.MAX_ARTIFACTS_PER_TURN:
+                        continue
                     record = await artifact_service.register(
                         user_id=user_id,
                         source=Path(str(discovery.get('path') or '')),
@@ -2507,6 +2495,7 @@ async def create_chat_run(payload: ChatRequest, background_tasks: BackgroundTask
                         folder_id=folder_id,
                         save_to_knowledge=save_artifacts_to_kb,
                         storage_room=await remaining_storage(db, user_id, limits),
+                        description=str(discovery.get('description') or ''),
                     )
                     if not record:
                         continue

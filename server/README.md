@@ -36,6 +36,7 @@ curl http://127.0.0.1:8765/ready
 - 对话与任务只有一条模型链路：官方 `deepseek-harness-sdk` 的 `DeepSeekHarness.run()`。`LLM_API_KEY` / `LLM_BASE_URL` 是官方适配器的凭据覆盖，`HARNESS_PROVIDER` 和 `HARNESS_MODEL` 决定 Harness 路由；`DEEPSEEK_*` / `OPENAI_*` / `MINIMAX_*` 仅保留给文档整理等非 Agent 后端工具，不能再作为聊天回退。
 - Harness 运行时由官方 SDK 自动启动并复用 bundled `dsh --profile sdk` runtime，不要求手工配置 `HARNESS_RUNTIME_MODE`、源码路径或自建插件：`HARNESS_ENABLED=true`、`HARNESS_HOME`、`HARNESS_PROFILE=sdk`、`HARNESS_PROVIDER=deepseek-official`、`HARNESS_MODEL=deepseek-v4-flash` 即可。每个用户使用独立的 `HARNESS_HOME` 与工作区；会话持久化、compaction、重试、工具循环和技能加载都由 Harness 自己负责。
 - “问全网”同样由官方 profile 挂载的 `web_search` / `web_fetch` 工具执行；后端只负责把 `mode=web` 解释为用户意图，不另建搜索 Agent，也不把密钥下发到小程序。
+- 文件交付只跟随官方 `dsh-tool-present`：patch 插入与 Web `standard/ptc` preset 相同的官方 row，后端接收 `deliverables/presented` 事件，不再扫描工作区猜产物。
 - 额度单位是**积分**而不是问答次数：一轮问答按真实 token 用量扣分。真实成本用 deepseek-flash 官方单价算（元/百万 tokens：输入命中缓存 0.04、未命中 2.00、输出 8.00，空闲时段官方半价、代码按请求时刻自动减半），用户价 = 成本 × `CREDIT_MARKUP`（默认 1.5），积分 = 用户价 ÷ `CREDIT_UNIT_YUAN`（默认 0.001 元）四舍五入且至少 1 分。
 - 加价倍率恒定 1.5 倍，但**用户可见的积分会随时段浮动**——同一段对话空闲时段约 3 分、高峰时段约 7 分。这是刻意保留的口径（成本完全转嫁、毛利率恒定），对外文案必须写明「积分随官方计价时段浮动」。
 - 月度积分额度：免费试用期 600、试用结束后 150、Plus 3000、Pro 15000（`MEMBERSHIP_LIMITS`），按自然月归零、不结转。`/api/me` 返回 `quota.credits_limit/credits_used/credits_left`，`/api/pay/plans` 返回 `monthly_credits`，SSE 的 `done` 事件带本轮 `credits` 与本月 `credits_used/credits_limit`。
@@ -90,6 +91,7 @@ LLM_API_KEY=大模型APIKey
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-chat
 HARNESS_ENABLED=true
+DSH_PERMISSION_MODE=workspace-write
 ```
 
 `Bucket` / `Region` 是云托管官方对象存储示例的变量名；已有的 `COS_BUCKET` / `COS_REGION` 仍然兼容。
@@ -176,11 +178,13 @@ docker build -t zhi-reader-api:verify .
 
 ## 能力边界与安全（执行能力归零）
 
-后端不再维护自建 Agent、计划桥或安全守卫插件。运行时组合、工具清单、会话持久化、compaction 与重试都来自官方 `sdk` profile；`harness_runtime/cordis.patch.yml` 只包含官方 row override，用于部署侧的系统提示、工作区和权限策略。
+## 能力边界与安全（官方 Harness 负责）
 
-当前部署关闭模型侧命令执行相关 row（`tool-bash`、`tool-pwsh`、`tool-jobs`、`tool-workflow`、`workflow-worker-thread`、`tool-ralph`、`tool-fs-search`），但保留官方 `read` / `read_image` / `write` / `edit` / `skill` / `web_search` / `web_fetch` / `subagent*` / `todo_write` / `goal` / plan 工具。`workspace-write` 只约束文件写入，官方文件工具仍可读取运行用户可读的文件；这是当前官方 sdk profile 的能力边界，不是后端自建的权限实现。生产环境应把 Harness 子进程放入最小权限用户或独立容器，并且不要在容器内放置可被读取的密钥文件。
+后端不维护自建 Agent、计划桥、安全守卫或工作区产物扫描器。运行时组合、工具清单、会话持久化、compaction、重试、权限判定和文件交付都来自官方 `sdk` profile；`harness_runtime/cordis.patch.yml` 只覆盖官方 `system-prompt` row，并插入 Web 同款官方 `@deepseek-ai/dsh-tool-present` row。
 
-每个租户的工作区是 `harness-workspaces/users/<用户 id>`，`DSH_HOME` 是 `harness-home/users/<用户 id>`；技能、会话、附件与工作区按租户分开。升级官方 SDK/runtime 时，业务侧只需要更新官方 wheel 和官方 row id/配置，不要在应用层复制 Agent 逻辑。
+默认通过官方 `DSH_PERMISSION_MODE=workspace-write` 运行。官方 profile 会继续自行处理 sandbox、approval 和工具策略；公开 Python SDK 没有审批应答接口，因此危险操作在无人审批时会 fail closed，而不是由后端伪造一个放行策略。生产环境仍应使用最小权限用户或独立容器，并且不要在容器内放置可被读取的密钥文件。
+
+每个租户的工作区是 `harness-workspaces/users/<用户 id>`，`DSH_HOME` 是 `harness-home/users/<用户 id>`；技能、会话、附件、profile 状态与工作区按租户分开，不共享可写 profile。升级官方 SDK/runtime 时，只更新官方 wheel 和必要的官方 row override，不在应用层复制 Agent 逻辑。
 
 ## 服务边界
 

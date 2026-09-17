@@ -65,9 +65,9 @@
 
 | 资源 | 位置 | 隔离性 |
 | --- | --- | --- |
-| 工作区（agent 的 cwd、`DSH_WORKSPACE_ROOT`） | `<HARNESS_WORKSPACES>/users/<租户>/` | 租户私有 |
+| 工作区（agent 的 cwd） | `<HARNESS_WORKSPACES>/users/<租户>/` | 租户私有 |
 | 会话 / 技能 / 存储 / 附件 | `<HARNESS_HOME>/users/<租户>/` | 租户私有 |
-| `profiles/`（profile 组合与插件解析根） | `<HARNESS_HOME>/profiles/` | 部署级只读，软链共享，不复制 node_modules |
+| profile 状态（组合与插件解析根） | `<HARNESS_HOME>/users/<租户>/profiles/` | 租户私有，不共享可写 profile |
 
 租户目录名由 `_tenant_id()` 收敛（剔除 `/`、`.` 等字符，空值归到 `anonymous`），因此 `user_id` 无法借路径穿越跳出根目录。运行时按 `租户 + profile + 模型 + 推理强度` 池化：冷启动实测约 1s，因此池化是划算的；池有上限与空闲回收，正在跑轮次的不回收。
 
@@ -75,7 +75,7 @@
 
 | 检查 | 结果 |
 | --- | --- |
-| 探针：新租户 DSH_HOME + 软链 profiles | initialize 成功，启动 1.1s，会话落在 `users/probeuser/sessions/...` |
+| 探针：新租户 DSH_HOME | 官方 runtime 自行初始化 profile，会话落在 `users/probeuser/sessions/...` |
 | 真实问答写入位置 | 产物只出现在 `harness-workspaces/users/eb48428d.../`，没有写进别的租户目录 |
 | `tests/test_harness_isolation.py` | 路径穿越收敛、目录互不相同、技能根隔离、官方 patch 校验通过 |
 
@@ -83,14 +83,14 @@
 
 产品侧建议按优先级处理：把 harness 运行时跑在**独立操作系统用户/独立容器**里，并只给它读租户工作区与只读技能目录的权限（这是唯一能真正切断读越权的做法）。当前版本已把 agent 的可见工作区收敛到租户目录，但它不能替代操作系统级隔离。
 
-### 2. 权限预设：workspace-write + never（fail closed）
+### 2. 权限模式：官方 workspace-write（无审批应答时 fail closed）
 
 部署决定只保留官方 row override，位于 `server/harness_runtime/cordis.patch.yml`，通过官方 `patches=(...)` 参数传入 `DeepSeekHarness`：
 
 - `system-prompt` 使用 `DSH_SYSTEM_PROMPT` 设置 cola 的部署 persona。
-- `sandbox-policy` 使用 `workspace-write`，`workspaceRoot` 来自每个租户的 `DSH_WORKSPACE_ROOT`。
-- `approval` 固定为 `never`，因为公开 Python SDK 的 `run()` 不转发交互审批；不这样做，官方默认 `ask` 会让工具挂起。这里没有自建审批插件。
-- 执行类官方 row 关闭，避免未接审批通道时的挂起；文件读写、web、skill、subagent、todo、goal 等仍由官方 profile 提供。
+- `DSH_PERMISSION_MODE=workspace-write` 直接使用官方 sandbox、approval 与工具策略，不再重写 permission preset。
+- 插入 Web `standard/ptc` preset 同款的官方 `@deepseek-ai/dsh-tool-present` row，用于接收 `deliverables/presented` 交付事件。
+- 公开 Python SDK 不提供审批应答接口；需要审批的操作在无人应答时由官方 Harness fail closed，后端不伪造放行。
 
 ### 3. 计划模式：不伪造官方未提供的评审 RPC
 

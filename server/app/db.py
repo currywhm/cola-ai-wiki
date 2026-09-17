@@ -282,6 +282,7 @@ CREATE TABLE IF NOT EXISTS skills (id TEXT PRIMARY KEY, user_id TEXT NOT NULL DE
 CREATE TABLE IF NOT EXISTS skill_likes (skill_id TEXT NOT NULL, user_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(skill_id, user_id), FOREIGN KEY(skill_id) REFERENCES skills(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS skill_favorites (skill_id TEXT NOT NULL, user_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(skill_id, user_id), FOREIGN KEY(skill_id) REFERENCES skills(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS knowledge_shares (token TEXT PRIMARY KEY, knowledge_id TEXT NOT NULL, owner_user_id TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, accepted_by TEXT DEFAULT '', accepted_at TEXT DEFAULT '', revoked INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(knowledge_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS knowledge_subscriptions (user_id TEXT NOT NULL, source_knowledge_id TEXT NOT NULL, mirror_knowledge_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(user_id, source_knowledge_id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE, FOREIGN KEY(source_knowledge_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE, FOREIGN KEY(mirror_knowledge_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, conversation_id TEXT NOT NULL DEFAULT '', knowledge_id TEXT NOT NULL DEFAULT '', folder_id TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL, file_type TEXT NOT NULL DEFAULT '', file_size INTEGER NOT NULL DEFAULT 0, mime TEXT NOT NULL DEFAULT 'application/octet-stream', digest TEXT NOT NULL DEFAULT '', storage_path TEXT NOT NULL, source_path TEXT NOT NULL DEFAULT '', document_id TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS content_meta (slug TEXT PRIMARY KEY, version TEXT NOT NULL DEFAULT '', fingerprint TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', subtitle TEXT NOT NULL DEFAULT '', intro TEXT NOT NULL DEFAULT '', source_updated_at TEXT NOT NULL DEFAULT '', imported_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS content_entries (slug TEXT NOT NULL, entry_id TEXT NOT NULL, group_id TEXT NOT NULL DEFAULT '', group_title TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL DEFAULT 0, title TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', icon TEXT NOT NULL DEFAULT '', cover TEXT NOT NULL DEFAULT '', read_minutes INTEGER NOT NULL DEFAULT 2, body_md TEXT NOT NULL DEFAULT '', blocks_json TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(slug, entry_id));
@@ -322,6 +323,8 @@ async def _init_sqlite() -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_kf_outbox_state ON kf_outbox(state, created_at)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_usage_logs_user_time ON usage_logs(user_id, created_at)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_shares_knowledge ON knowledge_shares(knowledge_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_subscriptions_source ON knowledge_subscriptions(source_knowledge_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_subscriptions_mirror ON knowledge_subscriptions(mirror_knowledge_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_documents_origin ON documents(origin_document_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_bases_mirror ON knowledge_bases(mirror_of)")
     await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pay_orders_wx_order_id ON pay_orders(wx_order_id) WHERE wx_order_id != ''")
@@ -583,6 +586,20 @@ _MYSQL_SCHEMA = (
       created_at VARCHAR(64) NOT NULL,
       PRIMARY KEY (skill_id, user_id),
       CONSTRAINT fk_skill_favorites_skill FOREIGN KEY (skill_id) REFERENCES skills(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS knowledge_subscriptions (
+      user_id VARCHAR(32) NOT NULL,
+      source_knowledge_id VARCHAR(32) NOT NULL,
+      mirror_knowledge_id VARCHAR(32) NOT NULL,
+      created_at VARCHAR(64) NOT NULL,
+      PRIMARY KEY (user_id, source_knowledge_id),
+      CONSTRAINT fk_knowledge_subscriptions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      CONSTRAINT fk_knowledge_subscriptions_source FOREIGN KEY (source_knowledge_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+      CONSTRAINT fk_knowledge_subscriptions_mirror FOREIGN KEY (mirror_knowledge_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+      INDEX idx_knowledge_subscriptions_source (source_knowledge_id),
+      INDEX idx_knowledge_subscriptions_mirror (mirror_knowledge_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """

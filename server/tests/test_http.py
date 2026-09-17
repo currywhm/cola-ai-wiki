@@ -265,6 +265,51 @@ class HTTPTests(unittest.TestCase):
         finally:
             self.client.delete('/api/me', headers=other)
 
+    def test_market_subscription_lifecycle(self):
+        owner_id, owner_headers = self.fixture_user()
+        source_id = uuid.uuid4().hex
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute(
+                "INSERT INTO knowledge_bases(id,user_id,name,description,icon,document_count,visibility,category,subscribers,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (source_id, owner_id, '公开案例库', '用于订阅链路测试', 'book', 0, 'public', '科技', 0, 'active', '2026-09-17', '2026-09-17'),
+            )
+            db.commit()
+        try:
+            market = self.client.get('/api/market', headers=self.headers).json()
+            item = next(row for row in market if row['id'] == source_id)
+            self.assertFalse(item['subscribed'])
+            self.assertTrue(next(row for row in self.client.get('/api/market', headers=owner_headers).json() if row['id'] == source_id)['owned'])
+
+            created = self.client.post('/api/subscriptions', headers=self.headers, json={'knowledge_id': source_id})
+            self.assertEqual(created.status_code, 200, created.text)
+            mirror_id = created.json()['knowledge_id']
+            self.assertEqual(created.json()['subscribers'], 1)
+
+            subscribed = [row for row in self.client.get('/api/knowledge', headers=self.headers).json() if row['subscribed']]
+            self.assertEqual([row['id'] for row in subscribed], [mirror_id])
+            self.assertFalse(subscribed[0]['shared'])
+            self.assertEqual(subscribed[0]['subscription_source'], source_id)
+            self.assertEqual([row['id'] for row in self.client.get('/api/subscriptions', headers=self.headers).json()], [mirror_id])
+
+            duplicate = self.client.post('/api/subscriptions', headers=self.headers, json={'knowledge_id': source_id})
+            self.assertTrue(duplicate.json()['already'])
+            self.assertEqual(duplicate.json()['knowledge_id'], mirror_id)
+            self.assertEqual(duplicate.json()['subscribers'], 1)
+            after_subscribe = next(row for row in self.client.get('/api/market', headers=self.headers).json() if row['id'] == source_id)
+            self.assertTrue(after_subscribe['subscribed'])
+            self.assertEqual(after_subscribe['subscribers'], 1)
+
+            removed = self.client.delete(f'/api/subscriptions/{source_id}', headers=self.headers)
+            self.assertEqual(removed.status_code, 200, removed.text)
+            self.assertTrue(removed.json()['removed'])
+            self.assertEqual(removed.json()['subscribers'], 0)
+            self.assertEqual(self.client.get('/api/subscriptions', headers=self.headers).json(), [])
+            self.assertFalse(any(row['id'] == mirror_id for row in self.client.get('/api/knowledge', headers=self.headers).json()))
+            after_cancel = next(row for row in self.client.get('/api/market', headers=self.headers).json() if row['id'] == source_id)
+            self.assertFalse(after_cancel['subscribed'])
+        finally:
+            self.client.delete('/api/me', headers=owner_headers)
+
     def test_account_deletion_invalidates_token(self):
         kb = self.kb(); doc = self.upload(kb)
         self.client.delete('/api/me', headers=self.headers).raise_for_status()

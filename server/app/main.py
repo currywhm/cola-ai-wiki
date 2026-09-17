@@ -34,6 +34,8 @@ from .db import (
     take_request_connections,
 )
 from .schemas import ArticleImportRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, PlanReviewRequest, PreferenceUpdate, ProfileUpdate, ShareCreate, ShareToKnowledge, SkillBuildRequest, SkillEnhanceRequest, SkillFlagUpdate, SkillForm, SkillPublishUpdate
+from .schemas import KnowledgeSubscriptionCreate
+
 from .security import create_token, current_user, current_user_optional, rate_limit
 from .services.documents import ALLOWED_SUFFIXES, extract_text, split_chunks
 from .services import content as content_service
@@ -375,7 +377,7 @@ PAID_MARKERS = {'PAID', 'SUCCESS', 'PAY_SUCCESS', '2'}
 KNOWLEDGE_SHARE_TTL_DAYS = 7
 
 
-def knowledge_view(row: Any, *, live_document_count: int | None = None, source_name: str = '', source_missing: bool = False) -> dict:
+def knowledge_view(row: Any, *, live_document_count: int | None = None, source_name: str = '', source_missing: bool = False, subscribed: bool = False, subscription_source: str = '') -> dict:
     """知识库统一视图：自己的库与好友共享过来的库用同一组字段表达。
 
     共享过来的库（mirror_of 非空）带 read_only=true 与来源名称，前端据此隐藏
@@ -399,10 +401,12 @@ def knowledge_view(row: Any, *, live_document_count: int | None = None, source_n
         'created_at': data.get('created_at') or '',
         'updated_at': data.get('updated_at') or '',
         'last_used_at': data.get('last_used_at') or '',
-        'shared': bool(mirror_of),
+        'shared': bool(mirror_of) and not subscribed,
         'read_only': bool(mirror_of),
         'source_name': source_name,
         'source_missing': bool(source_missing),
+        'subscribed': bool(subscribed),
+        'subscription_source': subscription_source,
         'inbox': name == SHARED_KNOWLEDGE_NAME,
         # 「微信用户的知识库」是每个人的私人默认空间，不允许分享；共享过来的库也不能再转发。
         # 「共享知识库」是收件箱：里面放着别人分享给你的内容，分享出去等于把收件箱给别人看。
@@ -530,6 +534,28 @@ async def sync_mirror(db: Any, row: Any) -> dict:
          str(source['updated_at'] or '') if changed else str(row['updated_at'] or ''), mirror_id),
     )
     return {'source_name': str(source['name'] or ''), 'source_missing': False, 'count': count}
+
+
+async def refresh_subscriber_count(db: Any, source_knowledge_id: str) -> int:
+    row = await fetchone(db, 'SELECT COUNT(*) AS count FROM knowledge_subscriptions WHERE source_knowledge_id=?', (source_knowledge_id,))
+    count = int((row['count'] if row else 0) or 0)
+    await db.execute('UPDATE knowledge_bases SET subscribers=? WHERE id=?', (count, source_knowledge_id))
+    return count
+
+
+async def purge_subscription_mirror(db: Any, mirror_knowledge_id: str, user_id: str) -> None:
+    """删除广场订阅产生的只读镜像；来源文件只在没有任何资料引用时才清理。"""
+    files = await fetchall(db, 'SELECT storage_path FROM documents WHERE knowledge_id=? AND user_id=?', (mirror_knowledge_id, user_id))
+    await db.execute('DELETE FROM chunks_fts WHERE knowledge_id=?', (mirror_knowledge_id,))
+    await db.execute('DELETE FROM conversations WHERE knowledge_id=? AND user_id=?', (mirror_knowledge_id, user_id))
+    await db.execute('DELETE FROM knowledge_bases WHERE id=? AND user_id=?', (mirror_knowledge_id, user_id))
+    for row in files:
+        await unlink_if_unreferenced(db, str(row['storage_path'] or ''))
+
+
+async def subscription_source_id(db: Any, user_id: str, mirror_knowledge_id: str) -> str:
+    row = await fetchone(db, 'SELECT source_knowledge_id FROM knowledge_subscriptions WHERE user_id=? AND mirror_knowledge_id=?', (user_id, mirror_knowledge_id))
+    return str(row['source_knowledge_id'] or '') if row else ''
 
 
 async def writable_knowledge(db: Any, knowledge_id: str, user_id: str) -> Any:
@@ -886,11 +912,19 @@ async def update_preferences(payload: PreferenceUpdate, user_id: str = Depends(c
 async def delete_me(user_id: str = Depends(current_user)) -> dict:
     db = await connect()
     files = await fetchall(db, "SELECT storage_path FROM documents WHERE user_id=?", (user_id,))
+    owned_subscriptions = await fetchall(db, 'SELECT s.user_id,s.mirror_knowledge_id FROM knowledge_subscriptions s JOIN knowledge_bases k ON k.id=s.source_knowledge_id WHERE k.user_id=?', (user_id,))
+    for item in owned_subscriptions:
+        await purge_subscription_mirror(db, str(item['mirror_knowledge_id']), str(item['user_id']))
+    subscribed_sources = await fetchall(db, 'SELECT DISTINCT source_knowledge_id FROM knowledge_subscriptions WHERE user_id=?', (user_id,))
+    await db.execute('DELETE FROM knowledge_subscriptions WHERE user_id=?', (user_id,))
+    for item in subscribed_sources:
+        await refresh_subscriber_count(db, str(item['source_knowledge_id']))
     await db.execute("DELETE FROM chunks_fts WHERE chunk_id IN (SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.user_id=?)", (user_id,))
     await db.execute("DELETE FROM users WHERE id=?", (user_id,))
-    await db.commit(); await db.close()
+    await db.commit()
     for row in files:
-        await storage.delete(str(row['storage_path'] or ''))
+        await unlink_if_unreferenced(db, str(row['storage_path'] or ''))
+    await db.close()
     for _suffix, ref in _avatar_refs(user_id):
         await storage.delete(ref)
     return {"ok": True}
@@ -1503,23 +1537,26 @@ async def list_knowledge(user_id: str = Depends(current_user)) -> list[dict]:
     await ensure_default_knowledge(db, user_id)
     await db.commit()
     rows = await fetchall(db, "SELECT * FROM knowledge_bases WHERE user_id=? AND status='active' ORDER BY CASE WHEN name=? THEN 0 ELSE 1 END, updated_at DESC", (user_id, DEFAULT_KNOWLEDGE_NAME))
+    subscription_sources = {str(item['mirror_knowledge_id']): str(item['source_knowledge_id']) for item in await fetchall(db, 'SELECT source_knowledge_id,mirror_knowledge_id FROM knowledge_subscriptions WHERE user_id=?', (user_id,))}
     items = []
     for row in rows:
         source_name, missing, count = '', False, int(row['document_count'] or 0)
+        subscription_source = subscription_sources.get(str(row['id']), '')
         if str(row['mirror_of'] or ''):
-            # 好友共享过来的库：读列表时就与来源对齐，来源更新后这里自动是最新的
+            # 共享 / 订阅镜像：读列表时就与来源对齐，来源更新后这里自动是最新的
             info = await sync_mirror(db, row)
             source_name, missing, count = info['source_name'], info['source_missing'], info['count']
-        items.append(knowledge_view(row, live_document_count=count, source_name=source_name, source_missing=missing))
+        items.append(knowledge_view(row, live_document_count=count, source_name=source_name, source_missing=missing, subscribed=bool(subscription_source), subscription_source=subscription_source))
     await db.commit()
     await db.close()
     return items
 
 
 @app.get("/api/market")
-async def market_knowledge(query: str = Query(default="", max_length=80), category: str = Query(default="", max_length=40)) -> list[dict]:
-    """Return only explicitly published knowledge bases for discovery."""
+async def market_knowledge(query: str = Query(default="", max_length=80), category: str = Query(default="", max_length=40), user_id: str | None = Depends(current_user_optional)) -> list[dict]:
+    """Return explicitly published knowledge bases plus the viewer's subscription state."""
     db = await connect()
+    subscribed = {str(item['source_knowledge_id']) for item in await fetchall(db, 'SELECT source_knowledge_id FROM knowledge_subscriptions WHERE user_id=?', (user_id,))} if user_id else set()
     clauses = ["k.visibility='public'", "k.status='active'"]
     params: list[str] = []
     if query.strip():
@@ -1529,9 +1566,73 @@ async def market_knowledge(query: str = Query(default="", max_length=80), catego
     if category.strip():
         clauses.append("k.category=?")
         params.append(category.strip())
-    rows = await fetchall(db, f"SELECT k.id,k.name,k.description,k.icon,k.category,k.subscribers,k.document_count,k.updated_at FROM knowledge_bases k WHERE {' AND '.join(clauses)} ORDER BY k.subscribers DESC,k.updated_at DESC LIMIT 50", tuple(params))
+    rows = await fetchall(db, f"SELECT k.id,k.user_id,k.name,k.description,k.icon,k.category,k.subscribers,k.document_count,k.updated_at FROM knowledge_bases k WHERE {' AND '.join(clauses)} ORDER BY k.subscribers DESC,k.updated_at DESC LIMIT 50", tuple(params))
     await db.close()
-    return [{**(row_dict(row) or {}), 'documents': int(row['document_count'] or 0), 'subscribers': int(row['subscribers'] or 0)} for row in rows]
+    return [{**{key: value for key, value in (row_dict(row) or {}).items() if key != 'user_id'}, 'documents': int(row['document_count'] or 0), 'subscribers': int(row['subscribers'] or 0), 'subscribed': str(row['id']) in subscribed, 'owned': bool(user_id and str(row['user_id']) == user_id)} for row in rows]
+
+
+@app.get('/api/subscriptions')
+async def list_subscriptions(user_id: str = Depends(current_user)) -> list[dict]:
+    db = await connect()
+    rows = await fetchall(db, 'SELECT k.* FROM knowledge_bases k JOIN knowledge_subscriptions s ON s.mirror_knowledge_id=k.id WHERE s.user_id=? AND k.status=? ORDER BY s.created_at DESC', (user_id, 'active'))
+    items = []
+    for row in rows:
+        info = await sync_mirror(db, row)
+        items.append(knowledge_view(row, live_document_count=info['count'], source_name=info['source_name'], source_missing=info['source_missing'], subscribed=True, subscription_source=str(row['mirror_of'] or '')))
+    await db.commit()
+    await db.close()
+    return items
+
+
+@app.post('/api/subscriptions')
+async def subscribe_knowledge(payload: KnowledgeSubscriptionCreate, user_id: str = Depends(current_user)) -> dict:
+    rate_limit(f'kb-subscribe:{user_id}', 30, 60, '操作过于频繁，请稍后再试')
+    source_id = payload.knowledge_id.strip()
+    db = await connect()
+    source = await fetchone(db, "SELECT * FROM knowledge_bases WHERE id=? AND visibility='public' AND status='active'", (source_id,))
+    if not source:
+        await db.close(); raise HTTPException(404, '公开知识库不存在或已下架')
+    if str(source['user_id'] or '') == user_id:
+        await db.close(); raise HTTPException(409, '这是你自己的知识库，无需订阅')
+    existing = await fetchone(db, 'SELECT mirror_knowledge_id FROM knowledge_subscriptions WHERE user_id=? AND source_knowledge_id=?', (user_id, source_id))
+    if existing:
+        mirror = await fetchone(db, "SELECT * FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (str(existing['mirror_knowledge_id']), user_id))
+        if mirror:
+            info = await sync_mirror(db, mirror)
+            subscribers = await refresh_subscriber_count(db, source_id)
+            await db.commit(); await db.close()
+            return {'knowledge_id': str(mirror['id']), 'name': str(mirror['name'] or ''), 'documents': int(info['count'] or 0), 'subscribers': subscribers, 'already': True, 'message': f"已经在订阅中，共 {int(info['count'] or 0)} 份资料"}
+        await db.execute('DELETE FROM knowledge_subscriptions WHERE user_id=? AND source_knowledge_id=?', (user_id, source_id))
+    timestamp = now()
+    mirror_id = uuid.uuid4().hex
+    await db.execute(
+        'INSERT INTO knowledge_bases(id,user_id,name,description,icon,document_count,visibility,status,created_at,updated_at,mirror_of,mirror_owner,mirror_state,mirror_token,mirror_at)'
+        ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        (mirror_id, user_id, str(source['name']), str(source['description'] or ''), str(source['icon'] or DEFAULT_KNOWLEDGE_ICON), 0, 'private', 'active',
+         timestamp, timestamp, source_id, str(source['user_id']), 'ok', '', timestamp),
+    )
+    await db.execute('INSERT INTO knowledge_subscriptions(user_id,source_knowledge_id,mirror_knowledge_id,created_at) VALUES(?,?,?,?)', (user_id, source_id, mirror_id, timestamp))
+    mirror = await fetchone(db, 'SELECT * FROM knowledge_bases WHERE id=?', (mirror_id,))
+    info = await sync_mirror(db, mirror)
+    subscribers = await refresh_subscriber_count(db, source_id)
+    await db.commit(); await db.close()
+    return {'knowledge_id': mirror_id, 'name': str(source['name'] or ''), 'documents': int(info['count'] or 0), 'subscribers': subscribers, 'already': False, 'message': f"已订阅「{source['name']}」，共 {int(info['count'] or 0)} 份资料"}
+
+
+@app.delete('/api/subscriptions/{source_knowledge_id}')
+async def unsubscribe_knowledge(source_knowledge_id: str, user_id: str = Depends(current_user)) -> dict:
+    rate_limit(f'kb-unsubscribe:{user_id}', 30, 60, '操作过于频繁，请稍后再试')
+    db = await connect()
+    row = await fetchone(db, 'SELECT mirror_knowledge_id FROM knowledge_subscriptions WHERE user_id=? AND source_knowledge_id=?', (user_id, source_knowledge_id))
+    if not row:
+        subscribers = await refresh_subscriber_count(db, source_knowledge_id)
+        await db.commit(); await db.close()
+        return {'ok': True, 'removed': False, 'subscribers': subscribers}
+    await db.execute('DELETE FROM knowledge_subscriptions WHERE user_id=? AND source_knowledge_id=?', (user_id, source_knowledge_id))
+    await purge_subscription_mirror(db, str(row['mirror_knowledge_id']), user_id)
+    subscribers = await refresh_subscriber_count(db, source_knowledge_id)
+    await db.commit(); await db.close()
+    return {'ok': True, 'removed': True, 'subscribers': subscribers}
 
 
 @app.post("/api/knowledge")
@@ -1559,15 +1660,25 @@ async def create_knowledge(payload: KnowledgeCreate, user_id: str = Depends(curr
 
 @app.delete("/api/knowledge/{knowledge_id}")
 async def delete_knowledge(knowledge_id: str, user_id: str = Depends(current_user)) -> dict:
-    db = await connect(); kb = await fetchone(db, "SELECT id FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id)); user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
+    db = await connect(); kb = await fetchone(db, "SELECT * FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id)); user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
     if not kb:
         await db.close(); raise HTTPException(404, "知识库不存在")
+    subscription_source = await subscription_source_id(db, user_id, knowledge_id)
+    if subscription_source:
+        await db.execute('DELETE FROM knowledge_subscriptions WHERE user_id=? AND source_knowledge_id=?', (user_id, subscription_source))
+    for subscription in await fetchall(db, 'SELECT user_id,mirror_knowledge_id FROM knowledge_subscriptions WHERE source_knowledge_id=?', (knowledge_id,)):
+        mirror_id = str(subscription['mirror_knowledge_id'])
+        if mirror_id != knowledge_id:
+            await purge_subscription_mirror(db, mirror_id, str(subscription['user_id']))
     files = await fetchall(db, "SELECT storage_path FROM documents WHERE knowledge_id=? AND user_id=?", (knowledge_id, user_id))
     await db.execute("DELETE FROM chunks_fts WHERE knowledge_id=?", (knowledge_id,))
     await db.execute('DELETE FROM conversations WHERE knowledge_id=? AND user_id=?', (knowledge_id, user_id))
     # 邀请链接跟着库一起作废：源库没了，留着 rows 只会让清理和排查变脏
     await db.execute("DELETE FROM knowledge_shares WHERE knowledge_id=?", (knowledge_id,))
-    await db.execute("DELETE FROM knowledge_bases WHERE id=? AND user_id=?", (knowledge_id, user_id)); await db.commit(); await db.close()
+    await db.execute("DELETE FROM knowledge_bases WHERE id=? AND user_id=?", (knowledge_id, user_id))
+    if subscription_source:
+        await refresh_subscriber_count(db, subscription_source)
+    await db.commit(); await db.close()
     # 这个库可能正被好友共享着：共享过来的镜像要同步标记失效，不能继续当没事一样可读；
     # 磁盘上的原文也可能还被共享库引用，所以统一走「没人引用才删」的判断。
     db2 = await connect()
@@ -1585,10 +1696,11 @@ async def knowledge_detail(knowledge_id: str, user_id: str = Depends(current_use
     if not kb: await db.close(); raise HTTPException(404, "知识库不存在")
     # 打开知识库就算一次使用：最近知识库列表按这个时间从左到右排
     await touch_knowledge_used(db, knowledge_id); await db.commit()
+    subscription_source = await subscription_source_id(db, user_id, knowledge_id)
     # 好友共享过来的库：打开先与来源对齐，回来的一定是最新一版
     info = await sync_mirror(db, kb) if str(kb['mirror_of'] or '') else {'source_name': '', 'source_missing': False, 'count': 0}
     docs = await fetchall(db, "SELECT id,filename,file_type,file_size,page_count,status,progress,error_message,organized_title,summary,tags_json,key_points_json,organize_status,organize_method,organized_at,folder_id,created_at,updated_at FROM documents WHERE knowledge_id=? AND status!='deleted' ORDER BY created_at DESC", (knowledge_id,)); await db.close()
-    view = knowledge_view(kb, live_document_count=len(docs), source_name=info['source_name'], source_missing=info['source_missing'])
+    view = knowledge_view(kb, live_document_count=len(docs), source_name=info['source_name'], source_missing=info['source_missing'], subscribed=bool(subscription_source), subscription_source=subscription_source)
     return {"knowledge": view, "documents": [document_view(x) for x in docs], "read_only": view['read_only']}
 
 

@@ -24,6 +24,10 @@ class KnowledgeCreate(BaseModel):
     icon: str = "library_books"
 
 
+class KnowledgeSubscriptionCreate(BaseModel):
+    knowledge_id: str = Field(min_length=4, max_length=64)
+
+
 class ChatRequest(BaseModel):
     knowledge_id: str | None = None
     conversation_id: str | None = None

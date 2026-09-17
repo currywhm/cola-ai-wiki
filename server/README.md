@@ -65,6 +65,8 @@ curl http://127.0.0.1:8765/ready
 
 仓库根目录的 `Dockerfile` 专门用于云托管：它只复制 `server/` 后端目录，不包含 `miniprogram/`。云托管选择 GitHub 源码部署时，Dockerfile 路径填写 `/Dockerfile`，构建目录使用仓库根目录。
 
+可直接照着填的完整变量样例见 [`server/.env.cloud.example`](.env.cloud.example)。其中 `DATABASE_URL` 默认保持注释：使用云托管 MySQL 时让平台自动注入 `MYSQL_*`，手工指定完整连接串时再取消注释。
+
 1. 在云托管控制台创建并开启 MySQL，数据库字符集使用 `utf8mb4`。平台会注入 `MYSQL_ADDRESS`、`MYSQL_USERNAME`、`MYSQL_PASSWORD`、`MYSQL_DATABASE`；也可以手工填完整 `DATABASE_URL`，它会覆盖这四项。
 2. 创建对象存储桶，记下桶名和地域；在云托管服务中开启「开放接口服务」，后端才能无密钥调用 `/_/cos/getauth`。开启后必须重新构建并发布新版本。
 3. 在服务环境变量中配置（MySQL 的四个 `MYSQL_*` 通常已由平台自动注入）：

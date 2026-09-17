@@ -22,12 +22,11 @@ import hashlib
 import json
 import mimetypes
 import re
-import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..config import settings
+from . import storage
 from ..db import connect, fetchone
 
 # 单文件上限：够放报告 / 表格 / 演示稿，又不至于让一次问答把租户空间撑爆
@@ -94,12 +93,6 @@ def _digest(path: Path) -> str:
     return sha.hexdigest()
 
 
-def _artifacts_root() -> Path:
-    root = settings.upload_path / 'artifacts'
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
 def view(row) -> dict:
     """给前端的产物视图：只暴露展示与下载需要的东西，不暴露服务端路径。"""
     name = str(row['filename'])
@@ -131,13 +124,9 @@ def decode(value) -> list[dict]:
     return parsed if isinstance(parsed, list) else []
 
 
-def _read_text(path: Path, limit: int = MAX_PREVIEW_TEXT) -> tuple[str, bool]:
-    """读文本类产物的正文；读不动（不是文本 / 编码异常）时返回空串。"""
-    try:
-        with path.open('r', encoding='utf-8', errors='ignore') as handle:
-            text = handle.read(limit + 1)
-    except OSError:
-        return '', False
+def _read_text(data: bytes, limit: int = MAX_PREVIEW_TEXT) -> tuple[str, bool]:
+    """读文本类产物的正文；解码异常时返回空串。"""
+    text = data.decode('utf-8', errors='ignore')
     return (text[:limit], True) if len(text) <= limit else (text[:limit], False)
 
 
@@ -171,14 +160,13 @@ async def register(
     except OSError:
         return None
     tenant = re.sub(r'[^0-9a-zA-Z_-]', '', str(user_id or ''))[:48] or 'anonymous'
-    folder = _artifacts_root() / tenant
-    folder.mkdir(parents=True, exist_ok=True)
-    destination = folder / f'{digest[:12]}_{name}'
-    if not destination.exists():
-        try:
-            shutil.copyfile(source, destination)
-        except OSError:
-            return None
+    key = f'artifacts/{tenant}/{digest[:12]}_{name}'
+    storage_ref = storage.reference(key)
+    try:
+        if not await storage.exists(storage_ref):
+            storage_ref = await storage.save_file(source, key)
+    except storage.StorageError:
+        return None
     mime = mimetypes.guess_type(name)[0] or 'application/octet-stream'
     artifact_id = uuid.uuid4().hex
     timestamp = now()
@@ -186,7 +174,7 @@ async def register(
     try:
         document_id, note = await _save_to_knowledge(
             db, user_id=user_id, knowledge_id=knowledge_id, folder_id=folder_id,
-            path=destination, name=name, suffix=suffix, size=size,
+            path=source, storage_ref=storage_ref, name=name, suffix=suffix, size=size,
             enabled=bool(save_to_knowledge), storage_room=storage_room,
         )
         await db.execute(
@@ -194,7 +182,7 @@ async def register(
             "digest,storage_path,source_path,document_id,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 artifact_id, user_id, conversation_id, knowledge_id, folder_id, name, suffix, size, mime,
-                digest, str(destination), str(source), document_id, note, timestamp,
+                digest, storage_ref, str(source), document_id, note, timestamp,
             ),
         )
         await db.commit()
@@ -211,6 +199,7 @@ async def _save_to_knowledge(
     knowledge_id: str,
     folder_id: str,
     path: Path,
+    storage_ref: str,
     name: str,
     suffix: str,
     size: int,
@@ -229,7 +218,7 @@ async def _save_to_knowledge(
     await db.execute(
         "INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,"
         "organize_status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (document_id, knowledge_id, user_id, name, suffix, size, str(path), 'processing', 15, folder_id, 'pending', timestamp, timestamp),
+        (document_id, knowledge_id, user_id, name, suffix, size, storage_ref, 'processing', 15, folder_id, 'pending', timestamp, timestamp),
     )
     text = ''
     try:
@@ -237,7 +226,7 @@ async def _save_to_knowledge(
             text, _pages = extract_text(path, suffix)
         elif artifact_kind(suffix) == 'text':
             # 生成文件常见 .md/.json/.py 之类的结构化文本：上传白名单管不到，但正文要能被检索
-            text, _ok = _read_text(path)
+            text, _ok = _read_text(await storage.read_bytes(storage_ref))
     except Exception as exc:  # 解析失败只影响检索，不影响文件本身的预览与下载
         print(f'[artifact] 解析失败 {name}: {exc}', flush=True)
         text = ''
@@ -276,10 +265,10 @@ async def owned(db, artifact_id: str, user_id: str):
     )
 
 
-def stored_path(row) -> Path:
-    return Path(str(row['storage_path']))
+def stored_ref(row) -> str:
+    return str(row['storage_path'] or '')
 
 
-def preview_text(path: Path) -> tuple[str, bool]:
+def preview_text(data: bytes) -> tuple[str, bool]:
     """文本类产物的正文（截断标记一并返回），供站内预览页使用。"""
-    return _read_text(path)
+    return _read_text(data)

@@ -6,8 +6,9 @@ class LoginRequest(BaseModel):
 
 
 class ProfileUpdate(BaseModel):
-    nickname: str = Field(min_length=1, max_length=80)
-    avatar: str = Field(default="", max_length=2048)
+    """两个字段都可选：只改昵称时不会顺手把头像清掉，反之亦然。"""
+    nickname: str | None = Field(default=None, min_length=1, max_length=80)
+    avatar: str | None = Field(default=None, max_length=2048)
 
 
 class PreferenceUpdate(BaseModel):
@@ -29,7 +30,8 @@ class ChatRequest(BaseModel):
     # 文件夹隔离问答：传入时检索/整理知识仅限该文件夹内文档
     folder_id: str | None = None
     content: str = Field(min_length=1, max_length=8000)
-    model: str = "deepseek-chat"
+    # 留空时由后端从 LLM_MODEL / DEEPSEEK_MODEL 等环境配置中取值。
+    model: str = ""
     mode: str = Field(default="knowledge", pattern="^(knowledge|web)$")
     # quick=直接作答；deep=深度思考（输出思考过程，模型固定为 HARNESS_MODEL=deepseek-flash）
     thinking: str = Field(default="quick", pattern="^(quick|deep)$")
@@ -88,13 +90,38 @@ class ShareSource(BaseModel):
     url: str = Field(default='', max_length=2048)
 
 
-class ShareCreate(BaseModel):
-    """用户主动转发一条回答给微信好友时落库的分享卡片。"""
+class ShareFile(BaseModel):
+    """分享卡片里带出去的文件：只存产物 id 与展示名。
 
+    公开页凭分享 id 取文件，产物 id 与用户身份不出现在分享内容里。
+    """
+
+    artifact_id: str = Field(min_length=4, max_length=64)
+    name: str = Field(default='', max_length=200)
+
+
+class ShareCreate(BaseModel):
+    """用户把选中的回答与文件转发给微信好友时落库的分享卡片。
+
+    只保存正文与出处文件名，不保存分享者的昵称 / 头像 / openid。
+    """
+
+    title: str = Field(default='', max_length=120)
     question: str = Field(default='', max_length=500)
     answer: str = Field(min_length=1, max_length=12000)
     knowledge_name: str = Field(default='', max_length=80)
     sources: list[ShareSource] = Field(default_factory=list, max_length=12)
+    files: list[ShareFile] = Field(default_factory=list, max_length=8)
+
+
+class ShareToKnowledge(BaseModel):
+    """把对话里选中的内容与文件存进指定知识库。"""
+
+    knowledge_id: str = Field(min_length=4, max_length=64)
+    folder_id: str = Field(default='', max_length=64)
+    title: str = Field(default='', max_length=120)
+    content: str = Field(default='', max_length=60000)
+    artifact_ids: list[str] = Field(default_factory=list, max_length=12)
 
 
 class SkillForm(BaseModel):

@@ -33,6 +33,20 @@ async def current_user(authorization: str | None = Header(default=None)) -> str:
     return user_id
 
 
+async def current_user_optional(authorization: str | None = Header(default=None)) -> str:
+    """与 current_user 同源，但允许匿名：没带登录态时返回空串。
+
+    公开的分享落地页需要“这条链接是不是我领的”这种判断，同时不能让未登录的
+    微信访客因为 401 看不到预览，所以这里把登录态当成可选信息。
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        return ""
+    try:
+        return await current_user(authorization)
+    except HTTPException:
+        return ""
+
+
 # ---- 进程内滑动窗口限流 ----
 
 _rate_buckets: dict[str, deque] = {}

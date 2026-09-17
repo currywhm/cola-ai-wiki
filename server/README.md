@@ -1,6 +1,6 @@
 # 知库独立后端
 
-本目录可以单独复制到 Mac 或 Linux 服务器运行，不依赖微信小程序源码、Node.js 或微信开发者工具。API 为 FastAPI，数据库为 SQLite，上传文件保存在本机持久目录。
+本目录可以单独复制到 Mac 或 Linux 服务器运行，不依赖微信小程序源码、Node.js 或微信开发者工具。API 为 FastAPI，本地默认使用 SQLite + 本地上传目录，微信云托管可切换为 MySQL + COS。
 
 ## Mac 启动
 
@@ -23,14 +23,24 @@ curl http://127.0.0.1:8765/ready
 ## 配置和数据
 
 - `.env` 以本后端目录为基准加载，进程环境变量优先。
-- `DATABASE_URL` 默认 `sqlite+aiosqlite:///./data/llmwiki.db`；当前实现仅支持 SQLite，其他数据库协议会明确拒绝。
+- 本地 `DATABASE_URL` 默认 `sqlite+aiosqlite:///./data/llmwiki.db`。微信云托管 MySQL 模板注入 `MYSQL_ADDRESS` / `MYSQL_USERNAME` / `MYSQL_PASSWORD` / `MYSQL_DATABASE`，后端会自动拼连接串并建表；显式设置 `DATABASE_URL` 时以后者为准。
+- `STORAGE_BACKEND=local|cos`。`local` 使用 `UPLOAD_DIR`；`cos` 时文件写入 `Bucket` / `Region`（兼容 `COS_BUCKET` / `COS_REGION`）和可选 `COS_PREFIX`，数据库里的 `storage_path` 保存 `cos://...` 引用。云托管模式不要配置长期 `COS_SECRET_ID` / `COS_SECRET_KEY`，后端会调用开放接口 `/_/cos/getauth` 获取临时密钥。
 - `UPLOAD_DIR` 默认 `./uploads`。数据库、上传目录、支付证书的相对路径均以本后端目录为基准。
 - 微信登录需要 `WECHAT_APPID`、`WECHAT_SECRET`，没有测试账号回退接口。
+- `WECHAT_APPID` 就是小程序后台“开发者 ID / AppID”，格式为 `wx` 开头 18 位；`WECHAT_SECRET` 为 32 位 AppSecret。`APP_ENV=production` 启动时会调用微信 `stable_token` 实时校验，格式错误或凭证无效都会导致服务启动失败。
+- 头像：`POST /api/me/avatar`（≤ 2MB，jpg/png/webp）保存用户选定的微信头像。微信官方「头像填写能力」`<button open-type="chooseAvatar">` 回调给的是本机临时路径（`http://tmp/...` / `wxfile://...`），换设备或重装就失效，所以必须落到服务端。每个用户只保留一份（换头像时删旧文件，不留垃圾），`GET /api/avatars/{user_id}` 公开读取——小程序 `<image>` 带不了 Authorization 头，安全性靠文件名只保留 `[0-9A-Za-z_-]`（不可能路径穿越）+ user_id 是随机 32 位十六进制，与 `/api/content/assets` 同一取舍。`PATCH /api/me` 的 `nickname` / `avatar` 均为可选字段，未传即保持原值（只改昵称不会顺手把头像清掉）。
 - 当前支付模式为个人主体微信虚拟支付：需要 OfferID、现网 AppKey、道具 ID、道具价格和公网 HTTPS 发货推送地址。AppKey 只放在后端 `.env`，小程序端只接收服务端签名后的 `payData`。配置项见 `.env.example`。
+- 登录与隐私（前端）：无令牌时 `ensureAuth()` 只回 `pages/login/index`，不会静默换取登录态。点击“微信登录”先弹底部协议提示，用户点“同意”后才调用 `wx.login`；服务端按 OpenID 自动创建或关联账号，默认昵称“微信用户”、默认头像使用产品图。用户之后可在“我的 → 账号设置”通过 `<button open-type="chooseAvatar">` 和 `<input type="nickname">` 主动选择并保存，登录本身不调用 `wx.getUserInfo` / `wx.getUserProfile` / `<open-data>`。相册、拍照、微信文件等系统隐私能力交给微信官方弹窗处理，`services/privacy.ts` 不注册 `wx.onNeedPrivacyAuthorization`。
 - 上传文档后会自动生成标题、摘要、标签和关键要点，并持久化到文档记录；已配置模型时使用两步整理提示，未配置模型时使用可追溯的本地基础整理。问答会优先参考整理结果，再引用原文片段。
 - 模型配置见 `DEEPSEEK_*`、`OPENAI_*`、`MINIMAX_*`。未启用 Harness 时，三者使用 OpenAI Chat Completions 兼容协议；未配置模型时仍可完成本地基础整理，但问答只返回配置提示。
+- 大模型统一配置为 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`，优先级高于 `DEEPSEEK_*` / `OPENAI_*` / `MINIMAX_*`。任何兼容 OpenAI Chat Completions 的服务都可以只改环境变量接入；启用 Harness 时还需要设置 `HARNESS_ENABLED=true`、`HARNESS_PROVIDER` 和 `HARNESS_MODEL`。
 - Harness 运行时：后端安装匹配版本的 `deepseek-harness-sdk` 与 runtime 后，设置 `HARNESS_ENABLED=true`、`HARNESS_HOME`、`HARNESS_PROFILE=sdk`、`HARNESS_PROVIDER=deepseek-official`、`HARNESS_MODEL=deepseek-v4-flash`、`HARNESS_RUNTIME_MODE`。每次问答会创建只含 `knowledge-context.md` 的临时服务端工作区，Harness Agent/Skill 仅可读取该资料上下文；小程序端不接收 Harness 配置、插件或密钥。`HARNESS_STRICT=true` 时问答链路只走 Harness，runtime、profile、provider、model 或后端模型密钥缺失都会返回明确错误，不再静默回退到旧 OpenAI-compatible 链路。
 - “问全网”同样只在后端执行：设置 `WEB_SEARCH_PROVIDER=tavily` 或 `brave`、`WEB_SEARCH_API_KEY` 和对应的 `WEB_SEARCH_BASE_URL` 后，服务端先取得公开网页结果，再将带来源的检索上下文交给 Harness。小程序端只传 `mode=web`，不会引入 Harness、搜索 SDK 或任何密钥。未配置搜索凭据时接口会明确返回配置错误，不会把普通知识库回答冒充为全网结果。
+- 额度单位是**积分**而不是问答次数：一轮问答按真实 token 用量扣分。真实成本用 deepseek-flash 官方单价算（元/百万 tokens：输入命中缓存 0.04、未命中 2.00、输出 8.00，空闲时段官方半价、代码按请求时刻自动减半），用户价 = 成本 × `CREDIT_MARKUP`（默认 1.5），积分 = 用户价 ÷ `CREDIT_UNIT_YUAN`（默认 0.001 元）四舍五入且至少 1 分。
+- 加价倍率恒定 1.5 倍，但**用户可见的积分会随时段浮动**——同一段对话空闲时段约 3 分、高峰时段约 7 分。这是刻意保留的口径（成本完全转嫁、毛利率恒定），对外文案必须写明「积分随官方计价时段浮动」。
+- 月度积分额度：免费试用期 600、试用结束后 150、Plus 3000、Pro 15000（`MEMBERSHIP_LIMITS`），按自然月归零、不结转。`/api/me` 返回 `quota.credits_limit/credits_used/credits_left`，`/api/pay/plans` 返回 `monthly_credits`，SSE 的 `done` 事件带本轮 `credits` 与本月 `credits_used/credits_limit`。
+- 每轮结算写入 `usage_logs`（user_id / conversation_id / message_id / model / 四类 token / cost_yuan / credits / created_at），本月已用积分就是这张表的合计，任何一分都能回到具体轮次与 token；后端自用任务（如新建技能）不入用户积分。
+- 计费实现集中在 `app/services/credits.py`（纯函数，无 IO）。改价或改额度时，必须同步 `content/legal/`、`content/tips/` 里的口径说明并重跑 `python scripts/import_content.py`。
 - 运营内容（使用技巧）源文件在 `content/tips/`，运行时从数据库读，部署后执行 `python scripts/import_content.py` 导入，详见下文「运营内容」一节。
 - 技能不进对话展示：用户在小程序里选中的技能由后端解析并注入（内置技能包走 Harness `skill` 工具、我的技能走技能指令），选中状态只体现在输入框技能图标变蓝；接口不返回技能过程节点。
 - `APP_ENV=production` 启动时检查微信登录参数；所有环境均拒绝默认或过短的 JWT 密钥。
@@ -51,7 +61,74 @@ curl http://127.0.0.1:8765/ready
 
 不执行这一步也能用：服务启动时若发现库里没有内容、而 `content/tips` 目录存在，会自动导入一次。正文的 Markdown 在导入时就解析成结构化 blocks 存库，请求时不再解析；`manifest.json` 的 `version` 用于小程序端缓存失效。配图接口 `/api/content/assets/{文件名}` 不挂登录态（小程序 `<image>` 无法携带 token），只允许读取该目录内的单个文件名，返回二进制并带 ETag。
 
+## 微信云托管（MySQL + COS）
+
+仓库根目录的 `Dockerfile` 专门用于云托管：它只复制 `server/` 后端目录，不包含 `miniprogram/`。云托管选择 GitHub 源码部署时，Dockerfile 路径填写 `/Dockerfile`，构建目录使用仓库根目录。
+
+1. 在云托管控制台创建并开启 MySQL，数据库字符集使用 `utf8mb4`。平台会注入 `MYSQL_ADDRESS`、`MYSQL_USERNAME`、`MYSQL_PASSWORD`、`MYSQL_DATABASE`；也可以手工填完整 `DATABASE_URL`，它会覆盖这四项。
+2. 创建对象存储桶，记下桶名和地域；在云托管服务中开启「开放接口服务」，后端才能无密钥调用 `/_/cos/getauth`。开启后必须重新构建并发布新版本。
+3. 在服务环境变量中配置（MySQL 的四个 `MYSQL_*` 通常已由平台自动注入）：
+
+```env
+MYSQL_ADDRESS=内网IP:3306
+MYSQL_USERNAME=用户名
+MYSQL_PASSWORD=密码
+MYSQL_DATABASE=数据库名
+STORAGE_BACKEND=cos
+Bucket=对象存储桶名
+Region=ap-shanghai
+COS_PREFIX=
+WECHAT_OPENAPI_BASE=http://api.weixin.qq.com
+PORT=80
+APP_ENV=production
+JWT_SECRET=至少32位随机字符串
+WECHAT_APPID=小程序AppID
+WECHAT_SECRET=小程序AppSecret
+LLM_API_KEY=大模型APIKey
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-chat
+HARNESS_ENABLED=false
+```
+
+`Bucket` / `Region` 是云托管官方对象存储示例的变量名；已有的 `COS_BUCKET` / `COS_REGION` 仍然兼容。
+
+4. 确认服务已关闭旧版 SQLite/本地上传卷依赖。新版本首次启动会创建 MySQL 表；`content/tips` 与 `content/legal` 仍会在启动时按指纹导入数据库。已有本地 SQLite 数据不会自动迁移到 MySQL，需要单独做一致性迁移。
+
+MySQL 没有真正使用 FTS5：`chunks_fts` 作为普通 InnoDB 表保存检索元数据，现有检索逻辑按 `chunks.content` 做中文字符串命中评分；COS 文件只在后端解析或下载时临时落到容器磁盘，请求结束后删除。
+
+## 微信客服（联系客服）
+
+小程序侧的入口只用一个原生按钮（`pages/legal`、`pages/mine` 各一个）：
+
+```html
+<button open-type="contact" session-from="legal-data" bindcontact="onContact">联系客服</button>
+```
+
+点击后由微信拉起**原生客服会话窗口**。这是唯一合规且可用的路径：自研聊天页拿不到客服会话额度、也不能转人工，还多一份聊天记录的合规负担。前端因此**不渲染、不存储**任何客服聊天内容，`bindcontact` 只负责记来源埋点与按需跳页。
+
+开发者要做的是后端。`app/services/wechat_kf.py` 覆盖官方 kf-message 的全部 10 个接口：
+
+| 能力 | 接口 | 后端路由（均需 `X-Kf-Admin-Token`） |
+| --- | --- | --- |
+| 添加客服账号 | `POST /customservice/kfaccount/add` | `POST /api/wechat/kf/accounts` |
+| 删除客服账号 | `POST /customservice/kfaccount/del` | `DELETE /api/wechat/kf/accounts?kf_account=` |
+| 获取所有客服账号 | `GET /cgi-bin/customservice/getkflist` | `GET /api/wechat/kf/accounts` |
+| 获取在线客服列表 | `GET /cgi-bin/customservice/getonlinekflist` | `GET /api/wechat/kf/accounts/online` |
+| 设置客服管理员 | `GET /customservice/kfaccount/setadmin` | `POST /api/wechat/kf/accounts/admin` |
+| 取消客服管理员 | `GET /customservice/kfaccount/canceladmin` | `DELETE /api/wechat/kf/accounts/admin?kf_openid=` |
+| 发送客服消息 | `POST /cgi-bin/message/custom/send` | `POST /api/wechat/kf/send` |
+| 客服输入状态 | `POST /cgi-bin/message/custom/business/typing` | `POST /api/wechat/kf/typing` |
+| 上传临时素材 | `POST /cgi-bin/media/upload` | `POST /api/wechat/kf/media` |
+| 获取临时素材 | `GET /cgi-bin/media/get` | 入站图片/语音/视频自动落为 `kf/<openid>/...` 存储对象 |
+
+消息推送（收消息）走 MP 后台配置的回调，不向外暴露：`GET /api/wechat/kf/callback` 验签回 `echostr`，`POST /api/wechat/kf/callback` 收消息（明文与安全模式都支持）。收到的消息落 `kf_messages`、会话汇总落 `kf_sessions`（含未读数），未配置人工客服时回一条带冷却的自动回执（同一用户每小时一次，避免刷屏）。
+
+上线前必须在 MP 后台「开发管理 → 消息推送」打开推送，URL 填 `https://<域名>/api/wechat/kf/callback`，Token / EncodingAESKey 填回 `.env` 的 `WECHAT_KF_TOKEN` / `WECHAT_KF_AES_KEY`。**没配推送时用户发出的消息微信不会推给我们，后台会话列表就是空的**——这是配置缺口，不是代码问题。另需设置 `WECHAT_KF_ADMIN_TOKEN`（管理接口的口令，生产环境不设即关闭）。
+
+`access_token` 统一走官方的 `stable_token`（失败回退 `cgi-bin/token`），缓存在 `wx_tokens` 表，多实例不会互相顶掉；所有接口只在服务端调用，小程序端永远拿不到 `access_token` 或 `appsecret`。
+
 ## Linux / Docker 部署
+
 
 ```bash
 tar -xzf zhi-reader-api.tar.gz

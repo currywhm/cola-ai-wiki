@@ -43,6 +43,7 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 from ..config import settings
+from .credits import sum_usage, usage_from_events
 
 # airouter 等网关在历史含 reasoning 块时偶发直接关闭流（STREAM_CLOSED），
 # 失败且无任何输出时自动重试一次。
@@ -95,6 +96,28 @@ _TOOL_TITLES = {
     'plan': '制定执行计划',
     'exit_plan_mode': '完成计划',
 }
+
+# 工具呈现类型：前端据此选择 terminal / search / read / diff / image / todo 卡。
+_TOOL_VARIANTS = {
+    'bash': 'terminal',
+    'pwsh': 'terminal',
+    'web_search': 'search',
+    'grep': 'search',
+    'glob': 'search',
+    'web_fetch': 'read',
+    'read': 'read',
+    'read_image': 'image',
+    'write': 'write',
+    'edit': 'diff',
+    'todo_write': 'todo',
+}
+
+_TOOL_INPUT_MAX = 4800
+_TOOL_OUTPUT_MAX = 9000
+_TOOL_META_TEXT_MAX = 1600
+_SECRET_VALUE_RE = re.compile(
+    r'(?i)((?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*)([^\s,;]+)'
+)
 
 _SKILLS_SYNCED: set[str] = set()
 _clients: dict[str, object] = {}
@@ -267,12 +290,15 @@ def thinking_config(thinking: str) -> tuple[str, str, str]:
 
 def _credentials() -> tuple[str, str]:
     """Harness 走 deepseek-official 适配器（OpenAI 线协议），凭据优先 DEEPSEEK_*，回落 OPENAI_*。"""
-    if settings.deepseek_api_key:
+    if settings.llm_api_key.strip():
+        api_key = settings.llm_api_key.strip()
+        base_url = settings.llm_base_url.strip() or settings.deepseek_base_url
+    elif settings.deepseek_api_key:
         api_key, base_url = settings.deepseek_api_key, settings.deepseek_base_url
     else:
         api_key, base_url = settings.openai_api_key, settings.openai_base_url
     if not api_key:
-        raise RuntimeError('Harness 已启用，但后端未配置模型 API Key（DEEPSEEK_API_KEY 或 OPENAI_API_KEY）')
+        raise RuntimeError('Harness 已启用，但后端未配置模型 API Key（LLM_API_KEY、DEEPSEEK_API_KEY 或 OPENAI_API_KEY）')
     # deepseek 适配器直接拼接 /chat/completions，baseURL 必须以 /v1 结尾
     base = (base_url or '').rstrip('/')
     if base and not base.endswith('/v1'):
@@ -690,7 +716,9 @@ class _TraceState:
     def __init__(self, session_id: str = '') -> None:
         self.step = 0
         self.step_open = False
-        self.tools: dict[str, tuple[str, str]] = {}
+        # 每个 callId 保留调用头与开始时间；result 到达时用同一 key 合并，
+        # 前端因此可以把运行态和完成态稳定地画成同一张工具卡。
+        self.tools: dict[str, dict] = {}
         self.reason_streamed = False
         self.text_streamed = False
         # 计划评审需要把 review_id（= harness 会话 id）带进前端，用户批准后按它回写
@@ -723,12 +751,211 @@ def _shorten(value, limit: int = 48) -> str:
     return text if len(text) <= limit else text[: limit - 1] + '…'
 
 
+def _clip_text(value, limit: int) -> str:
+    """按字符数保留工具输入/输出预览，超出部分明确标注，避免静默截断。"""
+    text = _SECRET_VALUE_RE.sub(r'\1[已隐藏]', str(value or ''))
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return f'{text[:limit]}\n… 已截断 {omitted} 字'
+
+
+def _preview_value(value, depth: int = 0):
+    """递归裁剪任意工具参数，供展开态的输入卡安全展示。"""
+    if depth > 4:
+        return '…'
+    if isinstance(value, str):
+        return _clip_text(value, _TOOL_META_TEXT_MAX)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {str(key): _preview_value(item, depth + 1) for key, item in list(value.items())[:40]}
+    if isinstance(value, (list, tuple)):
+        return [_preview_value(item, depth + 1) for item in list(value)[:40]]
+    return _clip_text(value, 400)
+
+
+def _json_preview(value, limit: int = _TOOL_INPUT_MAX) -> str:
+    try:
+        text = json.dumps(_preview_value(value), ensure_ascii=False, indent=2)
+    except (TypeError, ValueError):
+        text = str(value or '')
+    return _clip_text(text, limit)
+
+
+def _tool_variant(name: str) -> str:
+    return _TOOL_VARIANTS.get(name, 'generic')
+
+
+def _tool_todos(args: dict) -> list[dict]:
+    todos = args.get('todos')
+    if not isinstance(todos, list):
+        return []
+    normalized: list[dict] = []
+    for item in todos[:40]:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get('content') or item.get('text') or '').strip()
+        if not content:
+            continue
+        normalized.append({
+            'content': _shorten(content, 120),
+            'status': str(item.get('status') or 'pending'),
+            'active': str(item.get('status') or '').lower() == 'in_progress',
+        })
+    return normalized
+
+
+def _tool_meta(name: str, args: dict) -> dict:
+    """只提取专用卡真正消费的结构化字段，原始参数另走 tool_input。"""
+    path = str(args.get('file_path') or args.get('path') or '').strip()
+    if name in ('bash', 'pwsh'):
+        return {
+            'command': _clip_text(args.get('command'), 1600),
+            'cwd': _clip_text(args.get('cwd') or args.get('workdir'), 800),
+            'description': _shorten(args.get('description'), 160),
+        }
+    if name == 'web_search':
+        return {
+            'query': _shorten(args.get('query') or args.get('q'), 180),
+            'queries': [_shorten(item, 120) for item in (args.get('queries') or [])[:8]] if isinstance(args.get('queries'), list) else [],
+        }
+    if name == 'web_fetch':
+        return {'url': _clip_text(args.get('url'), 800)}
+    if name in ('read', 'read_image', 'write', 'edit'):
+        meta = {'path': _clip_text(path, 800)}
+        if name == 'read':
+            meta['offset'] = args.get('offset')
+            meta['limit'] = args.get('limit')
+        if name == 'edit':
+            meta['old_text'] = _clip_text(args.get('old_string') or args.get('oldText'), _TOOL_META_TEXT_MAX)
+            meta['new_text'] = _clip_text(args.get('new_string') or args.get('newText'), _TOOL_META_TEXT_MAX)
+        if name == 'write':
+            meta['content'] = _clip_text(args.get('content'), _TOOL_META_TEXT_MAX)
+        return meta
+    if name in ('grep', 'glob'):
+        return {
+            'pattern': _clip_text(args.get('pattern') or args.get('query'), 500),
+            'path': _clip_text(args.get('path') or args.get('cwd'), 500),
+        }
+    if name == 'todo_write':
+        return {'todos': _tool_todos(args)}
+    return {}
+
+
+def _tool_call_contract(name: str, args: dict) -> dict:
+    variant = _tool_variant(name)
+    summary = _tool_detail(name, args)
+    return {
+        'tool_variant': variant,
+        'tool_summary': summary,
+        'tool_input': _json_preview(args),
+        'tool_meta': _tool_meta(name, args),
+    }
+
+
+
+
+def _tool_result_content(blocks: list) -> tuple[list, str, bool]:
+    """展开 Harness 的 ToolResultBlock，返回内部正文、callId 和错误位。
+
+    ``tool/result.message.content`` 通常不是工具正文本身，而是恰好一个
+    ``tool-result`` 包装块；正文在它的 ``content`` 里。兼容直接传正文的事件形状。
+    """
+    if not isinstance(blocks, list):
+        return [], '', False
+    call_id = ''
+    failed = False
+    for block in blocks:
+        if not isinstance(block, dict) or block.get('type') != 'tool-result':
+            continue
+        call_id = str(block.get('toolCallId') or call_id)
+        failed = failed or bool(block.get('isError'))
+        nested = block.get('content')
+        if isinstance(nested, list):
+            return nested, call_id, failed
+    return blocks, call_id, failed
+
+
+def _tool_result_text(blocks: list) -> tuple[str, list[dict]]:
+    parts: list[str] = []
+    images: list[dict] = []
+
+    def visit(items: list) -> None:
+        for block in items:
+            if not isinstance(block, dict):
+                if block is not None:
+                    parts.append(str(block))
+                continue
+            btype = str(block.get('type') or '')
+            if btype == 'text':
+                text = str(block.get('text') or '')
+                if text:
+                    parts.append(text)
+                continue
+            if btype == 'image':
+                attachment = block.get('attachment') if isinstance(block.get('attachment'), dict) else {}
+                images.append({
+                    'id': _shorten(attachment.get('attachmentId'), 100),
+                    'name': _shorten(attachment.get('name'), 80),
+                    'media_type': _shorten(attachment.get('mediaType'), 60),
+                    'bytes': attachment.get('bytes'),
+                    'width': attachment.get('width'),
+                    'height': attachment.get('height'),
+                })
+                parts.append('[图片结果]')
+                continue
+            if btype == 'tool-result' and isinstance(block.get('content'), list):
+                visit(block['content'])
+                continue
+            parts.append(_json_preview(block, 1200))
+
+    visit(blocks)
+    return '\n'.join(part for part in parts if part), images
+
+
+def _tool_error_text(error, blocks: list) -> str:
+    if isinstance(error, dict):
+        detail = error.get('message') or error.get('detail')
+        if detail:
+            return _clip_text(detail, 1200)
+        name, code = error.get('name'), error.get('code')
+        if name or code:
+            return _shorten(f'{name or "ToolError"}: {code or "unknown"}', 240)
+    if error:
+        return _clip_text(error, 1200)
+    for block in blocks:
+        if isinstance(block, dict) and block.get('isError'):
+            return _clip_text(block.get('text'), 1200)
+    return ''
+
+
+def _tool_result_contract(name: str, blocks: list, error, meta=None, failed: bool = False) -> dict:
+    output, images = _tool_result_text(blocks)
+    output = _clip_text(output, _TOOL_OUTPUT_MAX)
+    error_text = _tool_error_text(error, blocks)
+    # Harness 的失败位就在 tool-result 包装块上；没有结构化 error 时，把模型可见的失败正文作为错误文案。
+    if failed and not error_text:
+        error_text = _clip_text(output, 1200)
+    summary = _shorten(error_text or output, 100)
+    return {
+        'tool_output': output,
+        'tool_error': error_text,
+        'tool_result_summary': summary,
+        'tool_result_meta': _tool_result_meta(name, meta, images, output),
+    }
+
+
 def _tool_detail(name: str, args: dict) -> str:
     """只暴露对用户有意义的参数，不把命令原文/文件内容丢给前端。"""
+    if name in ('bash', 'pwsh'):
+        return _shorten(args.get('description') or args.get('command'), 48)
     if name == 'web_search':
         return _shorten(args.get('query') or args.get('q'), 40)
     if name == 'web_fetch':
         return _shorten(args.get('url'), 48)
+    if name in ('grep', 'glob'):
+        return _shorten(args.get('pattern') or args.get('query'), 48)
     if name in ('read', 'write', 'edit', 'read_image'):
         path = str(args.get('file_path') or args.get('path') or '')
         return _shorten(path.split('/')[-1], 32) if path else ''
@@ -896,11 +1123,22 @@ def _forward(notification, emit: Callable, state: _TraceState) -> None:
 
     if etype == 'tool/call':
         call_id = str(data.get('callId') or '')
+        # 理论上 Harness 总带 callId；旧日志或手写事件缺失时仍用轮内占位 key，
+        # 避免并行同名工具共用同一个空 key 而串线。完成事件会按名称回并。
+        if not call_id:
+            call_id = f'_anonymous_{len(state.tools) + 1}'
         name = str(data.get('name') or '')
         args = _parse_arguments(data.get('arguments'))
         title = _TOOL_TITLES.get(name, '调用工具')
         detail = _tool_detail(name, args)
-        state.tools[call_id] = (name, title)
+        contract = _tool_call_contract(name, args)
+        detail = str(contract.get('tool_summary') or '')
+        state.tools[call_id] = {
+            'name': name,
+            'title': title,
+            'started': time.monotonic(),
+            'detail': detail,
+        }
         if name == 'exit_plan_mode':
             # 官方 plan mode 把「完整计划 markdown」作为该工具的参数提交，
             # 评审请求由 @cola/dsh-plan-bridge 桥接。这里把计划本身转成
@@ -923,22 +1161,35 @@ def _forward(notification, emit: Callable, state: _TraceState) -> None:
         else:
             # 真的调工具了，本步才在过程区露面：先发分组容器，再发具体的这一次调用
             _open_step(state, emit, title)
-            emit('trace', {'item': {'kind': 'tool', 'state': 'run', 'name': name, 'title': title, 'detail': detail}}, 0.0)
+            emit('trace', {'item': {
+                'kind': 'tool', 'state': 'run', 'call_id': call_id,
+                'name': name, 'title': title, 'detail': detail, **contract,
+            }}, 0.0)
         return
 
     if etype == 'tool/result':
         message = data.get('message') or {}
         source = message.get('source') or {}
         call_id = str(source.get('callId') or '')
-        blocks = message.get('content') or []
-        if not call_id and blocks and isinstance(blocks[0], dict):
-            call_id = str(blocks[0].get('toolCallId') or '')
-        name, title = state.tools.get(call_id, ('', ''))
-        failed = bool(data.get('error')) or any(
-            isinstance(block, dict) and block.get('isError') for block in blocks
-        )
+        raw_blocks = message.get('content') or []
+        blocks, nested_call_id, nested_failed = _tool_result_content(raw_blocks)
+        call_id = call_id or nested_call_id
+        entry = state.tools.get(call_id) or {}
+        if not entry:
+            source_name = str(source.get('name') or '')
+            if source_name:
+                for key, candidate in reversed(list(state.tools.items())):
+                    if str(candidate.get('name') or '') == source_name:
+                        call_id, entry = key, candidate
+                        break
+        name = str(entry.get('name') or source.get('name') or '')
+        title = str(entry.get('title') or _TOOL_TITLES.get(name, '调用工具'))
+        started = float(entry.get('started') or 0.0)
+        failed = bool(data.get('error')) or nested_failed
+        result_contract = _tool_result_contract(name, blocks, data.get('error'), data.get('meta'), nested_failed)
+        duration_ms = int(max(0.0, time.monotonic() - started) * 1000) if started else 0
         if name == 'skill':
-            state.skill_runs.append((str(state.tools.get(call_id, ('', ''))[0]), failed))
+            state.skill_runs.append((name, failed))
         elif name == 'exit_plan_mode':
             emit('trace', {'item': {
                 'kind': 'plan', 'state': 'error' if failed else 'approved',
@@ -948,8 +1199,12 @@ def _forward(notification, emit: Callable, state: _TraceState) -> None:
         elif name:
             emit('trace', {'item': {
                 'kind': 'tool', 'state': 'error' if failed else 'done',
-                'name': name, 'title': f'{title}失败' if failed else f'{title}完成',
+                'call_id': call_id, 'name': name, 'title': title,
+                'detail': str(entry.get('detail') or ''),
+                'duration_ms': duration_ms,
+                **result_contract,
             }}, 0.0)
+        state.tools.pop(call_id, None)
         # 工具产物回流：这一步可能刚写出文件（write / edit / bash），扫一轮工作区，
         # 新文件立刻作为对话产物发给后端落库，用户不用等整轮结束才看到文件。
         if state.watch is not None:
@@ -994,7 +1249,9 @@ def _run_turn(prompt: str, session_id: str, model: str, profile: str, effort: st
         injected = [item.get('harness') or item.get('label') for item in (skills or [])]
         print(f'[harness] skills session={session_id} injected={injected} '
               f'catalog={len(state.catalog)} loaded={sorted(state.skills)}', flush=True)
-    return result
+    # 本轮真实用量：一次 turn 里模型可能被调用多次（工具循环），事件里的 usage 要全部累加。
+    # 上层用它换算积分（用户价 = 成本 × 1.5，见 services/credits.py）。
+    return result, usage_from_events(getattr(result, 'events', None))
 
 
 def _skill_instruction(items: list[dict]) -> str:
@@ -1109,6 +1366,8 @@ async def stream_answer(
 
     streamed: list[str] = []
     last_error: Exception | None = None
+    # 本轮累计用量（重试的尝试也算）：两个 attempt 都真的花过 token
+    usages: list[dict] = []
     for _attempt in range(_MAX_ATTEMPTS):
         started = time.monotonic()
         # 重试必须用新会话：attempt 1 若已创建会话再中途失败，
@@ -1135,10 +1394,12 @@ async def stream_answer(
             if pace:
                 await asyncio.sleep(pace)
         try:
-            result = task.result()
+            result, usage = task.result()
         except Exception as exc:  # SDK/运行时级错误
             last_error = exc
-            result = None
+            result, usage = None, None
+        if usage:
+            usages.append(usage)
         print(f'[harness] turn session={session_id} user={_tenant_id(user_id)} profile={profile} '
               f'model={model} effort={effort} attempt={_attempt + 1} '
               f'finish={getattr(result, "finish_reason", None)} streamed={len(streamed)} '
@@ -1149,9 +1410,13 @@ async def stream_answer(
             if final and not any(final in s or s in final for s in streamed):
                 for i in range(0, len(final), 24):
                     yield {'kind': 'text', 'text': final[i:i + 24]}
+            # 用量交给上层记积分（本轮不再产生别的模型调用）
+            yield {'kind': 'usage', 'usage': sum_usage(usages)}
             return
         if streamed:
             # 已有内容产出，视为部分成功，不重试
+            # 部分成功也是真花了 token，照样记账
+            yield {'kind': 'usage', 'usage': sum_usage(usages)}
             return
         last_error = last_error or RuntimeError(getattr(result, 'finish_reason', None) or 'Harness 回答失败')
         # 注意：error-finish 多数是上游过载/断流（临时），不是运行时损坏。
@@ -1214,10 +1479,12 @@ async def stream_raw_prompt(
             if pace:
                 await asyncio.sleep(pace)
         try:
-            result = task.result()
+            result, _usage = task.result()
         except Exception as exc:
             last_error = exc
             result = None
+        # 后端自用任务（新建技能 / 整理知识）走同一条链路，但不计用户积分：用户额度只覆盖
+        # 他自己发起的那一问，后台成本由技能数量、存储空间、资料数量三道上限管住。
         print(f'[harness] raw session={session_id} user={_tenant_id(user_id)} profile={profile} '
               f'model={model} effort={effort} attempt={_attempt + 1} '
               f'finish={getattr(result, "finish_reason", None)} streamed={len(streamed)} '
@@ -1234,3 +1501,96 @@ async def stream_raw_prompt(
         if _attempt + 1 < _MAX_ATTEMPTS:
             yield {'kind': 'trace', 'item': {'kind': 'note', 'state': 'run', 'title': '网络波动，正在重试'}}
     raise RuntimeError(f'Harness 执行链路失败：{last_error}')
+
+def _tool_result_meta(name: str, meta, images: list[dict], output: str) -> dict:
+    """把 Harness 的工具私有 meta 收窄成小程序专用卡消费的字段。"""
+    result: dict = {'kind': _tool_variant(name)}
+    if images:
+        result['images'] = images
+    source = meta if isinstance(meta, dict) else {}
+    if name == 'grep' and source.get('shape') == 'matches' and isinstance(source.get('files'), list):
+        files: list[dict] = []
+        for item in source['files'][:40]:
+            if not isinstance(item, dict):
+                continue
+            matches = []
+            for match in (item.get('matches') if isinstance(item.get('matches'), list) else [])[:80]:
+                if not isinstance(match, dict):
+                    continue
+                matches.append({
+                    'line_number': match.get('lineNumber'),
+                    'line': _clip_text(match.get('line'), 500),
+                })
+            files.append({'path': _clip_text(item.get('path'), 500), 'matches': matches})
+        result.update({
+            'shape': 'matches',
+            'files': files,
+            'truncated': bool(source.get('truncated')),
+            'total': int(source.get('total') or 0),
+        })
+    elif name == 'glob' and source.get('shape') == 'paths' and isinstance(source.get('paths'), list):
+        result.update({
+            'shape': 'paths',
+            'paths': [_clip_text(path, 500) for path in source['paths'][:200] if isinstance(path, str)],
+            'truncated': bool(source.get('truncated')),
+            'total': int(source.get('total') or 0),
+        })
+    elif name == 'read' and isinstance(source.get('lines'), list):
+        lines = []
+        for item in source['lines'][:400]:
+            if not isinstance(item, dict):
+                continue
+            lines.append({
+                'number': item.get('number'),
+                'text': _clip_text(item.get('text'), 1000),
+            })
+        result.update({
+            'path': _clip_text(source.get('path'), 800),
+            'offset': int(source.get('offset') or 1),
+            'total_lines': int(source.get('totalLines') or 0),
+            'lang': _shorten(source.get('lang'), 40),
+            'lines': lines,
+        })
+    elif name in ('write', 'edit') and isinstance(source.get('diffs'), list):
+        diffs = []
+        for item in source['diffs'][:20]:
+            if not isinstance(item, dict):
+                continue
+            diffs.append({
+                'path': _clip_text(item.get('path'), 800),
+                'old_text': None if item.get('oldText') is None else _clip_text(item.get('oldText'), _TOOL_META_TEXT_MAX),
+                'new_text': _clip_text(item.get('newText'), _TOOL_META_TEXT_MAX),
+            })
+        result['diffs'] = diffs
+    elif name == 'web_search' and isinstance(source.get('sources'), list):
+        sources = []
+        for item in source['sources'][:20]:
+            if not isinstance(item, dict):
+                continue
+            sources.append({
+                'url': _clip_text(item.get('url'), 1000),
+                'title': _shorten(item.get('title'), 180),
+                'snippet': _clip_text(item.get('snippet'), 700),
+                'published_at': _shorten(item.get('publishedAt'), 80),
+            })
+        result.update({
+            'kind': 'search',
+            'sources': sources,
+            'answer': _clip_text(source.get('answer'), _TOOL_META_TEXT_MAX),
+            'truncated': bool(source.get('truncated')),
+        })
+    elif name == 'web_fetch':
+        result.update({
+            'kind': 'fetch',
+            'url': _clip_text(source.get('url'), 1000),
+            'status_code': int(source.get('statusCode') or 0),
+            'truncated': bool(source.get('truncated')),
+        })
+    if name in ('bash', 'pwsh'):
+        signal = re.search(r'\n\[killed by signal: ([^\]\n]+)\]$', output)
+        exit_code = re.search(r'\n\[exit code: (\d+)\]$', output)
+        if signal:
+            result['signal'] = signal.group(1)
+        elif exit_code:
+            result['exit_code'] = int(exit_code.group(1))
+    return result

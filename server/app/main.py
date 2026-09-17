@@ -2,9 +2,11 @@ import asyncio
 import hashlib
 import json
 import math
+import logging
 import mimetypes
 import re
 import secrets
+import shutil
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -17,15 +19,30 @@ import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 from .config import settings
-from .db import connect, decode_sources, fetchall, fetchone, init_db, row_dict
-from .schemas import ArticleImportRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, PlanReviewRequest, PreferenceUpdate, ProfileUpdate, ShareCreate, SkillBuildRequest, SkillEnhanceRequest, SkillFlagUpdate, SkillForm, SkillPublishUpdate
-from .security import create_token, current_user, rate_limit
+from .db import (
+    close_connections,
+    close_db_pool,
+    close_request_connections,
+    connect,
+    decode_sources,
+    fetchall,
+    fetchone,
+    init_db,
+    row_dict,
+    take_request_connections,
+)
+from .schemas import ArticleImportRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, PlanReviewRequest, PreferenceUpdate, ProfileUpdate, ShareCreate, ShareToKnowledge, SkillBuildRequest, SkillEnhanceRequest, SkillFlagUpdate, SkillForm, SkillPublishUpdate
+from .security import create_token, current_user, current_user_optional, rate_limit
 from .services.documents import ALLOWED_SUFFIXES, extract_text, split_chunks
 from .services import content as content_service
 from .services import skill_build
 from .services import artifacts as artifact_service
+from .services import storage
 from .services.wechat_article import ArticleFetchError, build_document_html, fetch_wechat_article
+from .services import wechat_kf as kf_service
+from .services.wechat_auth import validate_wechat_credentials
 from .services.llm import stream_answer
 from .services.memory import load_history, maybe_compress, recent_context
 from .services.harness import (
@@ -36,6 +53,7 @@ from .services.harness import (
     submit_plan_review,
 )
 from .services.organizer import organize_document
+from .services.credits import estimate_usage, quote_turn, total_tokens
 from .services.virtual_pay import calc_pay_sig, calc_user_signature, query_order, sign_data, virtual_configured, virtual_product
 from .services.web_search import WebSearchError, search_web, web_context
 
@@ -45,13 +63,15 @@ TRIAL_DAYS = 30
 FREE_STORAGE_BYTES = 300 * 1024 * 1024
 PLUS_STORAGE_BYTES = 10 * 1024 * 1024 * 1024
 PRO_STORAGE_BYTES = 30 * 1024 * 1024 * 1024
-# 试用结束后免费账号仍可提问，但额度收紧，避免注册即弃用。
-FREE_QUESTIONS_AFTER_TRIAL = 50
+# 额度单位是「积分」，不是问答次数：一轮扣多少分取决于这一轮真实烧了多少 token
+# （deepseek-flash 官方价 × 1.5 倍加价，换算规则见 services/credits.py）。
+# 三档额度按「一轮典型问答约 3 积分」折算，与原「每月 200 / 1000 / 5000 次」等价。
+FREE_CREDITS_AFTER_TRIAL = 150
 
 MEMBERSHIP_LIMITS = {
-    'free': {'label': '免费试用', 'knowledge_bases': 1, 'storage_bytes': FREE_STORAGE_BYTES, 'monthly_questions': 200, 'max_file_bytes': 50 * 1024 * 1024, 'skills': 1},
-    'plus': {'label': 'Plus 会员', 'knowledge_bases': 10, 'storage_bytes': PLUS_STORAGE_BYTES, 'monthly_questions': 1000, 'max_file_bytes': 100 * 1024 * 1024, 'skills': 5},
-    'pro': {'label': 'Pro 会员', 'knowledge_bases': 50, 'storage_bytes': PRO_STORAGE_BYTES, 'monthly_questions': 5000, 'max_file_bytes': 300 * 1024 * 1024, 'skills': 10},
+    'free': {'label': '免费试用', 'knowledge_bases': 1, 'storage_bytes': FREE_STORAGE_BYTES, 'monthly_credits': 600, 'max_file_bytes': 50 * 1024 * 1024, 'skills': 1},
+    'plus': {'label': 'Plus 会员', 'knowledge_bases': 10, 'storage_bytes': PLUS_STORAGE_BYTES, 'monthly_credits': 3000, 'max_file_bytes': 100 * 1024 * 1024, 'skills': 5},
+    'pro': {'label': 'Pro 会员', 'knowledge_bases': 50, 'storage_bytes': PRO_STORAGE_BYTES, 'monthly_credits': 15000, 'max_file_bytes': 300 * 1024 * 1024, 'skills': 10},
 }
 
 PLAN_CATALOG = {
@@ -100,11 +120,29 @@ def human_size(value: int) -> str:
     return f'{max(1, round(value / (1024 * 1024)))}MB'
 
 
-async def questions_this_month(db, user_id: str) -> int:
-    """本月已提问题数（自然月，UTC），用于会员/试用的月度问答额度。"""
-    period_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
-    row = await fetchone(db, "SELECT COUNT(*) AS used FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.user_id=? AND m.role='user' AND m.created_at>=?", (user_id, period_start))
-    return int(row['used'] or 0) if row else 0
+def period_start_iso() -> str:
+    """本自然月起点（UTC）：积分额度和原来的问答次数一样按月归零，不结转。"""
+    return datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+
+async def credits_this_month(db, user_id: str) -> int:
+    """本月已消耗的积分：直接读积分流水合计，所以「扣了多少」永远能对回具体轮次与 token。"""
+    row = await fetchone(db, "SELECT COALESCE(SUM(credits),0) AS used FROM usage_logs WHERE user_id=? AND created_at>=?", (user_id, period_start_iso()))
+    return int((row['used'] if row else 0) or 0)
+
+
+async def charge_turn(db, user_id: str, conversation_id: str, message_id: str, model: str, usage: Any) -> dict:
+    """把一轮问答的真实用量落成积分流水（用户价 = 成本 × 1.5），并返回本轮账日。"""
+    quote = quote_turn(usage)
+    tokens = quote['tokens']
+    await db.execute(
+        "INSERT INTO usage_logs(id,user_id,conversation_id,message_id,model,input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,cost_yuan,credits,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (uuid.uuid4().hex, user_id, conversation_id, message_id, model,
+         tokens['input_tokens'], tokens['cache_read_tokens'], tokens['cache_write_tokens'], tokens['output_tokens'],
+         quote['cost_yuan'], quote['credits'], now()),
+    )
+    await db.commit()
+    return quote
 
 
 async def owned_skill_count(db, user_id: str) -> int:
@@ -113,13 +151,14 @@ async def owned_skill_count(db, user_id: str) -> int:
     return int(row['used'] or 0) if row else 0
 
 
-def account_state(row: Any, questions_used: int = 0, skills_used: int = 0) -> dict:
-    """会员 + 试用倒计时 + 月度问答额度 + 技能配额合成一份状态，前后端共用同一套口径。"""
+def account_state(row: Any, credits_used: int = 0, skills_used: int = 0) -> dict:
+    """会员 + 试用倒计时 + 本月积分额度 + 技能配额合成一份状态，前后端共用同一套口径。"""
     tier = membership_for_user(row)
     limits = MEMBERSHIP_LIMITS[tier]
     trial = trial_state(row)
     trial_active = tier == 'free' and trial['active']
-    quota = limits['monthly_questions'] if (tier != 'free' or trial_active) else FREE_QUESTIONS_AFTER_TRIAL
+    # 试用期与会员同档额度；试用结束后收紧，避免注册即弃用
+    quota = limits['monthly_credits'] if (tier != 'free' or trial_active) else FREE_CREDITS_AFTER_TRIAL
     expires_at = str(row['membership_expires_at'] or '') if row is not None and 'membership_expires_at' in row.keys() else ''
     days_left = 0
     if tier != 'free':
@@ -132,12 +171,12 @@ def account_state(row: Any, questions_used: int = 0, skills_used: int = 0) -> di
         'label': limits['label'],
         'trial': {'active': trial_active, 'days_left': trial['days_left'], 'days': TRIAL_DAYS, 'ends_at': trial['ends_at']},
         'period': {'days_left': days_left, 'expires_at': expires_at},
-        'limits': {'knowledge_bases': limits['knowledge_bases'], 'storage_bytes': limits['storage_bytes'], 'max_file_bytes': limits['max_file_bytes'], 'monthly_questions': quota, 'skills': limits['skills']},
-        'quota': {'questions_limit': quota, 'questions_used': questions_used, 'questions_left': max(0, quota - questions_used), 'skills_limit': limits['skills'], 'skills_used': skills_used, 'skills_left': max(0, limits['skills'] - skills_used)},
+        'limits': {'knowledge_bases': limits['knowledge_bases'], 'storage_bytes': limits['storage_bytes'], 'max_file_bytes': limits['max_file_bytes'], 'monthly_credits': quota, 'skills': limits['skills']},
+        'quota': {'credits_limit': quota, 'credits_used': credits_used, 'credits_left': max(0, quota - credits_used), 'skills_limit': limits['skills'], 'skills_used': skills_used, 'skills_left': max(0, limits['skills'] - skills_used)},
         'entitlements': {
             'can_upload': tier != 'free' or trial_active,
             'can_create_knowledge': tier != 'free' or trial_active,
-            'can_ask': questions_used < quota,
+            'can_ask': credits_used < quota,
             'member': tier != 'free',
         },
     }
@@ -209,6 +248,7 @@ async def ensure_default_knowledge(db, user_id: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.validate_runtime()
+    await validate_wechat_credentials()
     await init_db()
     # Backfill the default workspace for accounts created before this rule was
     # introduced. The helper is idempotent, so restarts never create duplicates.
@@ -274,17 +314,241 @@ async def lifespan(app: FastAPI):
     yield
     if reconcile_task:
         reconcile_task.cancel()
+    await close_db_pool()
 
 
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_list or ["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
+@app.middleware("http")
+async def release_request_database_connections(request: Request, call_next):
+    """Return pooled MySQL connections after the response body has finished."""
+    try:
+        response = await call_next(request)
+    except Exception:
+        await close_request_connections()
+        raise
+
+    # StreamingResponse has not consumed its async generator when call_next()
+    # returns. Keep this request's connections attached until the last chunk is
+    # sent (or the client disconnects), otherwise SSE handlers receive a closed
+    # MySQL connection on their first yield.
+    databases = take_request_connections()
+    iterator = getattr(response, 'body_iterator', None)
+    if iterator is None or not databases:
+        await close_connections(databases)
+        return response
+
+    async def tracked_body():
+        try:
+            async for chunk in iterator:
+                yield chunk
+        finally:
+            await close_connections(databases)
+
+    response.body_iterator = tracked_body()
+    return response
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+async def touch_knowledge_used(db, knowledge_id: str) -> None:
+    """记一次「使用」：打开某个知识库、或在它里面提问都算。
+
+    单独存 last_used_at 而不是复用 updated_at——后者只在资料增删改时更新，
+    拿它给「最近知识库」排序，会把刚看过的库排到后面。
+    调用方负责 commit（与同一次请求里已有的写操作合并提交）。
+    """
+    if not knowledge_id:
+        return
+    await db.execute("UPDATE knowledge_bases SET last_used_at=? WHERE id=?", (now(), knowledge_id))
+
+
 PAID_MARKERS = {'PAID', 'SUCCESS', 'PAY_SUCCESS', '2'}
+
+
+# ---- 知识库邀请分享：一条链接只认第一个接受的好友 ----
+
+KNOWLEDGE_SHARE_TTL_DAYS = 7
+
+
+def knowledge_view(row: Any, *, live_document_count: int | None = None, source_name: str = '', source_missing: bool = False) -> dict:
+    """知识库统一视图：自己的库与好友共享过来的库用同一组字段表达。
+
+    共享过来的库（mirror_of 非空）带 read_only=true 与来源名称，前端据此隐藏
+    「导入文件 / 删除 / 移动」等写入入口，避免收件人改到分享者的资料。
+    """
+    data = row_dict(row) or {}
+    mirror_of = str(data.get('mirror_of') or '')
+    name = str(data.get('name') or '')
+    count = live_document_count if live_document_count is not None else int(data.get('document_count') or 0)
+    return {
+        'id': data.get('id') or '',
+        'user_id': data.get('user_id') or '',
+        'name': name,
+        'description': data.get('description') or '',
+        'icon': data.get('icon') or DEFAULT_KNOWLEDGE_ICON,
+        'document_count': int(count or 0),
+        'visibility': data.get('visibility') or 'private',
+        'category': data.get('category') or '',
+        'subscribers': int(data.get('subscribers') or 0),
+        'status': data.get('status') or 'active',
+        'created_at': data.get('created_at') or '',
+        'updated_at': data.get('updated_at') or '',
+        'last_used_at': data.get('last_used_at') or '',
+        'shared': bool(mirror_of),
+        'read_only': bool(mirror_of),
+        'source_name': source_name,
+        'source_missing': bool(source_missing),
+        'inbox': name == SHARED_KNOWLEDGE_NAME,
+        # 「微信用户的知识库」是每个人的私人默认空间，不允许分享；共享过来的库也不能再转发。
+        # 「共享知识库」是收件箱：里面放着别人分享给你的内容，分享出去等于把收件箱给别人看。
+        'shareable': bool(name) and name not in (DEFAULT_KNOWLEDGE_NAME, SHARED_KNOWLEDGE_NAME) and not mirror_of,
+    }
+
+
+async def unlink_if_unreferenced(db: Any, storage_path: str) -> None:
+    """原文可能被「来源库 + 若干个共享库」同时引用：一条活着的记录都没有了才删磁盘文件。"""
+    if not storage_path:
+        return
+    row = await fetchone(db, "SELECT COUNT(*) AS count FROM documents WHERE storage_path=? AND status!='deleted'", (storage_path,))
+    if int((row['count'] if row else 0) or 0) > 0:
+        return
+    await storage.delete(storage_path)
+
+
+async def stored_file_response(ref: str, *, filename: str = '', media_type: str = 'application/octet-stream') -> FileResponse:
+    """Serve a persisted object while keeping COS/local storage opaque to routes."""
+    suffix = Path(filename).suffix if filename else ''
+    try:
+        path = await storage.materialize(ref, suffix=suffix)
+    except storage.StorageError as exc:
+        raise HTTPException(404, '文件不存在') from exc
+    return FileResponse(
+        path,
+        filename=filename or None,
+        media_type=media_type,
+        background=BackgroundTask(path.unlink, missing_ok=True),
+    )
+
+async def drop_mirror_document(db: Any, knowledge_id: str, document_id: str, storage_path: str) -> None:
+    """删掉共享库里的资料条目与切片；原文归零引用后才从磁盘删。"""
+    await db.execute('DELETE FROM chunks_fts WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)', (document_id,))
+    await db.execute('DELETE FROM chunks WHERE document_id=?', (document_id,))
+    await db.execute('DELETE FROM documents WHERE id=? AND knowledge_id=?', (document_id, knowledge_id))
+    await unlink_if_unreferenced(db, storage_path)
+
+
+async def sync_mirror(db: Any, row: Any) -> dict:
+    """把「好友共享过来的知识库」与来源库对齐（每次读的时候同步一次）。
+
+    共享库只维护条目、目录与切片，不复制文件字节：来源新增 / 改名 / 删除资料后，
+    收件人下次打开看到的就是最新的。来源整库被删掉时，共享库保留但标记失效。
+    返回 {'source_name': str, 'source_missing': bool, 'count': int}
+    """
+    mirror_id = str(row['id'])
+    owner_id = str(row['user_id'])
+    source_id = str(row['mirror_of'] or '')
+    if not source_id:
+        return {'source_name': '', 'source_missing': False, 'count': int(row['document_count'] or 0)}
+    source = await fetchone(db, "SELECT * FROM knowledge_bases WHERE id=? AND status='active'", (source_id,))
+    mirror_docs = await fetchall(db, "SELECT id,origin_document_id,storage_path,updated_at FROM documents WHERE knowledge_id=? AND status!='deleted'", (mirror_id,))
+    if not source:
+        for item in mirror_docs:
+            await drop_mirror_document(db, mirror_id, str(item['id']), str(item['storage_path'] or ''))
+        await db.execute('DELETE FROM folders WHERE knowledge_id=?', (mirror_id,))
+        await db.execute("UPDATE knowledge_bases SET document_count=0,mirror_state='source_missing',updated_at=? WHERE id=?", (now(), mirror_id))
+        return {'source_name': '', 'source_missing': True, 'count': 0}
+    # 目录先对齐：镜像目录与来源目录一一对应，新增 / 改名 / 删除都跟着走
+    mirror_folders = {str(item['origin_folder_id'] or ''): str(item['id']) for item in await fetchall(db, 'SELECT id,origin_folder_id FROM folders WHERE knowledge_id=?', (mirror_id,))}
+    folder_map: dict[str, str] = {}
+    for folder in await fetchall(db, 'SELECT id,name,created_at,updated_at FROM folders WHERE knowledge_id=? ORDER BY created_at', (source_id,)):
+        source_folder_id = str(folder['id'])
+        target = mirror_folders.get(source_folder_id, '')
+        if target:
+            folder_map[source_folder_id] = target
+            await db.execute('UPDATE folders SET name=?,updated_at=? WHERE id=?', (str(folder['name']), str(folder['updated_at']), target))
+        else:
+            target = uuid.uuid4().hex
+            folder_map[source_folder_id] = target
+            await db.execute('INSERT INTO folders(id,knowledge_id,user_id,name,origin_folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?)', (target, mirror_id, owner_id, str(folder['name']), source_folder_id, str(folder['created_at']), str(folder['updated_at'])))
+    keep_folders = set(folder_map.values())
+    for item in await fetchall(db, 'SELECT id FROM folders WHERE knowledge_id=?', (mirror_id,)):
+        if str(item['id']) not in keep_folders:
+            await db.execute('UPDATE documents SET folder_id=? WHERE knowledge_id=? AND folder_id=?', ('', mirror_id, str(item['id'])))
+            await db.execute('DELETE FROM folders WHERE id=?', (str(item['id']),))
+    # 资料对齐：来源有的补进来（连切片一起），来源已经没有的清掉
+    existing = {str(item['origin_document_id'] or ''): item for item in mirror_docs}
+    changed = False
+    count = 0
+    for doc in await fetchall(db, "SELECT * FROM documents WHERE knowledge_id=? AND status!='deleted'", (source_id,)):
+        source_document_id = str(doc['id'])
+        count += 1
+        folder_id = folder_map.get(str(doc['folder_id'] or ''), '')
+        target = existing.pop(source_document_id, None)
+        if target:
+            if str(target['updated_at'] or '') == str(doc['updated_at'] or ''):
+                continue
+            changed = True
+            await db.execute(
+                'UPDATE documents SET filename=?,file_type=?,file_size=?,page_count=?,status=?,progress=?,error_message=?,'
+                'extracted_text=?,organized_title=?,summary=?,tags_json=?,key_points_json=?,organize_status=?,organize_method=?,'
+                'organize_error=?,organized_at=?,folder_id=?,updated_at=? WHERE id=?',
+                (str(doc['filename']), str(doc['file_type']), int(doc['file_size'] or 0), int(doc['page_count'] or 0), str(doc['status']),
+                 int(doc['progress'] or 0), str(doc['error_message'] or ''), str(doc['extracted_text'] or ''), str(doc['organized_title'] or ''),
+                 str(doc['summary'] or ''), str(doc['tags_json'] or '[]'), str(doc['key_points_json'] or '[]'), str(doc['organize_status'] or 'pending'),
+                 str(doc['organize_method'] or 'local'), str(doc['organize_error'] or ''), str(doc['organized_at'] or ''), folder_id,
+                 str(doc['updated_at']), str(target['id'])),
+            )
+            continue
+        changed = True
+        mirror_document_id = uuid.uuid4().hex
+        await db.execute(
+            'INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,page_count,status,progress,error_message,'
+            'extracted_text,organized_title,summary,tags_json,key_points_json,organize_status,organize_method,organize_error,organized_at,folder_id,'
+            'origin_document_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (mirror_document_id, mirror_id, owner_id, str(doc['filename']), str(doc['file_type']), int(doc['file_size'] or 0), str(doc['storage_path']),
+             int(doc['page_count'] or 0), str(doc['status']), int(doc['progress'] or 0), str(doc['error_message'] or ''), str(doc['extracted_text'] or ''),
+             str(doc['organized_title'] or ''), str(doc['summary'] or ''), str(doc['tags_json'] or '[]'), str(doc['key_points_json'] or '[]'),
+             str(doc['organize_status'] or 'pending'), str(doc['organize_method'] or 'local'), str(doc['organize_error'] or ''),
+             str(doc['organized_at'] or ''), folder_id, source_document_id, str(doc['created_at']), str(doc['updated_at'])),
+        )
+        for chunk in await fetchall(db, 'SELECT content,page_number,chunk_index,created_at FROM chunks WHERE document_id=? ORDER BY chunk_index', (source_document_id,)):
+            chunk_id = uuid.uuid4().hex
+            page = int(chunk['page_number'] or 1)
+            await db.execute('INSERT INTO chunks(id,document_id,knowledge_id,content,page_number,chunk_index,created_at) VALUES(?,?,?,?,?,?,?)', (chunk_id, mirror_document_id, mirror_id, str(chunk['content']), page, int(chunk['chunk_index'] or 0), str(chunk['created_at'])))
+            await db.execute('INSERT INTO chunks_fts(rowid,content,chunk_id,knowledge_id,filename,page_number) VALUES((SELECT COALESCE(MAX(rowid),0)+1 FROM chunks_fts),?,?,?,?,?)', (str(chunk['content']), chunk_id, mirror_id, str(doc['filename']), page))
+    for leftover in existing.values():
+        changed = True
+        await drop_mirror_document(db, mirror_id, str(leftover['id']), str(leftover['storage_path'] or ''))
+    await db.execute(
+        "UPDATE knowledge_bases SET name=?,description=?,icon=?,document_count=?,mirror_state='ok',mirror_owner=?,updated_at=? WHERE id=?",
+        (str(source['name']), str(source['description'] or ''), str(source['icon'] or DEFAULT_KNOWLEDGE_ICON), count, str(source['user_id']),
+         str(source['updated_at'] or '') if changed else str(row['updated_at'] or ''), mirror_id),
+    )
+    return {'source_name': str(source['name'] or ''), 'source_missing': False, 'count': count}
+
+
+async def writable_knowledge(db: Any, knowledge_id: str, user_id: str) -> Any:
+    """当前用户名下可写的知识库；好友共享过来的库是只读镜像，不允许新增 / 移动 / 删除。"""
+    kb = await fetchone(db, "SELECT * FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
+    if not kb:
+        raise HTTPException(404, '知识库不存在')
+    if str(kb['mirror_of'] or ''):
+        raise HTTPException(403, f"「{kb['name']}」是好友共享给你的知识库，只能阅读和提问，不能改里面的资料")
+    return kb
+
+
+async def writable_knowledge_or_close(db: Any, knowledge_id: str, user_id: str) -> Any:
+    """写入口的统一前置检查：拒绝时把连接一并收掉，不在异常路径上漏连接。"""
+    try:
+        return await writable_knowledge(db, knowledge_id, user_id)
+    except HTTPException:
+        await db.close()
+        raise
 
 
 def order_paid_marker(result: dict) -> str:
@@ -376,7 +640,7 @@ async def retrieve_chunks(db, query: str, user_id: str, knowledge_id: str | None
         scope.append(folder_id)
     sql = (
         "SELECT * FROM (SELECT c.content AS content,c.id AS chunk_id,c.document_id AS document_id,c.page_number AS page_number,d.filename AS filename,k.name AS knowledge_name," + score_sql + " AS hits "
-        "FROM chunks c JOIN documents d ON d.id=c.document_id JOIN knowledge_bases k ON k.id=c.knowledge_id WHERE " + ' AND '.join(where) + ") WHERE hits>=? "
+        "FROM chunks c JOIN documents d ON d.id=c.document_id JOIN knowledge_bases k ON k.id=c.knowledge_id WHERE " + ' AND '.join(where) + ") AS scored WHERE hits>=? "
         "ORDER BY hits DESC, page_number ASC LIMIT ?"
     )
     rows = await fetchall(db, sql, (*scope, min_hits, limit))
@@ -393,6 +657,9 @@ async def retrieve_chunks(db, query: str, user_id: str, knowledge_id: str | None
 
 def document_view(row) -> dict:
     value = row_dict(row) or {}
+    for field in ('error_message', 'extracted_text', 'organized_title', 'summary', 'organize_error', 'organized_at', 'folder_id'):
+        if value.get(field) is None:
+            value[field] = ''
     for field in ('tags_json', 'key_points_json'):
         try:
             value[field.removesuffix('_json')] = json.loads(value.get(field) or '[]')
@@ -466,11 +733,14 @@ async def me(user_id: str = Depends(current_user)) -> dict:
     row = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
     knowledge_usage = await fetchone(db, "SELECT COUNT(*) AS knowledge_bases FROM knowledge_bases WHERE user_id=? AND status='active'", (user_id,))
     document_usage = await fetchone(db, "SELECT COUNT(*) AS documents, COALESCE(SUM(file_size),0) AS storage_bytes FROM documents WHERE user_id=? AND status!='deleted'", (user_id,))
-    questions_used = await questions_this_month(db, user_id)
+    # 会员额度只看「自己建的」知识库与「自己的」资料：好友共享过来的库不计入配额
+    knowledge_usage = await fetchone(db, "SELECT COUNT(*) AS knowledge_bases FROM knowledge_bases WHERE user_id=? AND status='active' AND COALESCE(mirror_of,'')='' AND name<>?", (user_id, SHARED_KNOWLEDGE_NAME))
+    document_usage = await fetchone(db, "SELECT COUNT(*) AS documents, COALESCE(SUM(d.file_size),0) AS storage_bytes FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_id WHERE d.user_id=? AND d.status!='deleted' AND COALESCE(k.mirror_of,'')=''", (user_id,))
+    credits_used = await credits_this_month(db, user_id)
     skills_used = await owned_skill_count(db, user_id)
     await db.close()
     if not row: raise HTTPException(404, "用户不存在")
-    state = account_state(row, questions_used, skills_used)
+    state = account_state(row, credits_used, skills_used)
     return {
         "id": row["id"], "nickname": row["nickname"], "avatar": row["avatar"],
         "membership": state['tier'], "membership_label": state['label'],
@@ -484,13 +754,95 @@ async def me(user_id: str = Depends(current_user)) -> dict:
 @app.patch("/api/me")
 async def update_me(payload: ProfileUpdate, user_id: str = Depends(current_user)) -> dict:
     db = await connect()
-    await db.execute("UPDATE users SET nickname=?, avatar=?, updated_at=? WHERE id=? AND status='active'", (payload.nickname.strip(), payload.avatar.strip(), now(), user_id))
+    columns: list[str] = []
+    values: list[Any] = []
+    if payload.nickname is not None:
+        columns.append("nickname=?")
+        values.append(payload.nickname.strip())
+    if payload.avatar is not None:
+        columns.append("avatar=?")
+        values.append(payload.avatar.strip())
+    if not columns:
+        await db.close()
+        raise HTTPException(422, "没有需要更新的字段")
+    columns.append("updated_at=?")
+    values.append(now())
+    values.append(user_id)
+    await db.execute(f"UPDATE users SET {', '.join(columns)} WHERE id=? AND status='active'", tuple(values))
     await db.commit()
     row = await fetchone(db, "SELECT id,nickname,avatar FROM users WHERE id=? AND status='active'", (user_id,))
     await db.close()
     if not row: raise HTTPException(404, "用户不存在")
     return row_dict(row)
 
+
+# ---- 头像 -------------------------------------------------------------------
+# 微信只提供「头像昵称填写能力」：<button open-type="chooseAvatar"> 回回调给的是本机临时路径
+# （http://tmp/... 或 wxfile://...），换机或重装就失效，所以必须落到服务端。平台不允许静默
+# 读取用户头像昵称，这里不尝试任何“授权后自动拿”的写法。
+AVATAR_DIR_NAME = 'avatars'
+AVATAR_MAX_BYTES = 2 * 1024 * 1024
+AVATAR_MEDIA_TYPES = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp'}
+
+
+def _avatar_safe_id(user_id: str) -> str:
+    """头像文件名只用用户 id 里的安全字符，挡掉 `..` / 通配符这类路径花招。"""
+    return re.sub(r'[^0-9A-Za-z_-]', '', user_id or '')
+
+
+def _avatar_refs(user_id: str) -> list[tuple[str, str]]:
+    safe_id = _avatar_safe_id(user_id)
+    if not safe_id:
+        return []
+    return [(suffix, storage.reference(f'{AVATAR_DIR_NAME}/{safe_id}{suffix}')) for suffix in AVATAR_MEDIA_TYPES]
+
+
+@app.post('/api/me/avatar')
+async def upload_avatar(file: UploadFile = File(...), user_id: str = Depends(current_user)) -> dict:
+    """保存用户选定的头像，并把地址写回用户资料。
+
+    只保留一份：换头像时旧文件当场删掉，不留垃圾。
+    """
+    data = await file.read()
+    if not data:
+        raise HTTPException(422, '头像文件为空')
+    if len(data) > AVATAR_MAX_BYTES:
+        raise HTTPException(413, '头像不能超过 2MB')
+    suffix = Path(file.filename or '').suffix.lower()
+    if suffix not in AVATAR_MEDIA_TYPES:
+        # 微信给的文件名有时没有扩展名，按文件头兜一下，不靠扩展名信任内容
+        suffix = '.png' if data.startswith(b'\x89PNG\r\n') else '.jpg'
+    safe_id = _avatar_safe_id(user_id)
+    if not safe_id:
+        raise HTTPException(422, '用户信息不完整')
+    try:
+        await storage.save_bytes(data, f'{AVATAR_DIR_NAME}/{safe_id}{suffix}', content_type=AVATAR_MEDIA_TYPES[suffix])
+        for stale_suffix, stale_ref in _avatar_refs(user_id):
+            if stale_suffix != suffix:
+                await storage.delete(stale_ref)
+    except storage.StorageError as exc:
+        raise HTTPException(503, '头像存储失败，请稍后重试') from exc
+    avatar_url = f'/api/avatars/{user_id}?v={int(time.time())}'
+    db = await connect()
+    await db.execute("UPDATE users SET avatar=?, updated_at=? WHERE id=? AND status='active'", (avatar_url, now(), user_id))
+    await db.commit(); await db.close()
+    return {'avatar': avatar_url}
+
+
+@app.get('/api/avatars/{user_id}')
+async def get_avatar(user_id: str) -> Response:
+    """头像读取不挂登录态：小程序 <image> 不能带 Authorization 头。
+
+    安全性不靠鉴权而靠两点：文件名去掉了所有非字母数字字符（不可能路径穿越），
+    且用户 id 是随机 32 位十六进制，猜不到别人的。与 /api/content/assets 同一取舍。
+    """
+    for suffix, ref in _avatar_refs(user_id):
+        try:
+            data = await storage.read_bytes(ref)
+        except storage.StorageError:
+            continue
+        return Response(content=data, media_type=AVATAR_MEDIA_TYPES[suffix], headers={'Cache-Control': 'public, max-age=300'})
+    raise HTTPException(404, '头像不存在')
 
 @app.get("/api/me/preferences")
 async def read_preferences(user_id: str = Depends(current_user)) -> dict:
@@ -538,8 +890,9 @@ async def delete_me(user_id: str = Depends(current_user)) -> dict:
     await db.execute("DELETE FROM users WHERE id=?", (user_id,))
     await db.commit(); await db.close()
     for row in files:
-        try: settings.resolve_path(row["storage_path"]).unlink(missing_ok=True)
-        except OSError: pass
+        await storage.delete(str(row['storage_path'] or ''))
+    for _suffix, ref in _avatar_refs(user_id):
+        await storage.delete(ref)
     return {"ok": True}
 
 
@@ -555,7 +908,7 @@ async def pay_plans() -> dict:
         ]
         tiers.append({
             'id': tier, 'label': limits['label'], 'storage_bytes': limits['storage_bytes'], 'storage_label': human_size(limits['storage_bytes']),
-            'knowledge_bases': limits['knowledge_bases'], 'monthly_questions': limits['monthly_questions'],
+            'knowledge_bases': limits['knowledge_bases'], 'monthly_credits': limits['monthly_credits'],
             'max_file_label': human_size(limits['max_file_bytes']), 'plans': plans,
         })
     free = MEMBERSHIP_LIMITS['free']
@@ -563,7 +916,7 @@ async def pay_plans() -> dict:
         'trial_days': TRIAL_DAYS,
         'free': {
             'label': free['label'], 'storage_label': human_size(free['storage_bytes']), 'knowledge_bases': free['knowledge_bases'],
-            'monthly_questions': free['monthly_questions'], 'monthly_questions_after_trial': FREE_QUESTIONS_AFTER_TRIAL,
+            'monthly_credits': free['monthly_credits'], 'monthly_credits_after_trial': FREE_CREDITS_AFTER_TRIAL,
         },
         'tiers': tiers,
     }
@@ -694,14 +1047,473 @@ async def query_pay_order(payload: dict, user_id: str = Depends(current_user)) -
     return {'out_trade_no': out_trade_no, 'order': result}
 
 
+# ---- 微信客服（kf-mgnt / kf-message）---------------------------------------
+# 前端只需要一个 <button open-type="contact">：点击后由微信拉起原生客服会话窗口，
+# 这是官方唯一支持的路径，自己用 web-view 搭聊天页反而拿不到会话额度、也不能转人工。
+# 开发者要做的是后端：处理微信推来的消息（回调）、把消息存下来、以及代客服下发消息。
+# 全部接口见 services/wechat_kf.py；这里只做路由、鉴权与落库。
+# 客服账号管理/代发消息是运营动作，不是普通用户接口，用 KF_ADMIN_TOKEN 单独护住。
+KF_MEDIA_SUFFIX = {'image': '.jpg', 'voice': '.amr', 'video': '.mp4', 'shortvideo': '.mp4'}
+KF_AUTOREPLY_TEXT = (
+    '您好，消息已经收到，我们会尽快回复。\n'
+    '如果是订单、退款、注销账号或删除资料，麻烦把订单号或知识库名称一起发过来，处理会快很多；\n'
+    '常见问题也可以先看「我的 → 使用技巧」。'
+)
+
+
+async def kf_admin(x_kf_admin_token: str | None = Header(default=None)) -> None:
+    """客服管理接口的门槛。
+
+    配了 WECHAT_KF_ADMIN_TOKEN 就必须带头部口令；没配的话开发环境放行（方便本机调），
+    生产环境直接关掉——客服会话里能看到用户的提问原文，不能裸奔。
+    """
+    expected = (settings.wechat_kf_admin_token or '').strip()
+    if expected:
+        if not x_kf_admin_token or not secrets.compare_digest(x_kf_admin_token, expected):
+            raise HTTPException(403, '客服管理口令不正确')
+        return
+    if settings.app_env == 'production':
+        raise HTTPException(503, '未配置 WECHAT_KF_ADMIN_TOKEN，客服管理接口已关闭')
+
+
+def _kf_http(exc: Exception) -> HTTPException:
+    code = getattr(exc, 'code', -1)
+    message = getattr(exc, 'message', str(exc))
+    return HTTPException(status_code=502, detail=f'{message}（errcode {code}）')
+
+
+async def _kf_store_media(openid: str, message: dict) -> str:
+    """用户发来的图片/语音/视频先落到本机，后台看会话时才能直接看到内容。
+
+    下载失败不影响主流程：消息本体已经入库，丢的只是附件。
+    """
+    media_id = str(message.get('media_id') or '')
+    msg_type = str(message.get('msg_type') or '')
+    if not media_id or msg_type not in KF_MEDIA_SUFFIX:
+        return ''
+    try:
+        result = await kf_service.get_temp_media(media_id)
+    except (kf_service.WeChatKfError, httpx.HTTPError):
+        return ''
+    content = result.get('_binary')
+    if not content:
+        return ''
+    safe_openid = re.sub(r'[^0-9A-Za-z_-]', '', openid)[:64] or 'unknown'
+    suffix = KF_MEDIA_SUFFIX[msg_type]
+    return await storage.save_bytes(content, f'kf/{safe_openid}/{uuid.uuid4().hex}{suffix}')
+
+
+async def _kf_save_message(db, *, openid: str, user_id: str, role: str, msg_type: str, content: str, media_id: str = '', media_path: str = '', kf_account: str = '', raw: dict | None = None, source: str = 'push') -> str:
+    message_id = uuid.uuid4().hex
+    await db.execute(
+        "INSERT INTO kf_messages(id,openid,user_id,role,msg_type,content,media_id,media_path,kf_account,raw_json,source,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (message_id, openid, user_id or '', role, msg_type, content or '', media_id or '', media_path or '', kf_account or '', json.dumps(raw or {}, ensure_ascii=False), source, now()),
+    )
+    return message_id
+
+
+async def _kf_touch_session(db, openid: str, user_id: str, *, unread_delta: int = 0, autoreply_at: str = '') -> Any:
+    stamp = now()
+    row = await fetchone(db, 'SELECT * FROM kf_sessions WHERE openid=?', (openid,))
+    if row:
+        await db.execute(
+            "UPDATE kf_sessions SET user_id=CASE WHEN ?!='' THEN ? ELSE user_id END, message_count=message_count+1, unread_count=CASE WHEN unread_count+?<0 THEN 0 ELSE unread_count+? END, last_message_at=CASE WHEN ?!='' THEN ? ELSE last_message_at END, last_autoreply_at=CASE WHEN ?!='' THEN ? ELSE last_autoreply_at END, updated_at=? WHERE openid=?",
+            (user_id, user_id, unread_delta, unread_delta, stamp, stamp, autoreply_at, autoreply_at, stamp, openid),
+        )
+        return row
+    await db.execute(
+        "INSERT INTO kf_sessions(openid,user_id,message_count,unread_count,last_message_at,last_autoreply_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+        (openid, user_id or '', 1, max(0, unread_delta), stamp, autoreply_at, stamp, stamp),
+    )
+    return None
+
+
+def _kf_autoreply_allowed(row: Any) -> bool:
+    if not settings.wechat_kf_autoreply:
+        return False
+    last = str(row['last_autoreply_at'] or '') if row else ''
+    if not last:
+        return True
+    try:
+        previous = datetime.fromisoformat(last)
+    except ValueError:
+        return True
+    cooldown = max(0, int(settings.wechat_kf_autoreply_cooldown_seconds))
+    return (datetime.now(timezone.utc) - previous).total_seconds() >= cooldown
+
+
+async def _kf_handle_inbound(message: dict) -> str:
+    """收一条用户消息：落库 + 必要时回一条回执。返回被动回复 XML（空串表示不回）。"""
+    openid = str(message.get('from_user') or '')
+    if not openid:
+        return ''
+    msg_type = str(message.get('msg_type') or 'text')
+    media_path = await _kf_store_media(openid, message)
+    db = await connect()
+    try:
+        user = await fetchone(db, 'SELECT id FROM users WHERE openid=?', (openid,))
+        user_id = str(user['id']) if user else ''
+        session = await _kf_touch_session(db, openid, user_id, unread_delta=1)
+        await _kf_save_message(
+            db,
+            openid=openid,
+            user_id=user_id,
+            role='user',
+            msg_type=msg_type,
+            content=str(message.get('plain') or ''),
+            media_id=str(message.get('media_id') or ''),
+            media_path=media_path,
+            kf_account=str(message.get('kf_account') or ''),
+            raw=message,
+        )
+
+        allow_reply = _kf_autoreply_allowed(session)
+        if not allow_reply:
+            await db.commit()
+            return ''
+
+        stamp = now()
+        await _kf_save_message(
+            db,
+            openid=openid,
+            user_id=user_id,
+            role='kf',
+            msg_type='text',
+            content=KF_AUTOREPLY_TEXT,
+            kf_account=str(message.get('kf_account') or ''),
+            source='autoreply',
+        )
+        await db.execute('UPDATE kf_sessions SET last_autoreply_at=?, updated_at=? WHERE openid=?', (stamp, stamp, openid))
+        await db.commit()
+    finally:
+        await db.close()
+    return kf_service.build_text_reply(openid, str(message.get('to_user') or ''), KF_AUTOREPLY_TEXT)
+
+
+@app.get('/api/wechat/kf/callback')
+async def kf_callback_verify(signature: str = '', timestamp: str = '', nonce: str = '', echostr: str = '') -> Response:
+    """MP 后台保存「消息推送」URL 时的 GET 验证：验签通过就原样回 echostr。"""
+    if not kf_service.push_ready():
+        raise HTTPException(503, '未配置 WECHAT_KF_TOKEN，客服消息推送不可用')
+    if not kf_service.verify_url_signature(signature, timestamp, nonce):
+        raise HTTPException(403, '客服消息推送签名校验失败')
+    return Response(echostr, media_type='text/plain')
+
+
+@app.post('/api/wechat/kf/callback')
+async def kf_callback(request: Request, signature: str = '', timestamp: str = '', nonce: str = '', msg_signature: str = '', encrypt_type: str = '') -> Response:
+    """收用户消息：安全模式先解密，落库，必要时回一条回执。
+
+    回包要用同一种模式：安全模式回 <Encrypt>，明文模式回明文 XML。
+    """
+    if not kf_service.push_ready():
+        raise HTTPException(503, '未配置 WECHAT_KF_TOKEN，客服消息推送不可用')
+    raw = await request.body()
+    body = raw.decode('utf-8', errors='replace')
+    safe_mode = encrypt_type == 'aes' or bool(msg_signature)
+    if safe_mode:
+        try:
+            encrypt = (ET.fromstring(raw).findtext('Encrypt') or '').strip()
+        except ET.ParseError:
+            raise HTTPException(400, '客服消息推送体不是合法 XML')
+        if not kf_service.verify_encrypt_signature(msg_signature, timestamp, nonce, encrypt):
+            raise HTTPException(403, '客服消息推送签名校验失败')
+        try:
+            decrypted = kf_service.decrypt_message(encrypt)
+        except kf_service.WeChatKfError as exc:
+            raise _kf_http(exc)
+        if decrypted['appid'] and settings.wechat_appid and decrypted['appid'] != settings.wechat_appid:
+            raise HTTPException(403, '客服消息推送 appid 不匹配')
+        body = decrypted['xml']
+    elif not kf_service.verify_url_signature(signature, timestamp, nonce):
+        raise HTTPException(403, '客服消息推送签名校验失败')
+
+    try:
+        message = kf_service.parse_message(body)
+    except kf_service.WeChatKfError as exc:
+        raise _kf_http(exc)
+
+    try:
+        reply = await _kf_handle_inbound(message)
+    except Exception:  # noqa: BLE001 - 任何异常都不能让微信重试 15 次刷接口
+        logging.getLogger('app.kf').exception('处理客服消息失败 openid=%s', message.get('from_user'))
+        return Response('success', media_type='text/plain')
+
+    if not reply:
+        return Response('success', media_type='text/plain')
+    if safe_mode:
+        return Response(kf_service.reply_encrypt(reply, timestamp, nonce), media_type='application/xml')
+    return Response(reply, media_type='application/xml')
+
+
+def _kf_account_suffix() -> str:
+    """客服账号完整格式是「前缀@小程序微信号」，后台只需要填前缀。
+
+    小程序微信号可以从 MP 后台「设置 → 基本设置」看到，配在 WECHAT_KF_ACCOUNT_SUFFIX。
+    没配的话就要求调用方直接传完整账号，避免拼出一个不存在的账号被微信回 40003。
+    """
+    return (settings.wechat_kf_account_suffix or '').strip().lstrip('@')
+
+
+def _kf_full_account(value: str) -> str:
+    raw = (value or '').strip()
+    if not raw:
+        raise HTTPException(422, '缺少 kf_account')
+    if '@' in raw:
+        return raw
+    suffix = _kf_account_suffix()
+    if not suffix:
+        raise HTTPException(422, '请传完整的 kf_account（前缀@小程序微信号），或配置 WECHAT_KF_ACCOUNT_SUFFIX')
+    return f'{raw}@{suffix}'
+
+
+@app.get('/api/wechat/kf/status')
+async def kf_status(_: None = Depends(kf_admin)) -> dict:
+    """运营自查：凭证、消息推送、自动回执各配没配好。不回任何密钥。"""
+    payload = {
+        'credential_configured': kf_service.configured(),
+        'push_configured': kf_service.push_ready(),
+        'safe_mode_configured': bool((settings.wechat_kf_aes_key or '').strip()),
+        'admin_token_configured': bool((settings.wechat_kf_admin_token or '').strip()),
+        'autoreply': bool(settings.wechat_kf_autoreply),
+        'account_suffix': _kf_account_suffix(),
+        'callback_url': '/api/wechat/kf/callback',
+    }
+    if kf_service.configured():
+        try:
+            payload['accounts'] = await kf_service.list_accounts()
+        except kf_service.WeChatKfError as exc:
+            payload['accounts_error'] = exc.message
+    return payload
+
+
+@app.get('/api/wechat/kf/accounts')
+async def kf_accounts(_: None = Depends(kf_admin)) -> dict:
+    """所有客服账号 + 在线客服列表（两个官方接口一起给，运营只看一张表）。"""
+    try:
+        accounts = await kf_service.list_accounts()
+        online = await kf_service.list_online_accounts()
+    except kf_service.WeChatKfError as exc:
+        raise _kf_http(exc)
+    online_ids = {item['kf_account'] for item in online}
+    for item in accounts:
+        item['online'] = item['online'] or item['kf_account'] in online_ids
+    return {'accounts': accounts, 'online': online}
+
+
+@app.get('/api/wechat/kf/accounts/online')
+async def kf_accounts_online(_: None = Depends(kf_admin)) -> list[dict]:
+    try:
+        return await kf_service.list_online_accounts()
+    except kf_service.WeChatKfError as exc:
+        raise _kf_http(exc)
+
+
+@app.post('/api/wechat/kf/accounts')
+async def kf_account_add(payload: dict, _: None = Depends(kf_admin)) -> dict:
+    account = _kf_full_account(str(payload.get('kf_account') or payload.get('prefix') or ''))
+    nickname = str(payload.get('nickname') or '').strip()
+    if not nickname:
+        raise HTTPException(422, '缺少 nickname')
+    try:
+        await kf_service.add_account(account, nickname)
+    except kf_service.WeChatKfError as exc:
+        raise _kf_http(exc)
+    return {'ok': True, 'kf_account': account, 'nickname': nickname}
+
+
+@app.delete('/api/wechat/kf/accounts')
+async def kf_account_del(kf_account: str = Query(default=''), _: None = Depends(kf_admin)) -> dict:
+    account = _kf_full_account(kf_account)
+    try:
+        await kf_service.del_account(account)
+    except kf_service.WeChatKfError as exc:
+        raise _kf_http(exc)
+    return {'ok': True, 'kf_account': account}
+
+
+@app.post('/api/wechat/kf/accounts/admin')
+async def kf_account_set_admin(payload: dict, _: None = Depends(kf_admin)) -> dict:
+    kf_openid = str(payload.get('kf_openid') or '').strip()
+    if not kf_openid:
+        raise HTTPException(422, '缺少 kf_openid（客服的微信号，不是 kf_account）')
+    try:
+        await kf_service.set_admin(kf_openid)
+    except kf_service.WeChatKfError as exc:
+        raise _kf_http(exc)
+    return {'ok': True, 'kf_openid': kf_openid, 'admin': True}
+
+
+@app.delete('/api/wechat/kf/accounts/admin')
+async def kf_account_cancel_admin(kf_openid: str = Query(default=''), _: None = Depends(kf_admin)) -> dict:
+    if not kf_openid.strip():
+        raise HTTPException(422, '缺少 kf_openid')
+    try:
+        await kf_service.cancel_admin(kf_openid.strip())
+    except kf_service.WeChatKfError as exc:
+        raise _kf_http(exc)
+    return {'ok': True, 'kf_openid': kf_openid.strip(), 'admin': False}
+
+
+@app.post('/api/wechat/kf/media')
+async def kf_media_upload(file: UploadFile = File(...), media_type: str = Form(default='image'), _: None = Depends(kf_admin)) -> dict:
+    """上传临时素材，拿到 media_id 后才能给用户发图片/语音/视频/小程序卡片的封面。"""
+    if media_type not in {'image', 'voice', 'video', 'thumb'}:
+        raise HTTPException(422, 'media_type 只支持 image / voice / video / thumb')
+    data = await file.read()
+    if not data:
+        raise HTTPException(422, '文件不能为空')
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(413, '临时素材不能超过 10MB')
+    try:
+        return await kf_service.upload_temp_media(data, file.filename or 'upload.bin', media_type)
+    except kf_service.WeChatKfError as exc:
+        raise _kf_http(exc)
+
+
+@app.post('/api/wechat/kf/send')
+async def kf_send(payload: dict, _: None = Depends(kf_admin)) -> dict:
+    """客服主动下发消息（48 小时会话额度内）。发出去的同时记一行，会话历史里能看到。"""
+    openid = str(payload.get('openid') or '').strip()
+    if not openid:
+        raise HTTPException(422, '缺少 openid')
+    msg_type = str(payload.get('msg_type') or 'text').strip()
+    kf_account = str(payload.get('kf_account') or '').strip()
+    content = str(payload.get('content') or '')
+    try:
+        if msg_type == 'text':
+            if not content.strip():
+                raise HTTPException(422, '文本内容不能为空')
+            result = await kf_service.send_text(openid, content, kf_account, ai_msg=bool(payload.get('ai_msg')))
+        elif msg_type == 'image':
+            media_id = str(payload.get('media_id') or '')
+            if not media_id:
+                raise HTTPException(422, '缺少 media_id')
+            result = await kf_service.send_image(openid, media_id, kf_account)
+        elif msg_type == 'miniprogrampage':
+            thumb_media_id = str(payload.get('thumb_media_id') or '')
+            pagepath = str(payload.get('pagepath') or '')
+            if not thumb_media_id or not pagepath:
+                raise HTTPException(422, '小程序卡片需要 thumb_media_id 与 pagepath')
+            result = await kf_service.send_miniprogrampage(openid, str(payload.get('title') or ''), pagepath, thumb_media_id, str(payload.get('appid') or ''), kf_account)
+        elif msg_type == 'news':
+            articles = payload.get('articles')
+            if not isinstance(articles, list) or not articles:
+                raise HTTPException(422, 'articles 不能为空')
+            result = await kf_service.send_news(openid, articles, kf_account)
+        elif msg_type == 'raw':
+            raw_payload = payload.get('payload')
+            if not isinstance(raw_payload, dict) or not raw_payload:
+                raise HTTPException(422, '原始下发需要 payload')
+            result = await kf_service.send_raw(raw_payload)
+        else:
+            raise HTTPException(422, 'msg_type 只支持 text / image / miniprogrampage / news / raw')
+    except kf_service.WeChatKfError as exc:
+        raise _kf_http(exc)
+
+    summary = content or {'image': '[图片]', 'miniprogrampage': f"[小程序卡片] {payload.get('title') or ''}", 'news': f"[图文] {len(payload.get('articles') or [])} 篇", 'raw': '[自定义消息]'}.get(msg_type, '')
+    db = await connect()
+    try:
+        user = await fetchone(db, 'SELECT id FROM users WHERE openid=?', (openid,))
+        user_id = str(user['id']) if user else ''
+        await _kf_save_message(db, openid=openid, user_id=user_id, role='kf', msg_type=msg_type, content=str(summary), media_id=str(payload.get('media_id') or ''), kf_account=kf_account, raw=dict(payload), source='outbound')
+        await db.execute(
+            "INSERT INTO kf_outbox(id,openid,msg_type,payload_json,state,error,kf_account,created_at,sent_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (uuid.uuid4().hex, openid, msg_type, json.dumps(result, ensure_ascii=False), 'sent', '', kf_account, now(), now()),
+        )
+        await _kf_touch_session(db, openid, user_id, unread_delta=0)
+        await db.commit()
+    finally:
+        await db.close()
+    return {'ok': True, 'openid': openid, 'msg_type': msg_type, 'result': result}
+
+
+@app.post('/api/wechat/kf/typing')
+async def kf_typing(payload: dict, _: None = Depends(kf_admin)) -> dict:
+    """输入状态：人工在后台打字时让用户看到「客服正在输入」。"""
+    openid = str(payload.get('openid') or '').strip()
+    if not openid:
+        raise HTTPException(422, '缺少 openid')
+    command = 'Typing' if str(payload.get('command') or 'Typing') == 'Typing' else 'CancelTyping'
+    try:
+        result = await kf_service.typing(openid, command)
+    except kf_service.WeChatKfError as exc:
+        raise _kf_http(exc)
+    return {'ok': True, 'command': command, 'result': result}
+
+
+@app.get('/api/wechat/kf/sessions')
+async def kf_sessions(limit: int = Query(default=50, ge=1, le=200), only_unread: bool = Query(default=False), _: None = Depends(kf_admin)) -> list[dict]:
+    """客服会话列表：按最后一条消息时间倒序，带未读数，让运营先看最久没人管的。"""
+    db = await connect()
+    try:
+        clause = 'WHERE unread_count > 0' if only_unread else ''
+        rows = await fetchall(db, f'SELECT * FROM kf_sessions {clause} ORDER BY last_message_at DESC LIMIT ?', (limit,))
+        sessions = []
+        for row in rows:
+            item = row_dict(row) or {}
+            last = await fetchone(db, 'SELECT role,msg_type,content,created_at FROM kf_messages WHERE openid=? ORDER BY created_at DESC LIMIT 1', (row['openid'],))
+            item['last_message'] = row_dict(last)
+            sessions.append(item)
+        return sessions
+    finally:
+        await db.close()
+
+
+@app.get('/api/wechat/kf/sessions/{openid}/messages')
+async def kf_session_messages(openid: str, limit: int = Query(default=100, ge=1, le=500), mark_read: bool = Query(default=True), _: None = Depends(kf_admin)) -> dict:
+    db = await connect()
+    try:
+        rows = await fetchall(db, 'SELECT * FROM kf_messages WHERE openid=? ORDER BY created_at DESC LIMIT ?', (openid, limit))
+        messages = [row_dict(row) for row in reversed(rows)]
+        if mark_read:
+            await db.execute('UPDATE kf_sessions SET unread_count=0, updated_at=? WHERE openid=?', (now(), openid))
+            await db.commit()
+        session = await fetchone(db, 'SELECT * FROM kf_sessions WHERE openid=?', (openid,))
+        return {'openid': openid, 'session': row_dict(session), 'messages': messages}
+    finally:
+        await db.close()
+
+
+@app.post('/api/wechat/kf/sessions/{openid}/read')
+async def kf_session_read(openid: str, _: None = Depends(kf_admin)) -> dict:
+    db = await connect()
+    try:
+        await db.execute('UPDATE kf_sessions SET unread_count=0, updated_at=? WHERE openid=?', (now(), openid))
+        await db.commit()
+    finally:
+        await db.close()
+    return {'ok': True, 'openid': openid}
+
+
+@app.get('/api/wechat/kf/unread')
+async def kf_unread(_: None = Depends(kf_admin)) -> dict:
+    """未读总数：运营面板上的小红点就靠它，不用把整个会话列表拉下来。"""
+    db = await connect()
+    try:
+        row = await fetchone(db, 'SELECT COUNT(*) AS sessions, COALESCE(SUM(unread_count),0) AS messages FROM kf_sessions WHERE unread_count > 0')
+        return {'sessions': int(row['sessions'] or 0), 'messages': int(row['messages'] or 0)}
+    finally:
+        await db.close()
+
+
 @app.get("/api/knowledge")
 async def list_knowledge(user_id: str = Depends(current_user)) -> list[dict]:
     db = await connect()
     await ensure_default_knowledge(db, user_id)
     await db.commit()
     rows = await fetchall(db, "SELECT * FROM knowledge_bases WHERE user_id=? AND status='active' ORDER BY CASE WHEN name=? THEN 0 ELSE 1 END, updated_at DESC", (user_id, DEFAULT_KNOWLEDGE_NAME))
+    items = []
+    for row in rows:
+        source_name, missing, count = '', False, int(row['document_count'] or 0)
+        if str(row['mirror_of'] or ''):
+            # 好友共享过来的库：读列表时就与来源对齐，来源更新后这里自动是最新的
+            info = await sync_mirror(db, row)
+            source_name, missing, count = info['source_name'], info['source_missing'], info['count']
+        items.append(knowledge_view(row, live_document_count=count, source_name=source_name, source_missing=missing))
+    await db.commit()
     await db.close()
-    return [row_dict(r) for r in rows]
+    return items
 
 
 @app.get("/api/market")
@@ -726,19 +1538,20 @@ async def market_knowledge(query: str = Query(default="", max_length=80), catego
 async def create_knowledge(payload: KnowledgeCreate, user_id: str = Depends(current_user)) -> dict:
     name = payload.name.strip()
     if not name:
-        raise HTTPException(422, "资料库名称不能为空")
+        raise HTTPException(422, "知识库名称不能为空")
     db = await connect()
     await ensure_default_knowledge(db, user_id)
     user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
-    count = await fetchone(db, "SELECT COUNT(*) AS count FROM knowledge_bases WHERE user_id=? AND status='active'", (user_id,))
+    # 配额只算自己建的知识库：好友共享过来的镜像、系统建的「共享知识库」收件箱都不占名额
+    count = await fetchone(db, "SELECT COUNT(*) AS count FROM knowledge_bases WHERE user_id=? AND status='active' AND COALESCE(mirror_of,'')='' AND name<>?", (user_id, SHARED_KNOWLEDGE_NAME))
     limits = limits_for_user(user)
     if not account_state(user, 0)['entitlements']['can_create_knowledge']:
-        await db.close(); raise HTTPException(403, "免费试用已结束，开通会员后可继续新建资料库")
+        await db.close(); raise HTTPException(403, "免费试用已结束，开通会员后可继续新建知识库")
     if int(count['count']) >= limits['knowledge_bases']:
-        await db.close(); raise HTTPException(403, f"{limits['label']}最多创建 {limits['knowledge_bases']} 个资料库，请升级会员")
+        await db.close(); raise HTTPException(403, f"{limits['label']}最多创建 {limits['knowledge_bases']} 个知识库，请升级会员")
     if name == DEFAULT_KNOWLEDGE_NAME:
         await db.close()
-        raise HTTPException(409, "默认资料库已存在")
+        raise HTTPException(409, "默认知识库已存在")
     item = (uuid.uuid4().hex, user_id, name, payload.description.strip(), payload.icon, 0, "active", now(), now())
     await db.execute("INSERT INTO knowledge_bases(id,user_id,name,description,icon,document_count,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", item); await db.commit(); await db.close()
     return {"id": item[0], "user_id": user_id, "name": name, "description": item[3], "icon": payload.icon, "document_count": 0, "status": "active", "created_at": item[7], "updated_at": item[8]}
@@ -748,14 +1561,21 @@ async def create_knowledge(payload: KnowledgeCreate, user_id: str = Depends(curr
 async def delete_knowledge(knowledge_id: str, user_id: str = Depends(current_user)) -> dict:
     db = await connect(); kb = await fetchone(db, "SELECT id FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id)); user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
     if not kb:
-        await db.close(); raise HTTPException(404, "资料库不存在")
+        await db.close(); raise HTTPException(404, "知识库不存在")
     files = await fetchall(db, "SELECT storage_path FROM documents WHERE knowledge_id=? AND user_id=?", (knowledge_id, user_id))
     await db.execute("DELETE FROM chunks_fts WHERE knowledge_id=?", (knowledge_id,))
     await db.execute('DELETE FROM conversations WHERE knowledge_id=? AND user_id=?', (knowledge_id, user_id))
+    # 邀请链接跟着库一起作废：源库没了，留着 rows 只会让清理和排查变脏
+    await db.execute("DELETE FROM knowledge_shares WHERE knowledge_id=?", (knowledge_id,))
     await db.execute("DELETE FROM knowledge_bases WHERE id=? AND user_id=?", (knowledge_id, user_id)); await db.commit(); await db.close()
+    # 这个库可能正被好友共享着：共享过来的镜像要同步标记失效，不能继续当没事一样可读；
+    # 磁盘上的原文也可能还被共享库引用，所以统一走「没人引用才删」的判断。
+    db2 = await connect()
+    for mirror in await fetchall(db2, "SELECT * FROM knowledge_bases WHERE mirror_of=? AND status='active'", (knowledge_id,)):
+        await sync_mirror(db2, mirror)
     for row in files:
-        try: settings.resolve_path(row["storage_path"]).unlink(missing_ok=True)
-        except OSError: pass
+        await unlink_if_unreferenced(db2, str(row["storage_path"] or ''))
+    await db2.commit(); await db2.close()
     return {"ok": True}
 
 
@@ -763,8 +1583,13 @@ async def delete_knowledge(knowledge_id: str, user_id: str = Depends(current_use
 async def knowledge_detail(knowledge_id: str, user_id: str = Depends(current_user)) -> dict:
     db = await connect(); kb = await fetchone(db, "SELECT * FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id));
     if not kb: await db.close(); raise HTTPException(404, "知识库不存在")
+    # 打开知识库就算一次使用：最近知识库列表按这个时间从左到右排
+    await touch_knowledge_used(db, knowledge_id); await db.commit()
+    # 好友共享过来的库：打开先与来源对齐，回来的一定是最新一版
+    info = await sync_mirror(db, kb) if str(kb['mirror_of'] or '') else {'source_name': '', 'source_missing': False, 'count': 0}
     docs = await fetchall(db, "SELECT id,filename,file_type,file_size,page_count,status,progress,error_message,organized_title,summary,tags_json,key_points_json,organize_status,organize_method,organized_at,folder_id,created_at,updated_at FROM documents WHERE knowledge_id=? AND status!='deleted' ORDER BY created_at DESC", (knowledge_id,)); await db.close()
-    return {"knowledge": row_dict(kb), "documents": [document_view(x) for x in docs]}
+    view = knowledge_view(kb, live_document_count=len(docs), source_name=info['source_name'], source_missing=info['source_missing'])
+    return {"knowledge": view, "documents": [document_view(x) for x in docs], "read_only": view['read_only']}
 
 
 SUGGESTION_FALLBACK = [
@@ -875,6 +1700,7 @@ async def create_folder(payload: FolderCreate, knowledge_id: str, user_id: str =
     db = await connect()
     kb = await fetchone(db, "SELECT id FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
     if not kb: await db.close(); raise HTTPException(404, "知识库不存在")
+    await writable_knowledge_or_close(db, knowledge_id, user_id)
     name = payload.name.strip()
     dup = await fetchone(db, "SELECT id FROM folders WHERE knowledge_id=? AND name=?", (knowledge_id, name))
     if dup: await db.close(); raise HTTPException(409, "已存在同名文件夹")
@@ -890,8 +1716,9 @@ async def create_folder(payload: FolderCreate, knowledge_id: str, user_id: str =
 async def delete_folder(folder_id: str, user_id: str = Depends(current_user)) -> dict:
     """删除文件夹：其中文档移回根目录，不删除文档本身。"""
     db = await connect()
-    folder = await fetchone(db, "SELECT id FROM folders WHERE id=? AND user_id=?", (folder_id, user_id))
+    folder = await fetchone(db, "SELECT id,knowledge_id FROM folders WHERE id=? AND user_id=?", (folder_id, user_id))
     if not folder: await db.close(); raise HTTPException(404, "文件夹不存在")
+    await writable_knowledge_or_close(db, str(folder['knowledge_id']), user_id)
     await db.execute("UPDATE documents SET folder_id='',updated_at=? WHERE folder_id=?", (now(), folder_id))
     await db.execute("DELETE FROM folders WHERE id=?", (folder_id,))
     await db.commit(); await db.close()
@@ -903,6 +1730,7 @@ async def move_document(document_id: str, payload: DocumentMove, user_id: str = 
     db = await connect()
     doc = await fetchone(db, "SELECT id,knowledge_id FROM documents WHERE id=? AND user_id=? AND status!='deleted'", (document_id, user_id))
     if not doc: await db.close(); raise HTTPException(404, "文档不存在")
+    await writable_knowledge_or_close(db, str(doc["knowledge_id"]), user_id)
     if payload.folder_id:
         folder = await fetchone(db, "SELECT id FROM folders WHERE id=? AND user_id=? AND knowledge_id=?", (payload.folder_id, user_id, doc["knowledge_id"]))
         if not folder: await db.close(); raise HTTPException(404, "目标文件夹不存在")
@@ -915,6 +1743,7 @@ async def move_document(document_id: str, payload: DocumentMove, user_id: str = 
 async def upload_document(background_tasks: BackgroundTasks, knowledge_id: str, file: UploadFile = File(...), folder_id: str = Form(default=""), x_upload_filename: str | None = Header(default=None), user_id: str = Depends(current_user)) -> dict:
     db = await connect(); kb = await fetchone(db, "SELECT id FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id)); user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
     if not kb: await db.close(); raise HTTPException(404, "知识库不存在")
+    await writable_knowledge_or_close(db, knowledge_id, user_id)
     if folder_id:
         folder = await fetchone(db, "SELECT id FROM folders WHERE id=? AND user_id=? AND knowledge_id=?", (folder_id, user_id, knowledge_id))
         if not folder: await db.close(); raise HTTPException(404, "目标文件夹不存在")
@@ -922,23 +1751,30 @@ async def upload_document(background_tasks: BackgroundTasks, knowledge_id: str, 
     if not account_state(user, 0)['entitlements']['can_upload']:
         await db.close(); raise HTTPException(403, "免费试用已结束，开通会员后可继续添加资料")
     client_name = unquote(x_upload_filename) if x_upload_filename else file.filename
-    safe_name = Path(client_name or "upload").name; document_id = uuid.uuid4().hex; destination = settings.upload_path / f"{document_id}_{safe_name}"
-    suffix = destination.suffix.lower()
+    safe_name = Path(client_name or "upload").name; document_id = uuid.uuid4().hex
+    suffix = Path(safe_name).suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
         await db.close(); raise HTTPException(415, "暂不支持该文件类型")
     data = await file.read()
     if len(data) > limits['max_file_bytes']:
         await db.close(); raise HTTPException(413, f"单文件不能超过 {human_size(limits['max_file_bytes'])}")
-    used = await fetchone(db, "SELECT COALESCE(SUM(file_size),0) AS bytes FROM documents WHERE user_id=? AND status!='deleted'", (user_id,))
-    if int(used['bytes']) + len(data) > limits['storage_bytes']:
+    if await storage_used_bytes(db, user_id) + len(data) > limits['storage_bytes']:
         await db.close(); raise HTTPException(413, f"{limits['label']}可用空间 {human_size(limits['storage_bytes'])} 已满，升级会员可继续添加")
-    destination.write_bytes(data); timestamp = now()
-    await db.execute("INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (document_id, knowledge_id, user_id, safe_name, suffix, len(data), str(destination), "processing", 15, folder_id, timestamp, timestamp)); await db.commit(); await db.close()
+    try:
+        storage_ref = await storage.save_bytes(data, f"uploads/documents/{document_id}_{safe_name}", content_type=file.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream")
+    except storage.StorageError as exc:
+        await db.close(); raise HTTPException(503, "文件存储失败，请稍后重试") from exc
+    timestamp = now()
+    await db.execute("INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (document_id, knowledge_id, user_id, safe_name, suffix, len(data), storage_ref, "processing", 15, folder_id, timestamp, timestamp)); await db.commit(); await db.close()
     status = "completed"
     error_message = ""
     extracted = ""
     try:
-        text, pages = extract_text(destination, suffix); chunks = split_chunks(text)
+        parsed_path = await storage.materialize(storage_ref, suffix=suffix)
+        try:
+            text, pages = extract_text(parsed_path, suffix); chunks = split_chunks(text)
+        finally:
+            parsed_path.unlink(missing_ok=True)
         extracted = text
         db = await connect(); await db.execute("UPDATE documents SET page_count=?,status='embedding',progress=70,extracted_text=?,updated_at=? WHERE id=?", (pages, text, now(), document_id))
         for index, content in enumerate(chunks):
@@ -967,6 +1803,7 @@ async def import_article(payload: ArticleImportRequest, background_tasks: Backgr
     limits = limits_for_user(user)
     if not kb:
         await db.close(); raise HTTPException(404, "知识库不存在")
+    await writable_knowledge_or_close(db, knowledge_id, user_id)
     if payload.folder_id:
         folder = await fetchone(db, "SELECT id FROM folders WHERE id=? AND user_id=? AND knowledge_id=?", (payload.folder_id, user_id, knowledge_id))
         if not folder: await db.close(); raise HTTPException(404, "目标文件夹不存在")
@@ -980,14 +1817,22 @@ async def import_article(payload: ArticleImportRequest, background_tasks: Backgr
         await db.close(); raise HTTPException(422, str(exc)) from exc
     full_html = build_document_html(article["title"], article["account"], article["html"], payload.url.strip())
     safe_name = f"{article['title'].replace('/', '_')[:60]}.html"
-    destination = settings.upload_path / f"{document_id}_{safe_name}"
-    destination.write_text(full_html, encoding="utf-8")
-    file_size = destination.stat().st_size + sum(f.stat().st_size for f in assets_dir.glob("*") if f.is_file())
-    used = await fetchone(db, "SELECT COALESCE(SUM(file_size),0) AS bytes FROM documents WHERE user_id=? AND status!='deleted'", (user_id,))
-    if int(used['bytes']) + file_size > limits['storage_bytes']:
+    html_data = full_html.encode('utf-8')
+    asset_files = [path for path in assets_dir.iterdir() if path.is_file()]
+    file_size = len(html_data) + sum(path.stat().st_size for path in asset_files)
+    if await storage_used_bytes(db, user_id) + file_size > limits['storage_bytes']:
+        shutil.rmtree(assets_dir, ignore_errors=True)
         await db.close(); raise HTTPException(413, f"{limits['label']}可用空间 {human_size(limits['storage_bytes'])} 已满，升级会员可继续添加")
+    try:
+        for asset_path in asset_files:
+            await storage.save_file(asset_path, f"article_assets/{document_id}/{asset_path.name}", content_type=mimetypes.guess_type(asset_path.name)[0] or 'application/octet-stream')
+        storage_ref = await storage.save_bytes(html_data, f"uploads/documents/{document_id}_{safe_name}", content_type='text/html; charset=utf-8')
+    except storage.StorageError as exc:
+        await db.close(); raise HTTPException(503, "文章资源存储失败，请稍后重试") from exc
+    finally:
+        shutil.rmtree(assets_dir, ignore_errors=True)
     timestamp = now()
-    await db.execute("INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (document_id, knowledge_id, user_id, safe_name, ".html", file_size, str(destination), "processing", 15, payload.folder_id, timestamp, timestamp))
+    await db.execute("INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (document_id, knowledge_id, user_id, safe_name, ".html", file_size, storage_ref, "processing", 15, payload.folder_id, timestamp, timestamp))
     await db.commit(); await db.close()
     status = "completed"; error_message = ""
     try:
@@ -1010,16 +1855,18 @@ async def import_article(payload: ArticleImportRequest, background_tasks: Backgr
 
 
 @app.get("/api/article-assets/{document_id}/{filename}")
-async def article_asset(document_id: str, filename: str) -> FileResponse:
+async def article_asset(document_id: str, filename: str) -> Response:
     """文章图片资源。文档 ID 为随机不可枚举串，资源不含私密信息，无需登录态。"""
     safe = Path(filename).name
     if not document_id.isalnum() or safe != filename:
         raise HTTPException(404, "资源不存在")
-    path = settings.upload_path / "article_assets" / document_id / safe
-    if not path.exists():
-        raise HTTPException(404, "资源不存在")
+    ref = storage.reference(f"article_assets/{document_id}/{safe}")
+    try:
+        data = await storage.read_bytes(ref)
+    except storage.StorageError as exc:
+        raise HTTPException(404, "资源不存在") from exc
     media_type = mimetypes.guess_type(safe)[0] or "application/octet-stream"
-    return FileResponse(path, media_type=media_type)
+    return Response(content=data, media_type=media_type)
 
 
 # --- 运营文案（使用技巧） -------------------------------------------------
@@ -1095,14 +1942,20 @@ async def retry_document(document_id: str, background_tasks: BackgroundTasks, us
     db = await connect(); row = await fetchone(db, "SELECT * FROM documents WHERE id=? AND user_id=? AND status!='deleted'", (document_id, user_id))
     if not row:
         await db.close(); raise HTTPException(404, "文档不存在")
-    path = settings.resolve_path(row["storage_path"]); suffix = row["file_type"]
-    if not path.exists():
-        await db.close(); raise HTTPException(404, "原文文件不存在，无法重新解析")
+    await writable_knowledge_or_close(db, str(row["knowledge_id"]), user_id)
+    storage_ref = str(row["storage_path"] or ''); suffix = str(row["file_type"] or '')
+    try:
+        path = await storage.materialize(storage_ref, suffix=suffix)
+    except storage.StorageError as exc:
+        await db.close(); raise HTTPException(404, "原文文件不存在，无法重新解析") from exc
     await db.execute("DELETE FROM chunks_fts WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)", (document_id,))
     await db.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
     await db.execute("UPDATE documents SET status='processing',progress=15,error_message='',updated_at=? WHERE id=?", (now(), document_id)); await db.commit(); await db.close()
     try:
-        text, pages = extract_text(path, suffix); chunks = split_chunks(text)
+        try:
+            text, pages = extract_text(path, suffix); chunks = split_chunks(text)
+        finally:
+            path.unlink(missing_ok=True)
         db = await connect(); await db.execute("UPDATE documents SET page_count=?,status='embedding',progress=70,extracted_text=?,updated_at=? WHERE id=?", (pages, text, now(), document_id))
         for index, content in enumerate(chunks):
             chunk_id = uuid.uuid4().hex; page = min(pages, index + 1)
@@ -1120,22 +1973,26 @@ async def retry_document(document_id: str, background_tasks: BackgroundTasks, us
 @app.delete("/api/documents/{document_id}")
 async def delete_document(document_id: str, user_id: str = Depends(current_user)) -> dict:
     db = await connect(); row = await fetchone(db, "SELECT storage_path,knowledge_id FROM documents WHERE id=? AND user_id=?", (document_id, user_id));
-    if row:
-        await db.execute('DELETE FROM chunks_fts WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)', (document_id,))
-        await db.execute('DELETE FROM chunks WHERE document_id=?', (document_id,))
-        await db.execute("UPDATE documents SET status='deleted',updated_at=? WHERE id=?", (now(), document_id)); await db.execute("UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?", (row["knowledge_id"], now(), row["knowledge_id"])); await db.commit()
+    if not row:
+        await db.close(); return {"ok": True}
+    await writable_knowledge_or_close(db, str(row["knowledge_id"]), user_id)
+    storage_path = str(row["storage_path"] or "")
+    await db.execute('DELETE FROM chunks_fts WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)', (document_id,))
+    await db.execute('DELETE FROM chunks WHERE document_id=?', (document_id,))
+    await db.execute("UPDATE documents SET status='deleted',updated_at=? WHERE id=?", (now(), document_id))
+    await db.execute("UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?", (row["knowledge_id"], now(), row["knowledge_id"]))
+    await db.commit()
+    # 原文可能被好友共享过去的库引用：一条引用都没有了才删磁盘文件
+    await unlink_if_unreferenced(db, storage_path)
     await db.close()
-    if row:
-        try: settings.resolve_path(row["storage_path"]).unlink(missing_ok=True)
-        except OSError: pass
     return {"ok": True}
 
 
 @app.get("/api/documents/{document_id}/download")
 async def download_document(document_id: str, user_id: str = Depends(current_user)) -> FileResponse:
     db = await connect(); row = await fetchone(db, "SELECT storage_path,filename FROM documents WHERE id=? AND user_id=? AND status!='deleted'", (document_id, user_id)); await db.close()
-    if not row or not settings.resolve_path(row["storage_path"]).exists(): raise HTTPException(404, "文档不存在")
-    return FileResponse(settings.resolve_path(row["storage_path"]), filename=row["filename"], media_type=mimetypes.guess_type(row["filename"])[0] or "application/octet-stream")
+    if not row: raise HTTPException(404, "文档不存在")
+    return await stored_file_response(str(row['storage_path'] or ''), filename=str(row['filename']), media_type=mimetypes.guess_type(str(row['filename']))[0] or "application/octet-stream")
 
 
 @app.get("/api/artifacts/{artifact_id}/download")
@@ -1144,10 +2001,7 @@ async def download_artifact(artifact_id: str, user_id: str = Depends(current_use
     db = await connect(); row = await artifact_service.owned(db, artifact_id, user_id); await db.close()
     if not row:
         raise HTTPException(404, "文件不存在")
-    path = artifact_service.stored_path(row)
-    if not path.is_file():
-        raise HTTPException(404, "文件已不在服务器上")
-    return FileResponse(path, filename=str(row["filename"]), media_type=str(row["mime"] or "application/octet-stream"))
+    return await stored_file_response(str(artifact_service.stored_ref(row)), filename=str(row["filename"]), media_type=str(row["mime"] or "application/octet-stream"))
 
 
 @app.get("/api/artifacts/{artifact_id}/preview")
@@ -1158,10 +2012,11 @@ async def preview_artifact(artifact_id: str, user_id: str = Depends(current_user
     if not row:
         raise HTTPException(404, "文件不存在")
     view = artifact_service.view(row)
-    if not artifact_service.stored_path(row).is_file():
+    storage_ref = artifact_service.stored_ref(row)
+    if not await storage.exists(storage_ref):
         raise HTTPException(404, "文件已不在服务器上")
     if view["kind"] == "text":
-        text, complete = artifact_service.preview_text(artifact_service.stored_path(row))
+        text, complete = artifact_service.preview_text(await storage.read_bytes(storage_ref))
         view["text"] = text
         view["truncated"] = not complete
     return view
@@ -1169,13 +2024,15 @@ async def preview_artifact(artifact_id: str, user_id: str = Depends(current_user
 
 @app.get("/api/documents/{document_id}")
 async def document_detail(document_id: str, user_id: str = Depends(current_user)) -> dict:
-    db = await connect(); row = await fetchone(db, "SELECT id,filename,file_type,file_size,page_count,status,progress,error_message,extracted_text,organized_title,summary,tags_json,key_points_json,organize_status,organize_method,organize_error,organized_at,created_at,updated_at,storage_path FROM documents WHERE id=? AND user_id=? AND status!='deleted'", (document_id, user_id)); await db.close()
-    if not row: raise HTTPException(404, "文档不存在")
+    db = await connect(); row = await fetchone(db, "SELECT id,filename,file_type,file_size,page_count,status,progress,error_message,extracted_text,organized_title,summary,tags_json,key_points_json,organize_status,organize_method,organize_error,organized_at,created_at,updated_at,storage_path FROM documents WHERE id=? AND user_id=? AND status!='deleted'", (document_id, user_id))
+    if not row: await db.close(); raise HTTPException(404, "文档不存在")
+    # 打开一份资料就算一次阅读：最近知识列表按这个时间从上到下排
+    await db.execute("UPDATE documents SET last_viewed_at=? WHERE id=?", (now(), document_id)); await db.commit(); await db.close()
     view = document_view(row)
     if row["file_type"] == ".html":
         try:
-            view["content_html"] = settings.resolve_path(row["storage_path"]).read_text(encoding="utf-8", errors="ignore")
-        except OSError:
+            view["content_html"] = (await storage.read_bytes(str(row["storage_path"] or ''))).decode("utf-8", errors="ignore")
+        except storage.StorageError:
             view["content_html"] = ""
     return view
 
@@ -1192,10 +2049,11 @@ async def update_document_tags(document_id: str, payload: DocumentTagUpdate, use
         if len(tags) >= 12:
             break
     db = await connect()
-    row = await fetchone(db, "SELECT id FROM documents WHERE id=? AND user_id=? AND status!='deleted'", (document_id, user_id))
+    row = await fetchone(db, "SELECT id,knowledge_id FROM documents WHERE id=? AND user_id=? AND status!='deleted'", (document_id, user_id))
     if not row:
         await db.close()
         raise HTTPException(404, "文档不存在")
+    await writable_knowledge_or_close(db, str(row["knowledge_id"]), user_id)
     await db.execute("UPDATE documents SET tags_json=?,updated_at=? WHERE id=?", (json.dumps(tags, ensure_ascii=False), now(), document_id))
     await db.commit()
     updated = await fetchone(db, "SELECT id,filename,file_type,file_size,page_count,status,progress,error_message,organized_title,summary,tags_json,key_points_json,organize_status,organize_method,organized_at,created_at,updated_at FROM documents WHERE id=?", (document_id,))
@@ -1217,13 +2075,22 @@ async def search(q: str = Query(min_length=1), knowledge_id: str | None = None, 
 
 
 @app.get("/api/recent")
-async def recent_overview(limit: int = Query(default=30, ge=1, le=100), user_id: str = Depends(current_user)) -> dict:
+async def recent_overview(limit: int = Query(default=20, ge=1, le=100), user_id: str = Depends(current_user)) -> dict:
     """「最近」页数据源：最近更新的资料库 + 最近动过的文档/文件夹。"""
     db = await connect()
     await ensure_default_knowledge(db, user_id)
     await db.commit()
-    kbs = await fetchall(db, "SELECT id,name,description,icon,document_count,updated_at,created_at FROM knowledge_bases WHERE user_id=? AND status='active' ORDER BY updated_at DESC LIMIT 8", (user_id,))
-    docs = await fetchall(db, "SELECT id,knowledge_id,filename,file_type,file_size,status,created_at,updated_at FROM documents WHERE user_id=? AND status!='deleted' ORDER BY updated_at DESC LIMIT ?", (user_id, limit))
+    # 最近知识库：按「最近使用」排（打开过、提问过都算）；从没用过的退回资料更新时间，
+    # 前端按这个顺序从左到右横向排列。
+    kbs = await fetchall(
+        db,
+        "SELECT id,name,description,icon,document_count,updated_at,created_at,last_used_at FROM knowledge_bases"
+        " WHERE user_id=? AND status='active'"
+        " ORDER BY CASE WHEN COALESCE(last_used_at,'')='' THEN updated_at ELSE last_used_at END DESC LIMIT 8",
+        (user_id,),
+    )
+    # 资料按「看过的时间」排：打开过就顶到最前，没打开过的退回资料更新时间
+    docs = await fetchall(db, "SELECT id,knowledge_id,filename,file_type,file_size,status,created_at,updated_at,last_viewed_at FROM documents WHERE user_id=? AND status!='deleted' ORDER BY CASE WHEN COALESCE(last_viewed_at,'')='' THEN updated_at ELSE last_viewed_at END DESC LIMIT ?", (user_id, limit))
     folders = await fetchall(db, "SELECT id,knowledge_id,name,created_at,updated_at FROM folders WHERE user_id=? ORDER BY updated_at DESC LIMIT ?", (user_id, limit))
     await db.close()
     items = [
@@ -1231,6 +2098,7 @@ async def recent_overview(limit: int = Query(default=30, ge=1, le=100), user_id:
             'id': row['id'], 'kind': 'document', 'name': row['filename'], 'file_type': row['file_type'] or '',
             'file_size': int(row['file_size'] or 0), 'status': row['status'] or 'uploaded',
             'knowledge_id': row['knowledge_id'], 'created_at': row['created_at'], 'updated_at': row['updated_at'],
+            'last_viewed_at': row['last_viewed_at'] or '',
         }
         for row in docs
     ] + [
@@ -1238,11 +2106,12 @@ async def recent_overview(limit: int = Query(default=30, ge=1, le=100), user_id:
             'id': row['id'], 'kind': 'folder', 'name': row['name'], 'file_type': '',
             'file_size': 0, 'status': 'folder',
             'knowledge_id': row['knowledge_id'], 'created_at': row['created_at'], 'updated_at': row['updated_at'],
+            'last_viewed_at': '',
         }
         for row in folders
     ]
-    # 文档与文件夹混合排序，按最近更新时间统一呈现
-    items.sort(key=lambda item: item['updated_at'] or '', reverse=True)
+    # 文档与文件夹混合排序：文档看「打开时间」，文件夹看「内容变动时间」
+    items.sort(key=lambda item: item['last_viewed_at'] or item['updated_at'] or '', reverse=True)
     return {'knowledge': [row_dict(row) for row in kbs], 'items': items[:limit]}
 
 
@@ -1256,8 +2125,13 @@ async def make_sources(db, knowledge_id: str, query: str, user_id: str, folder_i
 
 async def remaining_storage(db, user_id: str, limits: dict) -> int:
     """该用户当前还剩多少可用空间（每次登记产物都重算，一轮内多个产物不会超配额）。"""
-    row = await fetchone(db, "SELECT COALESCE(SUM(file_size),0) AS bytes FROM documents WHERE user_id=? AND status!='deleted'", (user_id,))
-    return max(0, int(limits['storage_bytes']) - int((row['bytes'] if row else 0) or 0))
+    return max(0, int(limits['storage_bytes']) - await storage_used_bytes(db, user_id))
+
+
+async def storage_used_bytes(db, user_id: str) -> int:
+    """已用空间只算自己的资料：好友共享过来的库与来源共用同一份原文，不重复计费。"""
+    row = await fetchone(db, "SELECT COALESCE(SUM(d.file_size),0) AS bytes FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_id WHERE d.user_id=? AND d.status!='deleted' AND COALESCE(k.mirror_of,'')=''", (user_id,))
+    return int((row['bytes'] if row else 0) or 0)
 
 
 @app.post("/api/chat/stream")
@@ -1265,12 +2139,12 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
     rate_limit(f"chat:{user_id}", 15, 60, "提问太频繁啦，喝口水休息一下再试")
     db = await connect()
     account = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
-    state = account_state(account, await questions_this_month(db, user_id))
+    state = account_state(account, await credits_this_month(db, user_id))
     limits = limits_for_user(account)
     if not state['entitlements']['can_ask']:
-        limit = state['quota']['questions_limit']
+        limit = state['quota']['credits_limit']
         await db.close()
-        raise HTTPException(429, f"本月 {limit} 次问答额度已用完，开通会员可继续提问")
+        raise HTTPException(429, f"本月 {limit} 积分已用完，开通会员可继续提问")
     if payload.knowledge_id:
         kb = await fetchone(db, "SELECT id,name FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (payload.knowledge_id, user_id))
     else:
@@ -1292,6 +2166,8 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
             await db.close()
             raise HTTPException(404, "文件夹不存在")
         folder_name = folder["name"]
+    # 在这个知识库里提问也算使用
+    await touch_knowledge_used(db, knowledge_id)
     # 执行规划模式：走 harness agent 自带的 web_search / web_fetch 工具链（DeepSeek 原生
     # 搜索，复用 DEEPSEEK_API_KEY，不需要额外的 EXA_API_KEY）——真·联网检索 + 任务规划。
     # harness 未启用时才回退到直连搜索/纯模型通道。
@@ -1404,11 +2280,14 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
         # 工具产物：agent 本轮生成的文件（报告 / 表格 / 演示稿 / 图 …）随消息落库。
         # 知识库问答里的产物同时登记进知识库，纯对话（执行规划）只在对话里给出文件。
         produced_artifacts: list[dict] = []
+        # 本轮真实用量（harness 每个 assistant/message 事件的 usage 已在服务层累加），
+        # 拿到后按「成本 × 1.5」的积分口径落一条流水。
+        turn_usage: dict | None = None
         save_artifacts_to_kb = bool(state['entitlements']['can_upload']) and payload.mode != 'web'
         yield f"data: {json.dumps({'type':'meta','conversation_id':conversation_id,'sources':sources}, ensure_ascii=False)}\n\n"
         try:
             # harness 模型统一取后端配置（深度思考即 deepseek-flash，见 HARNESS_MODEL）
-            turn_model = settings.harness_model if harness_configured() else payload.model
+            turn_model = settings.harness_model if harness_configured() else (payload.model or settings.llm_model or settings.deepseek_model)
             # 技能已在进入流之前解析好：内置技能 = 技能包 slug，我的技能 = 技能指令文本
             # 计划模式：执行规划通道打开官方 plan mode（计划先评审、批准后再执行）。
             # 请求显式带 plan 时以请求为准，便于前端按入口切换。
@@ -1462,6 +2341,10 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
                         background_tasks.add_task(organize_document, record['document_id'])
                     yield f"data: {json.dumps({'type':'artifact','artifact':record}, ensure_ascii=False)}\n\n"
                     continue
+                if kind == 'usage':
+                    # 用量事件不进正文、也不落过程节点，只用于计费
+                    turn_usage = event.get('usage') or turn_usage
+                    continue
                 piece = event['text']
                 answer += piece; yield f"data: {json.dumps({'type':'delta','content':piece}, ensure_ascii=False)}\n\n"
             if not answer.strip():
@@ -1469,10 +2352,11 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
                 # 发 error 让前端提示重试
                 yield f"data: {json.dumps({'type':'error','message':'网络波动，本次回答未完成，请重新发送。'}, ensure_ascii=False)}\n\n"
                 return
+            assistant_message_id = uuid.uuid4().hex
             await db.execute(
                 "INSERT INTO messages(id,conversation_id,role,content,sources_json,trace_json,reason,duration_ms,artifacts_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
-                    uuid.uuid4().hex, conversation_id, "assistant", answer,
+                    assistant_message_id, conversation_id, "assistant", answer,
                     json.dumps(sources, ensure_ascii=False),
                     json.dumps(trace_items, ensure_ascii=False),
                     "".join(reason_parts).strip(),
@@ -1481,11 +2365,25 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
                     now(),
                 ),
             ); await db.commit()
+            # 积分结算：harness 上报了真实用量就用真实值，兜底直连通道拿不到计量时按字数估算。
+            # 结算失败不能带走已经产出的回答，所以这里只记日志，不影响正文与 done。
+            turn_quote = None
+            try:
+                billable = turn_usage if total_tokens(turn_usage) > 0 else estimate_usage(len(payload.content) + len(system_content), len(answer))
+                turn_quote = await charge_turn(db, user_id, conversation_id, assistant_message_id, turn_model, billable)
+            except Exception as exc:
+                print(f'[credits] 结算失败：{exc}', flush=True)
             await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now(), conversation_id)); await db.commit()
-            yield f"data: {json.dumps({'type':'done'}, ensure_ascii=False)}\n\n"
+            done_payload = {'type': 'done'}
+            if turn_quote:
+                used_row = await fetchone(db, "SELECT COALESCE(SUM(credits),0) AS used FROM usage_logs WHERE user_id=? AND created_at>=?", (user_id, period_start_iso()))
+                done_payload['credits'] = turn_quote['credits']
+                done_payload['credits_used'] = int((used_row['used'] if used_row else 0) or 0)
+                done_payload['credits_limit'] = state['quota']['credits_limit']
+            yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
             # 滚动压缩旧轮次（done 已发出，压缩不阻塞正文流；失败下轮重试）
             try:
-                await maybe_compress(db, conversation_id, payload.model)
+                await maybe_compress(db, conversation_id, turn_model)
             except Exception as exc:
                 print(f'[memory] 压缩失败：{exc}', flush=True)
         except Exception as exc:
@@ -1595,18 +2493,29 @@ async def conversation_detail(conversation_id: str, user_id: str = Depends(curre
 
 @app.post('/api/shares')
 async def create_share(payload: ShareCreate, user_id: str = Depends(current_user)) -> dict:
-    """把一条回答落成分享卡片，供用户转发给微信好友。
+    """把用户勾选的回答与文件落成分享卡片，供其转发给微信好友。
 
-    只保存问答正文与出处文件名，不保存分享者的昵称 / 头像 / openid：
+    只保存问答正文、出处文件名与产物文件名，不保存分享者的昵称 / 头像 / openid：
     好友点开卡片看到的是内容本身，而不是分享者的账号信息。
+    文件只存产物 id，公开页凭分享 id 取文件，再按卡片作者校验归属。
     """
     rate_limit(f"share:{user_id}", 30, 60, '分享过于频繁，请稍后再试')
-    share_id = secrets.token_urlsafe(9)
     sources = [{'filename': item.filename, 'page_number': item.page_number, 'url': item.url} for item in payload.sources if item.filename or item.url]
+    share_id = secrets.token_urlsafe(9)
     db = await connect()
+    files: list[dict] = []
+    for item in payload.files:
+        row = await fetchone(db, 'SELECT id,filename,file_type,file_size FROM artifacts WHERE id=? AND user_id=?', (item.artifact_id, user_id))
+        if not row:
+            continue  # 不是自己的产物就不放进分享内容，宁少勿错
+        name = str(row['filename'] or item.name or '文件')[:200]
+        # 后缀一并落库：公开页要按类型决定走图片预览还是微信文档渲染器，不回查产物表
+        suffix = str(row['file_type'] or '').lstrip('.').lower() or Path(name).suffix.lstrip('.').lower()
+        files.append({'artifact_id': row['id'], 'name': name, 'size': int(row['file_size'] or 0), 'suffix': suffix})
     await db.execute(
-        'INSERT INTO share_cards(id,user_id,knowledge_name,question,answer,sources_json,views,created_at) VALUES(?,?,?,?,?,?,0,?)',
-        (share_id, user_id, payload.knowledge_name, payload.question, payload.answer, json.dumps(sources, ensure_ascii=False), now()),
+        'INSERT INTO share_cards(id,user_id,title,knowledge_name,question,answer,sources_json,files_json,views,created_at) VALUES(?,?,?,?,?,?,?,?,0,?)',
+        (share_id, user_id, payload.title, payload.knowledge_name, payload.question, payload.answer,
+         json.dumps(sources, ensure_ascii=False), json.dumps(files, ensure_ascii=False), now()),
     )
     # 分享卡片给好友看一段时间就够：顺手清掉半年前的记录，避免只增不减
     await db.execute('DELETE FROM share_cards WHERE created_at < ?', ((datetime.now(timezone.utc) - timedelta(days=180)).isoformat(),))
@@ -1621,6 +2530,26 @@ def valid_share_id(share_id: str) -> bool:
     return all(char.isascii() and (char.isalnum() or char in '-_') for char in share_id)
 
 
+def valid_share_token(token: str) -> bool:
+    """知识库邀请 token 同样是 url-safe 随机串，长度按 secrets.token_urlsafe(24) 卡死。"""
+    if not 16 <= len(token) <= 96:
+        return False
+    return all(char.isascii() and (char.isalnum() or char in '-_') for char in token)
+
+
+async def knowledge_share_state(db: Any, share: Any, user_id: str) -> str:
+    """一条邀请链接对当前访客的状态：open=还没人领 / mine=我领的 / taken=别人领的。"""
+    if int(share['revoked'] or 0):
+        return 'revoked'
+    expires_at = str(share['expires_at'] or '')
+    if expires_at and expires_at <= now():
+        return 'expired'
+    accepted_by = str(share['accepted_by'] or '')
+    if not accepted_by:
+        return 'open'
+    return 'mine' if accepted_by == user_id else 'taken'
+
+
 @app.get('/api/shares/{share_id}')
 async def read_share(share_id: str, request: Request) -> dict:
     """公开只读：好友点开分享卡片时读取内容，不需要登录。
@@ -1631,12 +2560,487 @@ async def read_share(share_id: str, request: Request) -> dict:
         raise HTTPException(404, '分享内容不存在或已失效')
     rate_limit(f"share-read:{request.client.host if request.client else 'unknown'}", 120, 60, '访问过于频繁，请稍后再试')
     db = await connect()
-    row = await fetchone(db, 'SELECT id,knowledge_name,question,answer,sources_json,views,created_at FROM share_cards WHERE id=?', (share_id,))
+    row = await fetchone(db, 'SELECT id,title,knowledge_name,question,answer,sources_json,files_json,views,created_at FROM share_cards WHERE id=?', (share_id,))
     if not row:
         await db.close(); raise HTTPException(404, '分享内容不存在或已失效')
     await db.execute('UPDATE share_cards SET views=COALESCE(views,0)+1 WHERE id=?', (share_id,))
     await db.commit(); await db.close()
-    return {'id': row['id'], 'question': row['question'] or '', 'answer': row['answer'], 'knowledge_name': row['knowledge_name'] or '', 'sources': decode_sources(row['sources_json']), 'views': int(row['views'] or 0) + 1, 'created_at': row['created_at']}
+    files = decode_sources(row['files_json'])
+    # 文件只对外暴露序号与文件名：产物 id 是取件凭证，不写进公开返回体
+    public_files = [
+        {'index': index, 'name': str(item.get('name') or '文件'), 'size': int(item.get('size') or 0), 'suffix': str(item.get('suffix') or '')}
+        for index, item in enumerate(files)
+    ]
+    return {'id': row['id'], 'title': row['title'] or '', 'question': row['question'] or '', 'answer': row['answer'], 'knowledge_name': row['knowledge_name'] or '', 'sources': decode_sources(row['sources_json']), 'files': public_files, 'views': int(row['views'] or 0) + 1, 'created_at': row['created_at']}
+
+
+@app.get('/api/shares/{share_id}/files/{index}')
+async def download_share_file(share_id: str, index: int, request: Request) -> FileResponse:
+    """公开只读：好友从分享页取走作者勾选的文件。
+
+    取件范围被分享卡片钉死：只能拿这张卡片列出的第 index 个文件，
+    且必须仍然属于卡片作者；作者删掉产物后这里立即 404。
+    """
+    if not valid_share_id(share_id) or index < 0 or index > 32:
+        raise HTTPException(404, '文件不存在或已失效')
+    rate_limit(f"share-file:{request.client.host if request.client else 'unknown'}", 120, 60, '访问过于频繁，请稍后再试')
+    db = await connect()
+    card = await fetchone(db, 'SELECT user_id,files_json FROM share_cards WHERE id=?', (share_id,))
+    if not card:
+        await db.close(); raise HTTPException(404, '文件不存在或已失效')
+    files = decode_sources(card['files_json'])
+    if index >= len(files):
+        await db.close(); raise HTTPException(404, '文件不存在或已失效')
+    artifact_id = str(files[index].get('artifact_id') or '')
+    row = await fetchone(db, 'SELECT id,filename,mime,storage_path FROM artifacts WHERE id=? AND user_id=?', (artifact_id, card['user_id']))
+    await db.close()
+    if not row:
+        raise HTTPException(404, '文件不存在或已失效')
+    return await stored_file_response(str(row['storage_path'] or ''), filename=str(row['filename']), media_type=str(row['mime'] or 'application/octet-stream'))
+
+
+# 分享到知识库时不做 OCR 的图片类：图片正文靠模型看图 + 人工，不强占用请求时间
+SHARE_IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.webp'}
+
+
+async def register_knowledge_document(db: Any, *, knowledge_id: str, user_id: str, storage_ref: str, name: str, size: int, folder_id: str = '') -> tuple[str, bool]:
+    """把一份落在磁盘上的文件登记成知识库文档：分块 + 全文索引 + 计数。
+
+    上传、对话内容存知识库、好友分享收件三条路径共用这一份实现，保证三种来源
+    出来的文档在检索、预览、整理上的行为完全一致。返回 (document_id, 是否有正文)。
+    """
+    document_id = uuid.uuid4().hex
+    timestamp = now()
+    suffix = Path(name).suffix.lower()
+    await db.execute(
+        "INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,organize_status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (document_id, knowledge_id, user_id, name, suffix, size, storage_ref, 'processing', 15, folder_id, 'pending', timestamp, timestamp),
+    )
+    text = ''
+    pages = 1
+    parsed_path = None
+    try:
+        if suffix not in SHARE_IMAGE_SUFFIXES:
+            parsed_path = await storage.materialize(storage_ref, suffix=suffix)
+            text, pages = extract_text(parsed_path, suffix)
+    except Exception as exc:  # 解析失败不影响文件本身的预览与下载
+        print(f'[share] 解析失败 {name}: {exc}', flush=True)
+    finally:
+        if parsed_path is not None:
+            parsed_path.unlink(missing_ok=True)
+    chunks = split_chunks(text) if text.strip() else []
+    for index, chunk in enumerate(chunks):
+        chunk_id = uuid.uuid4().hex
+        await db.execute(
+            'INSERT INTO chunks(id,document_id,knowledge_id,content,page_number,chunk_index,created_at) VALUES(?,?,?,?,?,?,?)',
+            (chunk_id, document_id, knowledge_id, chunk, min(pages, index + 1), index, timestamp),
+        )
+        await db.execute(
+            'INSERT INTO chunks_fts(rowid,content,chunk_id,knowledge_id,filename,page_number) VALUES((SELECT COALESCE(MAX(rowid),0)+1 FROM chunks_fts),?,?,?,?,?)',
+            (chunk, chunk_id, knowledge_id, name, min(pages, index + 1)),
+        )
+    await db.execute(
+        "UPDATE documents SET status='completed',progress=100,page_count=?,extracted_text=?,organize_status=?,updated_at=? WHERE id=?",
+        (max(1, pages), text, 'processing' if text.strip() else 'pending', now(), document_id),
+    )
+    await db.execute(
+        "UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?",
+        (knowledge_id, now(), knowledge_id),
+    )
+    return document_id, bool(text.strip())
+
+
+@app.post('/api/shares/to-knowledge')
+async def share_to_knowledge(payload: ShareToKnowledge, background_tasks: BackgroundTasks, user_id: str = Depends(current_user)) -> dict:
+    """把对话里勾选的内容与文件存进指定知识库。
+
+    正文按 Markdown 文档入库（可检索、可被 AI 整理），勾选的产物复制一份进知识库，
+    对话里的原件不动。空间与权益走和上传同一套口径：空间不够就明说哪些没存进去，
+    不做静默丢文件。
+    """
+    rate_limit(f"share-kb:{user_id}", 60, 60, '保存过于频繁，请稍后再试')
+    title = re.sub(r'[\\/:*?"<>|]', ' ', (payload.title or '').strip())[:60].strip() or '对话内容'
+    content = (payload.content or '').strip()
+    if not content and not payload.artifact_ids:
+        raise HTTPException(400, '没有选中可保存的内容')
+    db = await connect()
+    kb = await fetchone(db, "SELECT id,name FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (payload.knowledge_id, user_id))
+    if not kb:
+        await db.close(); raise HTTPException(404, '知识库不存在')
+    folder_id = payload.folder_id or ''
+    if folder_id:
+        folder = await fetchone(db, 'SELECT id FROM folders WHERE id=? AND user_id=? AND knowledge_id=?', (folder_id, user_id, payload.knowledge_id))
+        if not folder:
+            await db.close(); raise HTTPException(404, '目标文件夹不存在')
+    user = await fetchone(db, 'SELECT * FROM users WHERE id=?', (user_id,))
+    limits = limits_for_user(user)
+    if not account_state(user, 0)['entitlements']['can_upload']:
+        await db.close(); raise HTTPException(403, '免费试用已结束，开通会员后可继续添加资料')
+    room = limits['storage_bytes'] - await storage_used_bytes(db, user_id)
+    if room <= 0:
+        await db.close(); raise HTTPException(413, f"{limits['label']}可用空间已满，升级会员可继续添加")
+
+    async def store(storage_ref: str, name: str, size: int) -> str:
+        """登记成知识库文档：分块 + 全文索引 + 计数，和上传走同一份实现。"""
+        document_id, has_text = await register_knowledge_document(
+            db, knowledge_id=payload.knowledge_id, user_id=user_id,
+            storage_ref=storage_ref, name=name, size=size, folder_id=folder_id,
+        )
+        if has_text:
+            # 有正文才排整理任务：空正文排了也是一条空摘要
+            to_organize.append(document_id)
+        return document_id
+
+    saved: list[dict] = []
+    skipped: list[str] = []
+    to_organize: list[str] = []
+    if content:
+        name = f'{title}.md'
+        document_id = uuid.uuid4().hex
+        body = f'# {title}\n\n{content}\n'
+        data = body.encode('utf-8')
+        if len(data) > room:
+            await db.close(); raise HTTPException(413, f"{limits['label']}可用空间不足，先清理或升级会员")
+        storage_ref = await storage.save_bytes(data, f'uploads/documents/{document_id}_{name}', content_type='text/markdown; charset=utf-8')
+        room -= len(data)
+        await store(storage_ref, name, len(data))
+        saved.append({'name': name, 'kind': 'text'})
+
+    for artifact_id in payload.artifact_ids:
+        row = await fetchone(db, 'SELECT * FROM artifacts WHERE id=? AND user_id=?', (artifact_id, user_id))
+        if not row:
+            continue
+        source_ref = artifact_service.stored_ref(row)
+        name = Path(str(row['filename'] or '文件')).name[:120] or '文件'
+        if not await storage.exists(source_ref):
+            skipped.append(name)
+            continue
+        size = int(row['file_size'] or 0)
+        if size > room:
+            skipped.append(name)
+            continue
+        document_id = uuid.uuid4().hex
+        try:
+            destination_ref = await storage.copy_ref(source_ref, f'uploads/documents/{document_id}_{name}')
+        except storage.StorageError:
+            skipped.append(name)
+            continue
+        room -= size
+        await store(destination_ref, name, size)
+        saved.append({'name': name, 'kind': 'file'})
+
+    await db.commit(); await db.close()
+    for document_id in to_organize:
+        background_tasks.add_task(organize_document, document_id)
+    return {
+        'knowledge_id': payload.knowledge_id,
+        'knowledge_name': kb['name'],
+        'saved': saved,
+        'skipped': skipped,
+        'message': f'已存入「{kb["name"]}」' + (f'，{len(skipped)} 个文件因空间不足未存入' if skipped else ''),
+    }
+
+
+# 好友点开分享卡片后落地的那个知识库：固定名字、每个用户只有一个。
+# 它是「收件箱」而不是用户自建的资料库，所以不占「最多 N 个资料库」的名额，容量仍按会员档位统一算。
+SHARED_KNOWLEDGE_NAME = '共享知识库'
+SHARED_KNOWLEDGE_DESCRIPTION = '好友通过分享链接发来的对话与文件，都收在这里'
+SHARED_KNOWLEDGE_ICON = 'book'
+SHARED_FOLDER_NAME = '分享的文件'
+
+
+async def ensure_shared_knowledge(db: Any, user_id: str) -> Any:
+    """拿到（必要时创建）这个用户的「共享知识库」。"""
+    row = await fetchone(db, "SELECT id,name FROM knowledge_bases WHERE user_id=? AND name=? AND status='active'", (user_id, SHARED_KNOWLEDGE_NAME))
+    if row:
+        return row
+    knowledge_id = uuid.uuid4().hex
+    timestamp = now()
+    await db.execute(
+        "INSERT INTO knowledge_bases(id,user_id,name,description,icon,document_count,visibility,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (knowledge_id, user_id, SHARED_KNOWLEDGE_NAME, SHARED_KNOWLEDGE_DESCRIPTION, SHARED_KNOWLEDGE_ICON, 0, 'private', 'active', timestamp, timestamp),
+    )
+    return await fetchone(db, 'SELECT id,name FROM knowledge_bases WHERE id=?', (knowledge_id,))
+
+
+async def ensure_shared_folder(db: Any, user_id: str, knowledge_id: str) -> str:
+    """共享知识库里专门放文件的那一层：文件归到「分享的文件」，对话正文放根目录。"""
+    row = await fetchone(db, 'SELECT id FROM folders WHERE knowledge_id=? AND user_id=? AND name=?', (knowledge_id, user_id, SHARED_FOLDER_NAME))
+    if row:
+        return str(row['id'])
+    folder_id = uuid.uuid4().hex
+    timestamp = now()
+    await db.execute('INSERT INTO folders(id,knowledge_id,user_id,name,created_at,updated_at) VALUES(?,?,?,?,?,?)', (folder_id, knowledge_id, user_id, SHARED_FOLDER_NAME, timestamp, timestamp))
+    return folder_id
+
+
+@app.post('/api/shares/{share_id}/claim')
+async def claim_share(share_id: str, background_tasks: BackgroundTasks, user_id: str = Depends(current_user)) -> dict:
+    """把好友分享给你的内容收进你的「共享知识库」。
+
+    分享页对好友是公开的，但「收进来」是收件人的动作，所以这一步要登录（小程序里就是微信登录）。
+    同一张卡片谁来点就收进谁的共享知识库，彼此不串。
+
+    分流规则：
+      · 卡片带文件 → 复制一份进「共享知识库 / 分享的文件」，拷不动的记在 skipped 里，不静默丢；
+      · 卡片带正文 → 正文落成一篇 Markdown 放在共享知识库根目录，能被检索、能被继续追问。
+    收件记录落在 share_claims：同一个人重复点开同一张卡片不会重复入库。
+    """
+    if not valid_share_id(share_id):
+        raise HTTPException(404, '分享内容不存在或已失效')
+    rate_limit(f"share-claim:{user_id}", 60, 60, '收件过于频繁，请稍后再试')
+    db = await connect()
+    card = await fetchone(db, 'SELECT id,user_id,title,knowledge_name,question,answer,sources_json,files_json FROM share_cards WHERE id=?', (share_id,))
+    if not card:
+        await db.close(); raise HTTPException(404, '分享内容不存在或已失效')
+
+    shared = await ensure_shared_knowledge(db, user_id)
+    knowledge_id = str(shared['id'])
+    knowledge_name = str(shared['name'])
+
+    claimed = await fetchone(db, 'SELECT knowledge_id,folder_id,documents_json FROM share_claims WHERE share_id=? AND user_id=?', (share_id, user_id))
+    if claimed:
+        documents = decode_sources(claimed['documents_json'])
+        await db.close()
+        return {'knowledge_id': str(claimed['knowledge_id']), 'knowledge_name': knowledge_name, 'folder_id': str(claimed['folder_id'] or ''), 'documents': documents, 'skipped': [], 'already': True, 'message': f'这条分享已经在你的「{knowledge_name}」里了'}
+
+    files = decode_sources(card['files_json'])
+    answer = str(card['answer'] or '').strip()
+    question = str(card['question'] or '').strip()
+    if not answer and not files:
+        await db.close(); raise HTTPException(400, '这条分享没有可收取的内容')
+
+    user = await fetchone(db, 'SELECT * FROM users WHERE id=?', (user_id,))
+    limits = limits_for_user(user)
+    if not account_state(user, 0)['entitlements']['can_upload']:
+        await db.close(); raise HTTPException(403, '免费试用已结束，开通会员后可继续收下分享内容')
+    room = limits['storage_bytes'] - await storage_used_bytes(db, user_id)
+    if room <= 0:
+        await db.close(); raise HTTPException(413, f"{limits['label']}可用空间已满，升级会员后可继续收下分享内容")
+
+    folder_id = ''
+    saved: list[dict] = []
+    skipped: list[str] = []
+    to_organize: list[str] = []
+
+    # 正文：一句话也能当一篇资料存下来，好友后续可以直接在这篇上追问
+    if answer:
+        raw_title = str(card['title'] or question or '分享的内容')
+        title = re.sub(r'[\\/:*?"<>|]', ' ', raw_title).strip()[:60] or '分享的内容'
+        name = f'{title}.md'
+        body = f'# {title}\n\n'
+        if question:
+            body += f'**好友的提问**\n\n{question}\n\n'
+        body += answer + '\n'
+        sources = decode_sources(card['sources_json'])
+        if sources:
+            lines = []
+            for index, item in enumerate(sources):
+                label = str(item.get('filename') or item.get('url') or '出处')
+                page = int(item.get('page_number') or 0)
+                lines.append(f'{index + 1}. {label}' + (f'（第 {page} 页）' if page else ''))
+            body += '\n\n---\n\n**参考出处**\n\n' + '\n'.join(lines) + '\n'
+        data = body.encode('utf-8')
+        if len(data) > room:
+            await db.close(); raise HTTPException(413, f"{limits['label']}可用空间不足，先清理或升级会员")
+        document_id = uuid.uuid4().hex
+        storage_ref = await storage.save_bytes(data, f'uploads/documents/{document_id}_{name}', content_type='text/markdown; charset=utf-8')
+        room -= len(data)
+        registered, has_text = await register_knowledge_document(
+            db, knowledge_id=knowledge_id, user_id=user_id, storage_ref=storage_ref, name=name, size=len(data),
+        )
+        if has_text:
+            to_organize.append(registered)
+        saved.append({'name': name, 'kind': 'text', 'document_id': registered})
+
+    # 文件：拷一份到收件人的空间里，原件仍在分享者名下，两边互不影响
+    for item in files:
+        artifact_id = str(item.get('artifact_id') or '')
+        row = await fetchone(db, 'SELECT id,filename,file_size,storage_path FROM artifacts WHERE id=? AND user_id=?', (artifact_id, card['user_id']))
+        if not row:
+            skipped.append(str(item.get('name') or '文件')); continue
+        source_ref = str(row['storage_path'] or '')
+        name = Path(str(row['filename'] or item.get('name') or '文件')).name[:120] or '文件'
+        if not await storage.exists(source_ref):
+            skipped.append(name); continue
+        size = int(row['file_size'] or 0)
+        if size > room:
+            skipped.append(name); continue
+        if not folder_id:
+            folder_id = await ensure_shared_folder(db, user_id, knowledge_id)
+        document_id = uuid.uuid4().hex
+        try:
+            destination_ref = await storage.copy_ref(source_ref, f'uploads/documents/{document_id}_{name}')
+        except storage.StorageError:
+            skipped.append(name); continue
+        room -= size
+        registered, has_text = await register_knowledge_document(
+            db, knowledge_id=knowledge_id, user_id=user_id, storage_ref=destination_ref, name=name, size=size, folder_id=folder_id,
+        )
+        if has_text:
+            to_organize.append(registered)
+        saved.append({'name': name, 'kind': 'file', 'document_id': registered})
+
+    await db.execute(
+        'INSERT OR REPLACE INTO share_claims(share_id,user_id,knowledge_id,folder_id,documents_json,created_at) VALUES(?,?,?,?,?,?)',
+        (share_id, user_id, knowledge_id, folder_id, json.dumps(saved, ensure_ascii=False), now()),
+    )
+    await db.commit(); await db.close()
+    for document_id in to_organize:
+        background_tasks.add_task(organize_document, document_id)
+    if not saved:
+        return {'knowledge_id': knowledge_id, 'knowledge_name': knowledge_name, 'folder_id': folder_id, 'documents': [], 'skipped': skipped, 'already': False, 'message': '分享内容没能存下来，请稍后重试'}
+    tail = f'，{len(skipped)} 个文件因空间不足未存入' if skipped else ''
+    return {'knowledge_id': knowledge_id, 'knowledge_name': knowledge_name, 'folder_id': folder_id, 'documents': saved, 'skipped': skipped, 'already': False, 'message': f'已收进「{knowledge_name}」{tail}'}
+
+
+# ---- 知识库邀请：把「整个资料库」分享给微信好友 ----
+
+@app.post('/api/knowledge/{knowledge_id}/share')
+async def create_knowledge_share(knowledge_id: str, user_id: str = Depends(current_user)) -> dict:
+    """生成「邀请好友一起用这个资料库」的分享链接。
+
+    安全模型：一条链接只认第一个接受的好友。谁先点「接受」，链接就绑到谁身上；
+    之后无论是接受者转发，还是群里其他人转发，别人再打开只会看到「已被领取」。
+    要再邀请下一位好友，重新分享一次（会生成一条新链接）。
+    """
+    rate_limit(f'kb-share:{user_id}', 30, 60, '操作过于频繁，请稍后再试')
+    db = await connect()
+    kb = await fetchone(db, "SELECT * FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
+    if not kb:
+        await db.close(); raise HTTPException(404, '知识库不存在')
+    kb_name = str(kb['name'] or '')
+    if kb_name in (DEFAULT_KNOWLEDGE_NAME, SHARED_KNOWLEDGE_NAME):
+        await db.close(); raise HTTPException(403, f'「{kb_name}」不能分享给好友')
+    if str(kb['mirror_of'] or ''):
+        await db.close(); raise HTTPException(403, '好友共享给你的知识库不能再分享出去')
+    # 同一个知识库同时只保留一条待领取的链接：重复分享复用同一张卡片，不会给好友发一堆失效链接
+    pending = await fetchone(
+        db,
+        "SELECT token,expires_at FROM knowledge_shares WHERE knowledge_id=? AND owner_user_id=? AND revoked=0 AND accepted_by='' AND expires_at>? ORDER BY created_at DESC LIMIT 1",
+        (knowledge_id, user_id, now()),
+    )
+    if pending:
+        token, expires_at = str(pending['token']), str(pending['expires_at'])
+    else:
+        token = secrets.token_urlsafe(24)
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=KNOWLEDGE_SHARE_TTL_DAYS)).isoformat()
+        await db.execute('INSERT INTO knowledge_shares(token,knowledge_id,owner_user_id,created_at,expires_at) VALUES(?,?,?,?,?)', (token, knowledge_id, user_id, now(), expires_at))
+    await db.commit(); await db.close()
+    return {'token': token, 'path': f'/package-features/pages/kb-share/index?kb={token}', 'name': str(kb['name'] or ''), 'expires_at': expires_at, 'days': KNOWLEDGE_SHARE_TTL_DAYS}
+
+
+@app.get('/api/knowledge-shares/{token}')
+async def read_knowledge_share(token: str, user_id: str = Depends(current_user_optional)) -> dict:
+    """分享落地页的预览：只给名称、简介和资料数量，不带内容、不带分享者身份。"""
+    rate_limit(f'kb-share-read:{token[:16]}', 200, 60, '访问过于频繁，请稍后再试')
+    if not valid_share_token(token):
+        raise HTTPException(404, '分享链接无效')
+    db = await connect()
+    share = await fetchone(db, 'SELECT * FROM knowledge_shares WHERE token=?', (token,))
+    if not share:
+        await db.close(); raise HTTPException(404, '分享链接无效')
+    state = await knowledge_share_state(db, share, user_id)
+    kb = await fetchone(db, "SELECT id,name,description,icon,document_count,updated_at FROM knowledge_bases WHERE id=? AND status='active'", (str(share['knowledge_id']),))
+    joined = ''
+    if user_id:
+        mirror = await fetchone(db, "SELECT id FROM knowledge_bases WHERE user_id=? AND mirror_token=? AND status='active'", (user_id, token))
+        joined = str(mirror['id']) if mirror else ''
+    # 分享者自己点开这条链接：这就是他自己的库，不该出现「接受」，直接给「打开知识库」
+    if user_id and str(share['owner_user_id'] or '') == user_id:
+        state = 'mine'
+        joined = joined or str(share['knowledge_id'])
+    await db.close()
+    if not kb:
+        return {'state': 'missing', 'available': False, 'name': '', 'description': '', 'document_count': 0, 'expires_at': str(share['expires_at'] or ''), 'joined_knowledge_id': ''}
+    return {
+        'state': state,
+        'available': state in {'open', 'mine'},
+        'name': str(kb['name'] or ''),
+        'description': str(kb['description'] or ''),
+        'document_count': int(kb['document_count'] or 0),
+        'expires_at': str(share['expires_at'] or ''),
+        'joined_knowledge_id': joined,
+    }
+
+
+@app.post('/api/knowledge-shares/{token}/accept')
+async def accept_knowledge_share(token: str, user_id: str = Depends(current_user)) -> dict:
+    """接受好友的知识库邀请：在自己的「共享知识库」里挂一份只读镜像。"""
+    rate_limit(f'kb-accept:{user_id}', 30, 60, '操作过于频繁，请稍后再试')
+    if not valid_share_token(token):
+        raise HTTPException(404, '分享链接无效')
+    db = await connect()
+    share = await fetchone(db, 'SELECT * FROM knowledge_shares WHERE token=?', (token,))
+    if not share:
+        await db.close(); raise HTTPException(404, '分享链接无效')
+    # 分享者自己点「接受」：这是他自己的库。这一步必须卡在「领取」之前，
+    # 否则链接会先被自己领走，真正的好友反而看到「已被领取」。
+    source_owner = await fetchone(db, 'SELECT user_id FROM knowledge_bases WHERE id=?', (str(share['knowledge_id']),))
+    if source_owner and str(source_owner['user_id'] or '') == user_id:
+        await db.close(); raise HTTPException(409, '这是你自己的知识库，无需接受')
+    state = await knowledge_share_state(db, share, user_id)
+    if state == 'revoked':
+        await db.close(); raise HTTPException(410, '分享者已关闭这条链接，请让对方重新分享')
+    if state == 'expired':
+        await db.close(); raise HTTPException(410, '这条分享链接已过期，请让好友重新分享')
+    if state == 'taken':
+        await db.close(); raise HTTPException(403, '这条分享链接已被其他好友领取，请让分享者重新发一条')
+    if state == 'open':
+        # 原子领取：并发下只有把 accepted_by 从空写成自己的那次请求算领到手
+        cursor = await db.execute("UPDATE knowledge_shares SET accepted_by=?,accepted_at=? WHERE token=? AND accepted_by='' AND revoked=0", (user_id, now(), token))
+        await db.commit()
+        if cursor.rowcount == 0:
+            fresh = await fetchone(db, 'SELECT accepted_by FROM knowledge_shares WHERE token=?', (token,))
+            await db.close()
+            if not fresh or str(fresh['accepted_by'] or '') != user_id:
+                raise HTTPException(403, '这条分享链接已被其他好友领取，请让分享者重新发一条')
+    source = await fetchone(db, "SELECT * FROM knowledge_bases WHERE id=? AND status='active'", (str(share['knowledge_id']),))
+    if not source:
+        await db.close(); raise HTTPException(404, '来源知识库已被删除')
+    mirror = await fetchone(db, "SELECT * FROM knowledge_bases WHERE user_id=? AND mirror_token=? AND status='active'", (user_id, token))
+    created = False
+    if not mirror:
+        mirror_id = uuid.uuid4().hex
+        timestamp = now()
+        await db.execute(
+            'INSERT INTO knowledge_bases(id,user_id,name,description,icon,document_count,visibility,status,created_at,updated_at,mirror_of,mirror_owner,mirror_state,mirror_token,mirror_at)'
+            ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (mirror_id, user_id, str(source['name']), str(source['description'] or ''), str(source['icon'] or DEFAULT_KNOWLEDGE_ICON), 0, 'private', 'active',
+             timestamp, timestamp, str(source['id']), str(source['user_id']), 'ok', token, timestamp),
+        )
+        await db.commit()
+        mirror = await fetchone(db, 'SELECT * FROM knowledge_bases WHERE id=?', (mirror_id,))
+        created = True
+    info = await sync_mirror(db, mirror)
+    await db.commit(); await db.close()
+    return {
+        'knowledge_id': str(mirror['id']), 'name': str(mirror['name'] or ''), 'documents': int(info['count'] or 0),
+        'already': not created, 'read_only': True,
+        'message': f"已加入「{mirror['name']}」，{int(info['count'] or 0)} 份资料可以随时提问",
+    }
+
+
+@app.post('/api/knowledge-shares/{token}/revoke')
+async def revoke_knowledge_share(token: str, user_id: str = Depends(current_user)) -> dict:
+    """分享者关闭一条邀请链接：已经领走这个共享库的好友也会同时失去它。"""
+    if not valid_share_token(token):
+        raise HTTPException(404, '分享链接无效')
+    db = await connect()
+    share = await fetchone(db, 'SELECT * FROM knowledge_shares WHERE token=? AND owner_user_id=?', (token, user_id))
+    if not share:
+        await db.close(); raise HTTPException(404, '分享链接不存在')
+    await db.execute('UPDATE knowledge_shares SET revoked=1 WHERE token=?', (token,))
+    mirrors = await fetchall(db, 'SELECT id FROM knowledge_bases WHERE mirror_token=?', (token,))
+    for item in mirrors:
+        mirror_id = str(item['id'])
+        for doc in await fetchall(db, "SELECT id,storage_path FROM documents WHERE knowledge_id=? AND status!='deleted'", (mirror_id,)):
+            await drop_mirror_document(db, mirror_id, str(doc['id']), str(doc['storage_path'] or ''))
+        await db.execute('DELETE FROM folders WHERE knowledge_id=?', (mirror_id,))
+        await db.execute('DELETE FROM conversations WHERE knowledge_id=?', (mirror_id,))
+        await db.execute('DELETE FROM knowledge_bases WHERE id=?', (mirror_id,))
+    await db.commit(); await db.close()
+    return {'ok': True, 'removed': len(mirrors)}
 
 
 # ---- 技能：技能广场（所有人可用）与我的技能（用户级隔离）----

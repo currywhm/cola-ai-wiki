@@ -25,6 +25,14 @@ def _compose_history_question(history: list[dict], question: str) -> str:
 
 
 def provider_config(model: str) -> tuple[str, str, str] | None:
+    generic_key = settings.llm_api_key.strip()
+    if generic_key:
+        requested = str(model or '').strip()
+        upstream_model = settings.llm_model.strip()
+        if not upstream_model and requested not in {'organize', 'MiniMax-organize'}:
+            upstream_model = requested
+        upstream_model = upstream_model or settings.deepseek_model
+        return settings.llm_base_url.strip() or settings.deepseek_base_url, generic_key, upstream_model
     # deepseek 系模型优先走 DeepSeek 官方直连（绕过 airouter 的上游过载/断流）
     if model.startswith("deepseek") and settings.deepseek_api_key:
         return settings.deepseek_base_url, settings.deepseek_api_key, model

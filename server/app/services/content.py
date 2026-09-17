@@ -156,6 +156,10 @@ def parse_markdown(text: str) -> list[dict[str, Any]]:
             step_index = 0
             blocks.append({"type": "heading", "level": 2, "text": line[2:].strip()})
             continue
+        # 引用块内的空行（只有 ">"）只是分隔，别当成正文渲染出一行 ">"。
+        if line.strip() == ">":
+            flush()
+            continue
         if line.startswith("> "):
             flush()
             blocks.append({"type": "note", "runs": _runs(line[2:].strip())})

@@ -3,8 +3,8 @@ services:
     build:
       context: .
       args:
-        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-https://deb.debian.org}
-        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-https://mirrors.aliyun.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${API_PORT:-8765}:8000"

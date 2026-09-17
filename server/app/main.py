@@ -46,18 +46,15 @@ from .services.wechat_article import ArticleFetchError, build_document_html, fet
 from .services import wechat_kf as kf_service
 from .services.wechat_auth import validate_wechat_credentials
 from .services.llm import stream_answer
-from .services.memory import load_history, maybe_compress, recent_context
 from .services.harness import (
     SKILL_LABELS,
     configured as harness_configured,
-    pending_plan_review,
     stream_raw_prompt,
-    submit_plan_review,
+    cancel_user_runtime,
 )
 from .services.organizer import organize_document
 from .services.credits import estimate_usage, quote_turn, total_tokens
 from .services.virtual_pay import calc_pay_sig, calc_user_signature, query_order, sign_data, virtual_configured, virtual_product
-from .services.web_search import WebSearchError, search_web, web_context
 
 # 免费试用：注册当天起 30 天倒计时，期间 300MB / 1 个资料库。
 # 会员按租期开通（月/季/年）：Plus 10GB / Pro 30GB，另外区别在资料库数量、单文件大小与每月问答额度。
@@ -258,6 +255,9 @@ async def lifespan(app: FastAPI):
     users = await fetchall(db, "SELECT id FROM users WHERE status='active'")
     for user in users:
         await ensure_default_knowledge(db, user["id"])
+    # 进程重启后，旧的 running 已不可能继续写回；标记为 interrupted，避免前端误以为任务仍在执行。
+    stamp = now()
+    await db.execute("UPDATE chat_runs SET status='interrupted',error='服务重启，任务已中断',revision=revision+1,updated_at=?,finished_at=? WHERE status='running'", (stamp, stamp))
     await db.commit()
     await db.close()
     # 使用技巧等内容：源文件在 content/ 目录，运行时统一从数据库读。
@@ -705,7 +705,16 @@ def json_list(value: str) -> list[str]:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ok": True, "service": settings.app_name, "harness": {"enabled": settings.harness_enabled, "profile": settings.harness_profile if settings.harness_enabled else None, "provider": settings.harness_provider if settings.harness_enabled else None, "model": settings.harness_model if settings.harness_enabled else None, "runtime_mode": settings.harness_runtime_mode if settings.harness_enabled else None, "strict": settings.harness_strict if settings.harness_enabled else None}}
+    return {
+        "ok": True,
+        "service": settings.app_name,
+        "harness": {
+            "enabled": settings.harness_enabled,
+            "profile": settings.harness_profile if settings.harness_enabled else None,
+            "provider": settings.harness_provider if settings.harness_enabled else None,
+            "model": settings.harness_model if settings.harness_enabled else None,
+        },
+    }
 
 
 @app.get('/ready')
@@ -2246,9 +2255,58 @@ async def storage_used_bytes(db, user_id: str) -> int:
     return int((row['bytes'] if row else 0) or 0)
 
 
-@app.post("/api/chat/stream")
-async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, user_id: str = Depends(current_user)) -> StreamingResponse:
+# 聊天任务与请求连接解绑：请求断开只取消订阅，后台任务继续执行并持续写 chat_runs。
+_CHAT_RUN_TASKS: dict[str, asyncio.Task] = {}
+_CHAT_RUN_CANCELS: set[str] = set()
+_CHAT_RUN_TERMINAL = {'completed', 'error', 'cancelled', 'interrupted'}
+
+
+def _decode_json_list(value: Any) -> list:
+    try:
+        parsed = json.loads(value or '[]')
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def chat_run_view(row: Any) -> dict:
+    """把数据库行转成前端可续订的任务快照。"""
+    return {
+        # 下方字段保持稳定的 camel/snake 命名，前端直接用同一份结构刷新整条回答。
+        'id': row['id'],
+        'conversation_id': row['conversation_id'],
+        'user_message_id': row['user_message_id'] or '',
+        'knowledge_id': row['knowledge_id'],
+        'folder_id': row['folder_id'] or '',
+        'status': row['status'],
+        'model': row['model'] or '',
+        'mode': row['mode'] or 'knowledge',
+        'thinking': row['thinking'] or 'quick',
+        'answer': row['answer'] or '',
+        'sources': _decode_json_list(row['sources_json']),
+        'trace': _decode_json_list(row['trace_json']),
+        'reason': row['reason'] or '',
+        'artifacts': _decode_json_list(row['artifacts_json']),
+        'error': row['error'] or '',
+        'revision': int(row['revision'] or 0),
+        'duration_ms': int(row['duration_ms'] or 0),
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
+        'finished_at': row['finished_at'] or '',
+    }
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@app.post("/api/chat/runs")
+async def create_chat_run(payload: ChatRequest, background_tasks: BackgroundTasks, user_id: str = Depends(current_user)) -> dict:
     rate_limit(f"chat:{user_id}", 15, 60, "提问太频繁啦，喝口水休息一下再试")
+    if not harness_configured():
+        raise HTTPException(503, "Harness 未启用，聊天接口不会回落到直连模型")
+    if payload.plan:
+        raise HTTPException(400, "当前公开 Harness SDK 不支持 /plan 传输接口")
     db = await connect()
     account = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
     state = account_state(account, await credits_this_month(db, user_id))
@@ -2280,98 +2338,51 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
         folder_name = folder["name"]
     # 在这个知识库里提问也算使用
     await touch_knowledge_used(db, knowledge_id)
-    # 执行规划模式：走 harness agent 自带的 web_search / web_fetch 工具链（DeepSeek 原生
-    # 搜索，复用 DEEPSEEK_API_KEY，不需要额外的 EXA_API_KEY）——真·联网检索 + 任务规划。
-    # harness 未启用时才回退到直连搜索/纯模型通道。
-    web_agent = payload.mode == 'web' and harness_configured()
-    if web_agent:
-        # Harness 对齐：问全网由 agent 自带的 web_search/web_fetch 工具完成，绕过不可用的 duckduckgo 直连
-        sources = []
-        web_results = []
-    elif payload.mode == "web":
-        if settings.web_search_api_key:
-            try:
-                web_results = await search_web(payload.content)
-            except WebSearchError:
-                # 直连搜索不可用时不再 503，降级为模型通用回答（提示词中明确说明，不编造来源）
-                web_results = []
-        else:
-            web_results = []
-        sources = [
-            {
-                "id": item["id"],
-                "filename": item["title"],
-                "url": item["url"],
-                "page_number": 0,
-                "quote": item["snippet"],
-                "score": round(max(0.78, 0.98 - index * 0.05), 2),
-            }
-            for index, item in enumerate(web_results)
-        ]
-    else:
+    # Only application-owned retrieval is assembled here. The official
+    # Harness agent owns history, compaction, planning and tool iteration.
+    sources: list[dict] = []
+    context = ''
+    if payload.mode == 'knowledge':
         sources = await make_sources(db, knowledge_id, payload.content, user_id, folder_id)
+        organized_sql = (
+            "SELECT filename,organized_title,summary,tags_json,key_points_json FROM documents WHERE knowledge_id=? AND status='completed' AND organize_status='completed'"
+            + (" AND folder_id=?" if folder_id else "")
+            + " ORDER BY organized_at DESC LIMIT 20"
+        )
+        organized = await fetchall(
+            db, organized_sql, (knowledge_id, folder_id) if folder_id else (knowledge_id,)
+        )
+        wiki_context = "\n\n".join(
+            f"《{row['organized_title'] or row['filename']}》\n摘要：{row['summary']}\n要点：{'；'.join(json_list(row['key_points_json']))}"
+            for row in organized
+        )
+        source_context = "\n\n".join(
+            f"[{index + 1}] {source['filename']} 第{source['page_number']}页\n{source['quote']}"
+            for index, source in enumerate(sources)
+        )
+        scope_note = (
+            f"当前问答范围限定在文件夹「{folder_name}」内，只能依据该文件夹中的文件回答。"
+            if folder_id else "当前问答范围是整个知识库。"
+        )
+        context = (
+            f"资料库：{kb['name']}\n{scope_note}\n\n"
+            f"已整理知识：\n{wiki_context or '暂无整理条目'}\n\n"
+            f"原文片段：\n{source_context or '暂无匹配原文'}"
+        )
     conversation_id = payload.conversation_id or uuid.uuid4().hex
-    memory_summary = ''
     if payload.conversation_id:
         # 归属校验即隔离边界：会话必须同时属于当前用户、当前知识库、当前文件夹（根目录 ''），
-        # 记忆摘要/历史都挂在会话上，用户之间、知识库之间、文件夹之间互不可见
-        owner = await fetchone(db, 'SELECT id,memory_summary,folder_id FROM conversations WHERE id=? AND user_id=? AND knowledge_id=?', (conversation_id, user_id, knowledge_id))
+        owner = await fetchone(db, 'SELECT id,folder_id FROM conversations WHERE id=? AND user_id=? AND knowledge_id=?', (conversation_id, user_id, knowledge_id))
         if not owner or (owner['folder_id'] or '') != folder_id:
             await db.close(); raise HTTPException(404, '对话不存在')
-        memory_summary = owner['memory_summary'] or ''
+        active = await fetchone(db, "SELECT id FROM chat_runs WHERE conversation_id=? AND user_id=? AND status='running' LIMIT 1", (conversation_id, user_id))
+        if active:
+            await db.close()
+            raise HTTPException(409, '当前对话还有任务正在执行，请先等待完成或停止任务')
     if not payload.conversation_id:
         await db.execute("INSERT INTO conversations(id,user_id,knowledge_id,folder_id,title,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (conversation_id, user_id, knowledge_id, folder_id, payload.content[:32], now(), now()))
-    await db.execute("INSERT INTO messages(id,conversation_id,role,content,sources_json,created_at) VALUES(?,?,?,?,?,?)", (uuid.uuid4().hex, conversation_id, "user", payload.content, "[]", now())); await db.commit()
-    if web_agent:
-        system_content = (
-            "你是 cola 的全网检索助手，不是泛用闲聊机器人。请使用 web_search 工具检索公开网页、"
-            "必要时用 web_fetch 读取页面后再回答；优先给出结论，再说明依据；不得编造未检索到的事实；"
-            "使用中文，并保留 [1] 这样的来源标记。对时效性、医疗、法律、金融内容要明确提示用户核验原始页面。"
-        )
-    elif payload.mode == "web":
-        if web_results:
-            context = web_context(web_results)
-            system_content = (
-                "你是 cola 的全网检索助手，不是泛用闲聊机器人。只能依据后端提供的公开网页摘要回答，"
-                "不得假设自己访问了网页全文，不得编造未出现在摘要中的事实。优先给出结论，再说明依据；"
-                "使用中文，并保留 [1] 这样的来源标记。对时效性、医疗、法律、金融内容要明确提示用户核验原始页面。\n"
-                f"本次全网检索结果：\n{context}"
-            )
-        else:
-            system_content = (
-                "你是 cola 的智能助手。请基于模型已有知识直接回答用户问题；"
-                "优先给出结论，再作必要说明；使用中文，回答简洁清楚。"
-                "不要编造网页来源，不要使用 [1] 这类引用标记。"
-                "对话中用户主动提供的信息（称呼、偏好、需求）可以直接记住，"
-                "并在后续回答中自然使用，无需声明无法保存。"
-            )
-    else:
-        # 已整理知识按同一套范围语义取：整库范围不看文件夹，文件夹范围只看该文件夹。
-        organized_sql = ("SELECT filename,organized_title,summary,tags_json,key_points_json FROM documents WHERE knowledge_id=? AND status='completed' AND organize_status='completed'"
-                         + (" AND folder_id=?" if folder_id else "") + " ORDER BY organized_at DESC LIMIT 20")
-        organized = await fetchall(db, organized_sql, (knowledge_id, folder_id) if folder_id else (knowledge_id,))
-        wiki_context = "\n\n".join(f"《{r['organized_title'] or r['filename']}》\n摘要：{r['summary']}\n要点：{'；'.join(json_list(r['key_points_json']))}" for r in organized)
-        context = "\n\n".join(f"[{i+1}] {s['filename']} 第{s['page_number']}页\n{s['quote']}" for i, s in enumerate(sources))
-        scope_note = (f"当前问答范围限定在文件夹「{folder_name}」内：只能依据该文件夹中的文件回答，不得引用本知识库其它文件夹或根目录的文件。" if folder_id else "当前问答范围是整个知识库：根目录和各文件夹中的文件都可以作为依据。")
-        scope_label = f"文件夹「{folder_name}」" if folder_id else "资料库"
-        if not wiki_context and not context:
-            system_content = (
-                f"你是 cola 知识库的资料助手。当前{scope_label}暂无可用文件内容，"
-                "因此本轮可以直接根据通用模型能力回答用户问题。不要提到“全网问答”、"
-                "“切换模式”或“没有文件所以切换”，也不要编造资料库引用。使用中文，回答要简洁、清楚。"
-                "对话中用户主动提供的信息（称呼、偏好、需求）可以直接记住，"
-                "并在后续回答中自然使用，无需声明无法保存。"
-                f"\n资料库：{kb['name']}\n{scope_note}"
-            )
-        else:
-            system_content = f"你是 cola 知识库的资料助手，不是泛用聊天机器人。回答必须围绕当前资料库，先参考已整理的知识条目，再核对原文片段；资料不足时明确说明，不得编造。优先给出直接结论，再给出依据和必要的补充，并保留 [1] 这样的引用标记。使用中文，排版清晰。对话中用户主动提供的信息（称呼、偏好、需求）可以直接记住，并在后续回答中自然使用，无需声明无法保存。\n资料库：{kb['name']}\n{scope_note}\n已整理知识：{wiki_context or '暂无整理条目'}\n原文片段：{context or '暂无匹配原文'}"
-    # 上下文记忆（参考 harness compaction）：记忆摘要（压缩态）+ 最近 N 条原文。
-    # 历史在本轮用户消息落库后读取，因此末条即当前问题
-    history = await load_history(db, conversation_id)
-    messages = [{"role": "system", "content": system_content}]
-    if memory_summary:
-        messages.append({"role": "system", "content": f"以下是本会话此前的记忆摘要（供保持上下文连贯，不要在回答中复述它）：\n{memory_summary}"})
-    messages += recent_context(history)
+    user_message_id = uuid.uuid4().hex
+    await db.execute("INSERT INTO messages(id,conversation_id,role,content,sources_json,created_at) VALUES(?,?,?,?,?,?)", (user_message_id, conversation_id, "user", payload.content, "[]", now())); await db.commit()
     # 本轮技能：只有用户明确选择的技能才会注入——内置技能走技能包，我的技能走技能指令。
     # 别人的私有技能在这里解析为空，保证「我的技能」严格隔离。
     # 本轮技能（可多选）：payload.skills 优先，为空时兼容旧的单选 skill 字段。
@@ -2382,7 +2393,30 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
         await db.execute('UPDATE skills SET use_count=COALESCE(use_count,0)+1 WHERE id=?', (item['id'],))
     if turn_skills:
         await db.commit()
+    # The official SDK owns model routing and tool iteration. The frontend's
+    # model field is intentionally ignored on this path.
+    turn_model = settings.harness_model
+    turn_plan = bool(payload.plan)
+    run_id = uuid.uuid4().hex
+    run_created_at = now()
+    await db.execute(
+        "INSERT INTO chat_runs(id,user_id,conversation_id,user_message_id,knowledge_id,folder_id,status,model,mode,thinking,answer,sources_json,trace_json,reason,artifacts_json,error,revision,cancel_requested,duration_ms,created_at,updated_at,finished_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            run_id, user_id, conversation_id, user_message_id, knowledge_id, folder_id, 'running',
+            turn_model, payload.mode, payload.thinking, '', json.dumps(sources, ensure_ascii=False), '[]', '', '[]', '', 0, 0, 0,
+            run_created_at, run_created_at, ''
+        ),
+    )
+    await db.commit()
+    run_row = await fetchone(db, "SELECT * FROM chat_runs WHERE id=?", (run_id,))
+    run_snapshot = chat_run_view(run_row)
+    # 后台任务自己获取数据库连接；请求连接在响应返回时由中间件回收，不能跟任务生命周期绑定。
+    await db.close()
+
     async def events():
+        nonlocal db
+        db = await connect()
         answer = ""
         # 过程区随正文一起落库：思考文字单独累积（增量太多，不入过程节点列表），
         # 步骤 / 工具 / 技能 / 子智能体 / 提示 按原顺序留存，重进对话时才能复原。
@@ -2396,29 +2430,57 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
         # 拿到后按「成本 × 1.5」的积分口径落一条流水。
         turn_usage: dict | None = None
         save_artifacts_to_kb = bool(state['entitlements']['can_upload']) and payload.mode != 'web'
+        revision = 0
+        last_flush = 0.0
+        last_cancel_check = 0.0
+
+        async def persist(force: bool = False, status: str = 'running', error: str = '') -> None:
+            nonlocal revision, last_flush
+            current = time.monotonic()
+            if not force and current - last_flush < 0.18:
+                return
+            last_flush = current
+            revision += 1
+            finished = now() if status in _CHAT_RUN_TERMINAL else ''
+            await db.execute(
+                "UPDATE chat_runs SET answer=?,trace_json=?,reason=?,artifacts_json=?,status=?,error=?,revision=?,duration_ms=?,updated_at=?,finished_at=? WHERE id=? AND status!='cancelled'",
+                (
+                    answer, json.dumps(trace_items, ensure_ascii=False), ''.join(reason_parts).strip(),
+                    json.dumps(produced_artifacts, ensure_ascii=False), status, error, revision,
+                    int((time.monotonic() - started_at) * 1000), now(), finished, run_id,
+                ),
+            )
+            await db.commit()
+
+        async def cancel_requested() -> bool:
+            nonlocal last_cancel_check
+            if run_id in _CHAT_RUN_CANCELS:
+                return True
+            current = time.monotonic()
+            if current - last_cancel_check < 0.8:
+                return False
+            last_cancel_check = current
+            row = await fetchone(db, "SELECT cancel_requested,status FROM chat_runs WHERE id=?", (run_id,))
+            return bool(row and (row['cancel_requested'] or row['status'] == 'cancelled'))
+
+        if await cancel_requested():
+            raise asyncio.CancelledError
         yield f"data: {json.dumps({'type':'meta','conversation_id':conversation_id,'sources':sources}, ensure_ascii=False)}\n\n"
         try:
-            # harness 模型统一取后端配置（深度思考即 deepseek-flash，见 HARNESS_MODEL）
-            turn_model = settings.harness_model if harness_configured() else (payload.model or settings.llm_model or settings.deepseek_model)
-            # 技能已在进入流之前解析好：内置技能 = 技能包 slug，我的技能 = 技能指令文本
-            # 计划模式：执行规划通道打开官方 plan mode（计划先评审、批准后再执行）。
-            # 请求显式带 plan 时以请求为准，便于前端按入口切换。
-            turn_plan = (
-                payload.plan
-                if payload.plan is not None
-                else (settings.harness_plan_mode and payload.mode == 'web')
-            )
             async for event in stream_answer(
-                messages,
-                turn_model,
-                conversation_id,
+                question=payload.content,
+                context=context,
+                model=turn_model,
+                session_id=conversation_id,
                 thinking=payload.thinking,
                 skills=turn_skills,
-                mode='planner' if payload.mode == 'web' else 'knowledge',
+                mode=payload.mode,
                 user_id=user_id,
-                plan=bool(turn_plan),
+                plan=turn_plan,
             ):
                 kind = event.get('kind')
+                if await cancel_requested():
+                    raise asyncio.CancelledError
                 if kind == 'progress':
                     yield f"data: {json.dumps({'type':'progress','label':event['text']}, ensure_ascii=False)}\n\n"
                     continue
@@ -2430,6 +2492,7 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
                             reason_parts.append(str(item.get('text') or ''))
                         else:
                             trace_items.append(item)
+                        await persist(force=True)
                         yield f"data: {json.dumps({'type':'trace', **item}, ensure_ascii=False)}\n\n"
                     continue
                 if kind == 'artifact':
@@ -2451,6 +2514,7 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
                     # 生成物入库后照旧做一次整理（与上传同一条链路）：摘要 / 标签 / 要点
                     if record.get('document_id') and background_tasks is not None:
                         background_tasks.add_task(organize_document, record['document_id'])
+                    await persist(force=True)
                     yield f"data: {json.dumps({'type':'artifact','artifact':record}, ensure_ascii=False)}\n\n"
                     continue
                 if kind == 'usage':
@@ -2458,10 +2522,15 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
                     turn_usage = event.get('usage') or turn_usage
                     continue
                 piece = event['text']
-                answer += piece; yield f"data: {json.dumps({'type':'delta','content':piece}, ensure_ascii=False)}\n\n"
+                answer += piece
+                await persist()
+                yield f"data: {json.dumps({'type':'delta','content':piece}, ensure_ascii=False)}\n\n"
+            if await cancel_requested():
+                raise asyncio.CancelledError
             if not answer.strip():
                 # 网关断流等情况导致零产出：不发 done（否则前端落一个空气泡），
                 # 发 error 让前端提示重试
+                await persist(force=True, status='error', error='网络波动，本次回答未完成，请重新发送。')
                 yield f"data: {json.dumps({'type':'error','message':'网络波动，本次回答未完成，请重新发送。'}, ensure_ascii=False)}\n\n"
                 return
             assistant_message_id = uuid.uuid4().hex
@@ -2477,15 +2546,19 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
                     now(),
                 ),
             ); await db.commit()
-            # 积分结算：harness 上报了真实用量就用真实值，兜底直连通道拿不到计量时按字数估算。
-            # 结算失败不能带走已经产出的回答，所以这里只记日志，不影响正文与 done。
+            # Harness usage is authoritative. The estimate is only a safety net
+            # for older runtimes that omit usage events; it never creates another
+            # model call.
             turn_quote = None
             try:
-                billable = turn_usage if total_tokens(turn_usage) > 0 else estimate_usage(len(payload.content) + len(system_content), len(answer))
+                billable = turn_usage if total_tokens(turn_usage) > 0 else estimate_usage(
+                    len(payload.content) + len(context), len(answer)
+                )
                 turn_quote = await charge_turn(db, user_id, conversation_id, assistant_message_id, turn_model, billable)
             except Exception as exc:
                 print(f'[credits] 结算失败：{exc}', flush=True)
             await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now(), conversation_id)); await db.commit()
+            await persist(force=True, status='completed')
             done_payload = {'type': 'done'}
             if turn_quote:
                 used_row = await fetchone(db, "SELECT COALESCE(SUM(credits),0) AS used FROM usage_logs WHERE user_id=? AND created_at>=?", (user_id, period_start_iso()))
@@ -2493,32 +2566,152 @@ async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, u
                 done_payload['credits_used'] = int((used_row['used'] if used_row else 0) or 0)
                 done_payload['credits_limit'] = state['quota']['credits_limit']
             yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
-            # 滚动压缩旧轮次（done 已发出，压缩不阻塞正文流；失败下轮重试）
-            try:
-                await maybe_compress(db, conversation_id, turn_model)
-            except Exception as exc:
-                print(f'[memory] 压缩失败：{exc}', flush=True)
         except Exception as exc:
+            await persist(force=True, status='error', error=str(exc))
             yield f"data: {json.dumps({'type':'error','message':str(exc)}, ensure_ascii=False)}\n\n"
         finally:
             await db.close()
-    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "X-Accel-Buffering":"no"})
+    async def consume_run() -> None:
+        try:
+            async for _chunk in events():
+                pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            try:
+                error_db = await connect()
+                await error_db.execute("UPDATE chat_runs SET status='error',error=?,revision=revision+1,updated_at=?,finished_at=? WHERE id=? AND status='running'", (str(exc), now(), now(), run_id))
+                await error_db.commit()
+                await error_db.close()
+            except Exception:
+                pass
+            print(f'[chat-run] {run_id} failed: {exc}', flush=True)
+
+    run_task = asyncio.create_task(consume_run(), name=f'chat-run:{run_id}')
+    _CHAT_RUN_TASKS[run_id] = run_task
+
+    def task_done(_task: asyncio.Task) -> None:
+        _CHAT_RUN_TASKS.pop(run_id, None)
+        _CHAT_RUN_CANCELS.discard(run_id)
+
+    run_task.add_done_callback(task_done)
+    return run_snapshot
+
+
+@app.get("/api/chat/runs/{run_id}")
+async def get_chat_run(run_id: str, user_id: str = Depends(current_user)) -> dict:
+    db = await connect()
+    row = await fetchone(db, "SELECT * FROM chat_runs WHERE id=? AND user_id=?", (run_id, user_id))
+    await db.close()
+    if not row:
+        raise HTTPException(404, '任务不存在')
+    return chat_run_view(row)
+
+
+@app.get("/api/chat/runs/{run_id}/stream")
+async def chat_run_stream(run_id: str, after: int = Query(default=0, ge=0), user_id: str = Depends(current_user)) -> StreamingResponse:
+    db = await connect()
+    row = await fetchone(db, "SELECT * FROM chat_runs WHERE id=? AND user_id=?", (run_id, user_id))
+    if not row:
+        await db.close()
+        raise HTTPException(404, '任务不存在')
+
+    async def run_events():
+        last_revision = -1
+        last_answer = ''
+        sent_meta = False
+        try:
+            while True:
+                current = await fetchone(db, "SELECT * FROM chat_runs WHERE id=? AND user_id=?", (run_id, user_id))
+                if not current:
+                    yield _sse({'type': 'error', 'message': '任务不存在'})
+                    return
+                snapshot = chat_run_view(current)
+                if not sent_meta:
+                    yield _sse({'type': 'meta', 'conversation_id': snapshot['conversation_id'], 'sources': snapshot['sources'], 'run_id': run_id})
+                    sent_meta = True
+                revision = int(snapshot['revision'] or 0)
+                if revision != last_revision:
+                    yield _sse({'type': 'snapshot', 'run': snapshot})
+                    answer = str(snapshot.get('answer') or '')
+                    if answer != last_answer:
+                        delta = answer[len(last_answer):] if answer.startswith(last_answer) else answer
+                        if delta:
+                            yield _sse({'type': 'delta', 'content': delta})
+                        last_answer = answer
+                    last_revision = revision
+                status = snapshot['status']
+                if status in _CHAT_RUN_TERMINAL:
+                    if status == 'completed':
+                        yield _sse({'type': 'done'})
+                    elif status == 'cancelled':
+                        yield _sse({'type': 'cancelled'})
+                    else:
+                        yield _sse({'type': 'error', 'message': snapshot.get('error') or '任务未完成'})
+                    return
+                await asyncio.sleep(0.2)
+        finally:
+            await db.close()
+
+    return StreamingResponse(run_events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "X-Accel-Buffering":"no"})
+
+
+@app.post("/api/chat/runs/{run_id}/stop")
+async def stop_chat_run(run_id: str, user_id: str = Depends(current_user)) -> dict:
+    db = await connect()
+    row = await fetchone(db, "SELECT * FROM chat_runs WHERE id=? AND user_id=?", (run_id, user_id))
+    if not row:
+        await db.close()
+        raise HTTPException(404, '任务不存在')
+    if row['status'] in _CHAT_RUN_TERMINAL:
+        view = chat_run_view(row)
+        await db.close()
+        return view
+    _CHAT_RUN_CANCELS.add(run_id)
+    stamp = now()
+    await db.execute(
+        "UPDATE chat_runs SET status='cancelled',cancel_requested=1,revision=revision+1,updated_at=?,finished_at=? WHERE id=? AND user_id=? AND status='running'",
+        (stamp, stamp, run_id, user_id),
+    )
+    await db.commit()
+    current = await fetchone(db, "SELECT * FROM chat_runs WHERE id=? AND user_id=?", (run_id, user_id))
+    view = chat_run_view(current)
+    await db.close()
+    task = _CHAT_RUN_TASKS.get(run_id)
+    if task and not task.done():
+        task.cancel()
+    # The public Harness SDK has no per-turn cancel RPC. Closing this user's
+    # runtime is the supported interruption boundary.
+    await asyncio.to_thread(cancel_user_runtime, user_id)
+    return view
+
+
+@app.get("/api/conversations/{conversation_id}/active-run")
+async def active_chat_run(conversation_id: str, user_id: str = Depends(current_user)) -> dict | None:
+    db = await connect()
+    row = await fetchone(
+        db,
+        "SELECT * FROM chat_runs WHERE conversation_id=? AND user_id=? AND status='running' ORDER BY created_at DESC LIMIT 1",
+        (conversation_id, user_id),
+    )
+    await db.close()
+    return chat_run_view(row) if row else None
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(payload: ChatRequest, background_tasks: BackgroundTasks, user_id: str = Depends(current_user)) -> StreamingResponse:
+    snapshot = await create_chat_run(payload, background_tasks, user_id)
+    return await chat_run_stream(snapshot['id'], 0, user_id)
 
 
 @app.post("/api/chat/plan-review")
 async def plan_review(payload: PlanReviewRequest, user_id: str = Depends(current_user)) -> dict:
-    """计划评审：把用户在计划卡片上的结论回写给运行时。
+    """The public Python SDK exposes no /plan transport or review RPC.
 
-    计划卡片出现时，运行时的 ``exit_plan_mode`` 正阻塞等待评审通道；这里把结论写入
-    该租户的计划桥目录，运行时读到即继续（批准=退出计划模式并开始执行；
-    未批准=带上反馈重新规划）。评审已超时/不存在时返回 accepted=false，
-    前端提示用户重新提问，绝不假装已批准。
+    Returning a protocol error is intentional: silently pretending a plan was
+    accepted would fork behavior from official Harness.
     """
-    review_id = payload.review_id.strip()
-    if pending_plan_review(user_id, review_id) is None:
-        return {"accepted": False, "reason": "expired"}
-    accepted = submit_plan_review(user_id, review_id, payload.approved, payload.feedback)
-    return {"accepted": accepted, "reason": "" if accepted else "expired"}
+    raise HTTPException(410, "当前公开 Harness SDK 不支持 /plan 评审接口")
 
 
 @app.get("/api/conversations")

@@ -109,14 +109,10 @@ class Settings(BaseSettings):
     credit_price_input_hit: float = 0.04
     credit_price_input_miss: float = 2.0
     credit_price_output: float = 8.0
-    harness_runtime_mode: Literal['exe', 'node'] = 'exe'
+    # Official SDK launch overrides. Production installs deepseek-harness-sdk;
+    # dsh_bin is only for a platform-provided official runtime executable.
     harness_dsh_bin: str = ""
-    # 本地开发：deepseek-harness python SDK / SDK runtime 源码路径。
-    # 生产环境可改为 pip install deepseek-harness-sdk（无需配置这两项）。
-    harness_sdk_path: str = ""
-    harness_runtime_sdk_path: str = ""
     harness_reasoning_effort: str = "low"
-    harness_strict: bool = True
     # 多租户隔离：每个用户独立的工作区与 DSH_HOME（sessions/skills/storages/attachments
     # 全部私有），运行时按租户池化复用，空闲回收。`profiles/` 作为部署级只读资产共享。
     harness_workspaces: str = "./harness-workspaces"
@@ -127,14 +123,6 @@ class Settings(BaseSettings):
     harness_quick_reasoning_effort: str = "low"
     harness_deep_reasoning_effort: str = "high"
     harness_deep_model: str = ""
-    # 计划模式：执行规划通道启用官方 plan mode，计划以「页面附着卡片」提交评审
-    harness_plan_mode: bool = True
-    # 对话记忆（参考 deepseek-harness 的 session 持久化 + compaction）：
-    # 每轮上下文 = memory_summary（压缩态）+ 最近 memory_recent_messages 条原文；
-    # 旧轮次累计超过 memory_compress_chars 字时，用 LLM 滚动压缩进摘要
-    memory_recent_messages: int = 8
-    memory_compress_chars: int = 3000
-    memory_summary_max_chars: int = 600
     web_search_provider: Literal['duckduckgo', 'tavily', 'brave'] = 'duckduckgo'
     web_search_api_key: str = ""
     web_search_base_url: str = "https://api.duckduckgo.com"

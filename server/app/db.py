@@ -272,6 +272,7 @@ CREATE TABLE IF NOT EXISTS chunks (id TEXT PRIMARY KEY, document_id TEXT NOT NUL
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(content, chunk_id UNINDEXED, knowledge_id UNINDEXED, filename UNINDEXED, page_number UNINDEXED);
 CREATE TABLE IF NOT EXISTS folders (id TEXT PRIMARY KEY, knowledge_id TEXT NOT NULL, user_id TEXT NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(knowledge_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, knowledge_id TEXT NOT NULL, folder_id TEXT DEFAULT '', title TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, pinned_at TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS chat_runs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, conversation_id TEXT NOT NULL, user_message_id TEXT NOT NULL DEFAULT '', knowledge_id TEXT NOT NULL, folder_id TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'running', model TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'knowledge', thinking TEXT NOT NULL DEFAULT 'quick', answer TEXT NOT NULL DEFAULT '', sources_json TEXT NOT NULL DEFAULT '[]', trace_json TEXT NOT NULL DEFAULT '[]', reason TEXT NOT NULL DEFAULT '', artifacts_json TEXT NOT NULL DEFAULT '[]', error TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 0, cancel_requested INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT DEFAULT '', FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE, FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, sources_json TEXT DEFAULT '[]', trace_json TEXT DEFAULT '[]', reason TEXT DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS knowledge_suggestions (knowledge_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, questions_json TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(knowledge_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS folder_suggestions (knowledge_id TEXT NOT NULL, folder_id TEXT NOT NULL, fingerprint TEXT NOT NULL, questions_json TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(knowledge_id, folder_id));
@@ -326,6 +327,8 @@ async def _init_sqlite() -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_subscriptions_source ON knowledge_subscriptions(source_knowledge_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_subscriptions_mirror ON knowledge_subscriptions(mirror_knowledge_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_documents_origin ON documents(origin_document_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_chat_runs_conversation ON chat_runs(conversation_id, status, updated_at)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_chat_runs_user_status ON chat_runs(user_id, status, updated_at)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_bases_mirror ON knowledge_bases(mirror_of)")
     await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pay_orders_wx_order_id ON pay_orders(wx_order_id) WHERE wx_order_id != ''")
     await _seed_builtin_skills(db)
@@ -461,6 +464,36 @@ _MYSQL_SCHEMA = (
       updated_at VARCHAR(64) NOT NULL,
       CONSTRAINT fk_conversations_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       INDEX idx_conversations_user (user_id, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS chat_runs (
+      id VARCHAR(32) PRIMARY KEY,
+      user_id VARCHAR(32) NOT NULL,
+      conversation_id VARCHAR(32) NOT NULL,
+      user_message_id VARCHAR(32) NOT NULL DEFAULT '',
+      knowledge_id VARCHAR(32) NOT NULL,
+      folder_id VARCHAR(32) NOT NULL DEFAULT '',
+      status VARCHAR(24) NOT NULL DEFAULT 'running',
+      model VARCHAR(128) NOT NULL DEFAULT '',
+      mode VARCHAR(24) NOT NULL DEFAULT 'knowledge',
+      thinking VARCHAR(24) NOT NULL DEFAULT 'quick',
+      answer LONGTEXT NULL,
+      sources_json LONGTEXT NULL,
+      trace_json LONGTEXT NULL,
+      reason LONGTEXT NULL,
+      artifacts_json LONGTEXT NULL,
+      error TEXT NULL,
+      revision INT NOT NULL DEFAULT 0,
+      cancel_requested INT NOT NULL DEFAULT 0,
+      duration_ms INT NOT NULL DEFAULT 0,
+      created_at VARCHAR(64) NOT NULL,
+      updated_at VARCHAR(64) NOT NULL,
+      finished_at VARCHAR(64) NOT NULL DEFAULT '',
+      CONSTRAINT fk_chat_runs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      CONSTRAINT fk_chat_runs_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+      INDEX idx_chat_runs_conversation (conversation_id, status, updated_at),
+      INDEX idx_chat_runs_user_status (user_id, status, updated_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """

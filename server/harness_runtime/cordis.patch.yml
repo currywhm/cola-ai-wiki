@@ -1,0 +1,62 @@
+# cola deployment overlay for the official DeepSeek Harness ``sdk`` profile.
+#
+# This file deliberately contains only official row overrides. Agent loop,
+# session persistence, compaction, retries, skills, tools and event delivery
+# stay owned by the upstream Harness packages.
+
+- id: system-prompt
+  config:
+    personaPrefix: !!js process.env.DSH_SYSTEM_PROMPT ?? 'You are the cola knowledge assistant.'
+    personaSuffix: Your working directory is {{cwd}}.
+
+- id: sandbox-policy
+  config:
+    mode: workspace-write
+    workspaceRoot: !!js process.env.DSH_WORKSPACE_ROOT ?? process.cwd()
+
+- id: approval
+  config:
+    policy: never
+
+- id: permission
+  config:
+    defaultPreset: workspace-write-no-prompt
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      workspace-write-no-prompt:
+        sandbox: workspace-write
+        approval: never
+        name: workspace-write (no prompts)
+        description: Write only inside the tenant workspace.
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+
+# The official SDK transport does not forward approval requests. Disable the
+# model-facing execution tools rather than hanging on an unanswered prompt.
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: workflow-worker-thread
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+
+- id: llm-deepseek
+  config:
+    streamIdleTimeoutMs: 240000
+
+- id: session-title-llm
+  disabled: true

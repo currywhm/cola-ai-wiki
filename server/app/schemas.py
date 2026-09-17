@@ -43,8 +43,8 @@ class ChatRequest(BaseModel):
     skill: str = Field(default="", max_length=40, pattern="^[a-z0-9-]*$")
     # 多选技能：优先于 skill；为空时回落到 skill（兼容旧客户端）
     skills: list[str] = Field(default_factory=list, max_length=8)
-    # 计划模式：显式打开官方 plan mode（计划先评审、批准后再执行）。
-    # 不传时由后端按 HARNESS_PLAN_MODE 与问答通道决定。
+    # Legacy field only. The public Harness Python SDK has no /plan transport,
+    # so true is rejected instead of being silently emulated.
     plan: bool | None = None
 
 

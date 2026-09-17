@@ -57,8 +57,7 @@
 
 ## 多租户隔离 / 权限边界 / 计划模式（2026-09-16 补测）
 
-这一轮把「运行时怎么被隔离、越权会不会发生、计划模式怎么回到小程序」逐个实测了一遍。
-证据来自现场运行的服务、以及真机模拟器里的实际点按。
+本节已按 2026-09-17 的官方 SDK 方案更新。旧的 `@cola/dsh-plan-bridge`、`@cola/dsh-safety-guard` 和自建记忆链路已经删除，以下内容描述当前代码。
 
 ### 1. 多租户隔离：工作区与 DSH_HOME 按租户拆开
 
@@ -68,7 +67,6 @@
 | --- | --- | --- |
 | 工作区（agent 的 cwd、`DSH_WORKSPACE_ROOT`） | `<HARNESS_WORKSPACES>/users/<租户>/` | 租户私有 |
 | 会话 / 技能 / 存储 / 附件 | `<HARNESS_HOME>/users/<租户>/` | 租户私有 |
-| 计划评审队列 | `<HARNESS_HOME>/users/<租户>/plan-bridge/` | 租户私有 |
 | `profiles/`（profile 组合与插件解析根） | `<HARNESS_HOME>/profiles/` | 部署级只读，软链共享，不复制 node_modules |
 
 租户目录名由 `_tenant_id()` 收敛（剔除 `/`、`.` 等字符，空值归到 `anonymous`），因此 `user_id` 无法借路径穿越跳出根目录。运行时按 `租户 + profile + 模型 + 推理强度` 池化：冷启动实测约 1s，因此池化是划算的；池有上限与空闲回收，正在跑轮次的不回收。
@@ -79,7 +77,7 @@
 | --- | --- |
 | 探针：新租户 DSH_HOME + 软链 profiles | initialize 成功，启动 1.1s，会话落在 `users/probeuser/sessions/...` |
 | 真实问答写入位置 | 产物只出现在 `harness-workspaces/users/eb48428d.../`，没有写进别的租户目录 |
-| `tests/test_harness_isolation.py` | 路径穿越收敛、目录互不相同、技能根隔离、跨租户评审不可见，全部通过 |
+| `tests/test_harness_isolation.py` | 路径穿越收敛、目录互不相同、技能根隔离、官方 patch 校验通过 |
 
 **已知缺口（必须在正式上线前处理）**：`workspace-write` 只约束「写」。实测沙箱内的 agent 仍然可以**读**工作区之外的文件（探针让它读 `/etc/hosts` 与后端源码目录，都成功）。也就是说，写越权不会发生，但读越权会发生——共享 SQLite 数据库与 `.env` 都在同一操作系统用户下，属于可读范围。
 
@@ -87,29 +85,16 @@
 
 ### 2. 权限预设：workspace-write + never（fail closed）
 
-部署决定写在 `server/harness_runtime/profiles/sdk/cordis.patch.yml`，后端启动时同步到 `$DSH_HOME/profiles/<profile>/`，是唯一落点：
+部署决定只保留官方 row override，位于 `server/harness_runtime/cordis.patch.yml`，通过官方 `patches=(...)` 参数传入 `DeepSeekHarness`：
 
-- `sandbox-policy`：`mode: workspace-write`，`workspaceRoot` 取自 `DSH_WORKSPACE_ROOT`（每租户注入）。
-- `approval`：`policy: never`。默认在 workspace-write 下是 `ask`，而官方 SDK 传输层不转发 `approval/request`，`ask` 会让工具永久挂起；固定 `never` 后越权动作被确定性拒绝。
-- `permission`：官方预设表里没有 `(workspace-write, never)` 组合，组合必须能落到某个预设上，否则运行时直接拒绝启动（实测报错 `composed sandbox and approval defaults match no preset`）。因此补了一条同语义预设 `workspace-write-no-prompt` 并设为默认。
+- `system-prompt` 使用 `DSH_SYSTEM_PROMPT` 设置 cola 的部署 persona。
+- `sandbox-policy` 使用 `workspace-write`，`workspaceRoot` 来自每个租户的 `DSH_WORKSPACE_ROOT`。
+- `approval` 固定为 `never`，因为公开 Python SDK 的 `run()` 不转发交互审批；不这样做，官方默认 `ask` 会让工具挂起。这里没有自建审批插件。
+- 执行类官方 row 关闭，避免未接审批通道时的挂起；文件读写、web、skill、subagent、todo、goal 等仍由官方 profile 提供。
 
-### 3. 计划模式：计划先评审、批准后再执行
+### 3. 计划模式：不伪造官方未提供的评审 RPC
 
-官方 SDK 传输层只转发 `session.event` / `session.status`，不含提问/审批通道，`/plan` 命令也不可解析（命令执行入口只由交互式 UI 载具调用）。因此用官方留的扩展点补上：
-
-- `server/harness_runtime/plan_bridge/`：`@cola/dsh-plan-bridge` 插件，注册 `user-questions/request` waterfall（计划评审）与 `agent/pre-step`（计划模式开关）。
-- 后端 `set_plan_mode()` 写 `<租户>/plan-bridge/<会话>.mode.json`，插件在步骤边界消费并调用官方 `ctx.planMode.set()`；`exit_plan_mode` 提交计划后，插件写 `<会话>.review.json` 并阻塞等待 `<会话>.answer.json`。
-- 计划正文经既有 `session.event` 通道回到后端 → 变成 `kind='plan'` 的过程节点 → 小程序渲染成「页面附着」卡片。
-- `POST /api/chat/plan-review` 回写结论。评审超时或不存在时返回 `accepted=false`，前端提示重新提问，**绝不假装已批准**；插件侧超时按官方契约抛 `ASK_CANCELLED`，留在计划模式。
-
-实测（真机模拟器 + 现场服务）：
-
-| 检查 | 结果 |
-| --- | --- |
-| 计划卡片出现 | `hasPlan: true, planState: review`，计划 markdown 2459 字，渲染 HTML 4548 字，标题取计划自身的一级标题 |
-| 就地批准 | 卡片上点「批准并执行」→ `POST /api/chat/plan-review` 返回 `accepted: true` → 卡片转为 `approved`，运行时退出计划模式并在同一轮继续执行 |
-| 复盘日志 | 同轮 SSE 出现 `[plan] 计划已批准，开始执行`，随后是执行步骤；`finish=completed` |
-| 计划随对话落库 | 计划节点与过程节点一起写进 `messages.trace_json`，重进对话时由 `hydrateAssistant` 复原（默认收起） |
+官方公开 Python SDK 没有 `/plan` 传输方法和计划评审 RPC。当前实现不伪造该能力：`payload.plan=true` 返回 `400`，`POST /api/chat/plan-review` 返回 `410`。官方 `sdk` profile 内的 plan-mode 工具仍可产生计划事件，后续若要接回评审，应等官方 SDK 暴露协议，不能在应用层另写 bridge。
 
 ### 4. 深度思考开关真正生效
 
@@ -117,7 +102,7 @@
 
 ### 5. 会话复用（上下文不再膨胀、重进对话保留过程）
 
-原来每轮都用 `conversation_id + 随机后缀` 新建 harness 会话，上下文靠把整段历史重新拼进提示词维持。现在会话 id 与后端对话 id 绑定并跨轮复用，上下文由运行时自己的事件日志承载、压缩交给官方 compaction；只有没有可复用会话时（预热）才回退到内联历史。过程与思考随消息落库，重进对话可复原。
+现在会话 id 与后端对话 id 绑定并跨轮复用；上下文、压缩和重试全部由官方 Harness 的 session/compaction/llm-retry 负责，应用层不拼接历史，也没有直连模型回退。过程与思考仍由后端按官方 `session.event` 落库，重进对话可复原小程序的展示。
 
 ## 合规文档与白屏修复（2026-09-16 晚，Mac，端口 8765）
 

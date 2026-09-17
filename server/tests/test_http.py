@@ -224,31 +224,24 @@ class HTTPTests(unittest.TestCase):
     def test_stream_and_knowledge_deletion(self):
         kb = self.kb(); doc = self.upload(kb)
         response = self.client.post('/api/chat/stream', headers=self.headers, json={'knowledge_id': kb, 'content': '合同？'})
-        self.assertEqual(response.status_code, 200, response.text)
-        events = [json.loads(line[5:]) for line in response.text.splitlines() if line.startswith('data:')]
-        self.assertEqual(events[0]['type'], 'meta'); self.assertEqual(events[-1]['type'], 'done')
-        self.assertEqual(events[0]['sources'][0]['document_id'], doc['id'])
-        self.assertIn('尚未完成配置', ''.join(e.get('content', '') for e in events))
-        conversation = events[0]['conversation_id']
-        self.assertEqual(len(self.client.get(f'/api/conversations/{conversation}', headers=self.headers).json()), 2)
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertIn('Harness 未启用', response.text)
         self.client.delete(f'/api/knowledge/{kb}', headers=self.headers).raise_for_status()
         self.assertEqual(self.client.get('/api/conversations', headers=self.headers).json(), [])
         with closing(sqlite3.connect(self.database)) as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM chunks_fts WHERE knowledge_id=?', (kb,)).fetchone()[0], 0)
         self.assertFalse(any(self.uploads.glob(doc['id'] + '_*')))
 
+    def test_persistent_chat_run_can_be_resubscribed(self):
+        """Without Harness the chat route fails explicitly instead of falling back."""
+        kb = self.kb()
+        created = self.client.post('/api/chat/runs', headers=self.headers, json={'knowledge_id': kb, 'content': '测试持久任务'})
+        self.assertEqual(created.status_code, 503, created.text)
+
     def test_stream_without_documents_stays_in_current_knowledge(self):
         kb = self.kb()
         response = self.client.post('/api/chat/stream', headers=self.headers, json={'knowledge_id': kb, 'content': '帮我写一句欢迎语'})
-        self.assertEqual(response.status_code, 200, response.text)
-        events = [json.loads(line[5:]) for line in response.text.splitlines() if line.startswith('data:')]
-        self.assertEqual(events[0]['type'], 'meta')
-        self.assertEqual(events[0]['sources'], [])
-        self.assertEqual(events[-1]['type'], 'done')
-        conversation = events[0]['conversation_id']
-        stored = self.client.get(f'/api/conversations/{conversation}', headers=self.headers).json()
-        self.assertEqual(len(stored), 2)
-        self.assertEqual(stored[0]['content'], '帮我写一句欢迎语')
+        self.assertEqual(response.status_code, 503, response.text)
 
     def test_cross_user_isolation(self):
         kb = self.kb(); doc = self.upload(kb)
@@ -257,11 +250,6 @@ class HTTPTests(unittest.TestCase):
             for path in [f'/api/knowledge/{kb}', f'/api/documents/{doc["id"]}', f'/api/documents/{doc["id"]}/download']:
                 self.assertEqual(self.client.get(path, headers=other).status_code, 404)
             self.assertEqual(self.client.delete(f'/api/knowledge/{kb}', headers=other).status_code, 404)
-            other_kb = self.client.get('/api/knowledge', headers=other).json()[0]['id']
-            stream = self.client.post('/api/chat/stream', headers=other, json={'knowledge_id': other_kb, 'content': '测试'})
-            conversation = json.loads(stream.text.splitlines()[0][5:])['conversation_id']
-            attempt = self.client.post('/api/chat/stream', headers=self.headers, json={'knowledge_id': kb, 'conversation_id': conversation, 'content': '越权测试'})
-            self.assertEqual(attempt.status_code, 404)
         finally:
             self.client.delete('/api/me', headers=other)
 

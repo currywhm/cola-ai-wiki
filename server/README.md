@@ -33,9 +33,9 @@ curl http://127.0.0.1:8765/ready
 - 登录与隐私（前端）：无令牌时 `ensureAuth()` 只回 `pages/login/index`，不会静默换取登录态。点击“微信登录”先弹底部协议提示，用户点“同意”后才调用 `wx.login`；服务端按 OpenID 自动创建或关联账号，默认昵称“微信用户”、默认头像使用产品图。用户之后可在“我的 → 账号设置”通过 `<button open-type="chooseAvatar">` 和 `<input type="nickname">` 主动选择并保存，登录本身不调用 `wx.getUserInfo` / `wx.getUserProfile` / `<open-data>`。相册、拍照、微信文件等系统隐私能力交给微信官方弹窗处理，`services/privacy.ts` 不注册 `wx.onNeedPrivacyAuthorization`。
 - 上传文档后会自动生成标题、摘要、标签和关键要点，并持久化到文档记录；已配置模型时使用两步整理提示，未配置模型时使用可追溯的本地基础整理。问答会优先参考整理结果，再引用原文片段。
 - 模型配置见 `DEEPSEEK_*`、`OPENAI_*`、`MINIMAX_*`。未启用 Harness 时，三者使用 OpenAI Chat Completions 兼容协议；未配置模型时仍可完成本地基础整理，但问答只返回配置提示。
-- 大模型统一配置为 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`，优先级高于 `DEEPSEEK_*` / `OPENAI_*` / `MINIMAX_*`。任何兼容 OpenAI Chat Completions 的服务都可以只改环境变量接入；启用 Harness 时还需要设置 `HARNESS_ENABLED=true`、`HARNESS_PROVIDER` 和 `HARNESS_MODEL`。
-- Harness 运行时：后端安装匹配版本的 `deepseek-harness-sdk` 与 runtime 后，设置 `HARNESS_ENABLED=true`、`HARNESS_HOME`、`HARNESS_PROFILE=sdk`、`HARNESS_PROVIDER=deepseek-official`、`HARNESS_MODEL=deepseek-v4-flash`、`HARNESS_RUNTIME_MODE`。每次问答会创建只含 `knowledge-context.md` 的临时服务端工作区，Harness Agent/Skill 仅可读取该资料上下文；小程序端不接收 Harness 配置、插件或密钥。`HARNESS_STRICT=true` 时问答链路只走 Harness，runtime、profile、provider、model 或后端模型密钥缺失都会返回明确错误，不再静默回退到旧 OpenAI-compatible 链路。
-- “问全网”同样只在后端执行：设置 `WEB_SEARCH_PROVIDER=tavily` 或 `brave`、`WEB_SEARCH_API_KEY` 和对应的 `WEB_SEARCH_BASE_URL` 后，服务端先取得公开网页结果，再将带来源的检索上下文交给 Harness。小程序端只传 `mode=web`，不会引入 Harness、搜索 SDK 或任何密钥。未配置搜索凭据时接口会明确返回配置错误，不会把普通知识库回答冒充为全网结果。
+- 对话与任务只有一条模型链路：官方 `deepseek-harness-sdk` 的 `DeepSeekHarness.run()`。`LLM_API_KEY` / `LLM_BASE_URL` 是官方适配器的凭据覆盖，`HARNESS_PROVIDER` 和 `HARNESS_MODEL` 决定 Harness 路由；`DEEPSEEK_*` / `OPENAI_*` / `MINIMAX_*` 仅保留给文档整理等非 Agent 后端工具，不能再作为聊天回退。
+- Harness 运行时由官方 SDK 自动启动并复用 bundled `dsh --profile sdk` runtime，不要求手工配置 `HARNESS_RUNTIME_MODE`、源码路径或自建插件：`HARNESS_ENABLED=true`、`HARNESS_HOME`、`HARNESS_PROFILE=sdk`、`HARNESS_PROVIDER=deepseek-official`、`HARNESS_MODEL=deepseek-v4-flash` 即可。每个用户使用独立的 `HARNESS_HOME` 与工作区；会话持久化、compaction、重试、工具循环和技能加载都由 Harness 自己负责。
+- “问全网”同样由官方 profile 挂载的 `web_search` / `web_fetch` 工具执行；后端只负责把 `mode=web` 解释为用户意图，不另建搜索 Agent，也不把密钥下发到小程序。
 - 额度单位是**积分**而不是问答次数：一轮问答按真实 token 用量扣分。真实成本用 deepseek-flash 官方单价算（元/百万 tokens：输入命中缓存 0.04、未命中 2.00、输出 8.00，空闲时段官方半价、代码按请求时刻自动减半），用户价 = 成本 × `CREDIT_MARKUP`（默认 1.5），积分 = 用户价 ÷ `CREDIT_UNIT_YUAN`（默认 0.001 元）四舍五入且至少 1 分。
 - 加价倍率恒定 1.5 倍，但**用户可见的积分会随时段浮动**——同一段对话空闲时段约 3 分、高峰时段约 7 分。这是刻意保留的口径（成本完全转嫁、毛利率恒定），对外文案必须写明「积分随官方计价时段浮动」。
 - 月度积分额度：免费试用期 600、试用结束后 150、Plus 3000、Pro 15000（`MEMBERSHIP_LIMITS`），按自然月归零、不结转。`/api/me` 返回 `quota.credits_limit/credits_used/credits_left`，`/api/pay/plans` 返回 `monthly_credits`，SSE 的 `done` 事件带本轮 `credits` 与本月 `credits_used/credits_limit`。
@@ -89,7 +89,7 @@ WECHAT_SECRET=小程序AppSecret
 LLM_API_KEY=大模型APIKey
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-chat
-HARNESS_ENABLED=false
+HARNESS_ENABLED=true
 ```
 
 `Bucket` / `Region` 是云托管官方对象存储示例的变量名；已有的 `COS_BUCKET` / `COS_REGION` 仍然兼容。
@@ -145,8 +145,7 @@ docker compose exec api python scripts/import_content.py
 curl http://127.0.0.1:8765/ready
 ```
 
-Harness 部署要求 runtime 与服务器平台一致。本机源码构建联调可以使用 `HARNESS_RUNTIME_MODE=node`，依赖系统 Node.js 和源码目录中的 node carrier；Zeabur/Linux 线上部署应安装或构建 Linux x64/arm64 的 `deepseek-harness-runtime-bin`，并使用 `HARNESS_RUNTIME_MODE=exe`。不要把 macOS runtime 复制到 Linux 服务器。启用 `HARNESS_ENABLED=true` 前，必须在后端环境配置真实 `DEEPSEEK_API_KEY`，否则问答接口会返回 Harness 配置错误。
-
+Harness runtime 无须在部署脚本里单独选择模式或复制二进制。`deepseek-harness-sdk==0.1.5rc1` 会按当前 Python 平台安装匹配的 `deepseek-harness-runtime-bin`，官方 SDK 自动定位并启动它；升级时同时升级这两个官方 wheel，不需要改业务代码或重新实现 Agent。Linux 上不要复制 macOS runtime。启用 `HARNESS_ENABLED=true` 前，必须在后端配置 `LLM_API_KEY`（或 `DEEPSEEK_API_KEY`），并把 `LLM_BASE_URL` 设为官方端点或兼容网关地址。
 Compose 强制生产环境，默认只绑定服务器回环地址 8765；由 Nginx 对外提供 HTTPS。模板见 `deploy/nginx.conf.example`，替换域名及证书路径后使用。已关闭代理响应缓冲以支持 SSE。容器使用非 root 用户，包含中文 OCR、健康检查、重启策略和日志大小限制。
 
 Debian 和 Python 软件源默认使用官方 HTTPS 地址。网络较慢时可在 `.env` 增加 `DEBIAN_MIRROR=https://mirrors.aliyun.com`、`PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple` 后重新构建，仍使用 Debian 签名校验软件包。系统依赖与 Python 依赖分层缓存。
@@ -177,30 +176,13 @@ docker build -t zhi-reader-api:verify .
 
 ## 能力边界与安全（执行能力归零）
 
-本产品的模型侧只有这些能力：**对话、知识库检索问答、读写文档、整理文档、联网检索、技能、子智能体**。
-它**没有**任何命令、脚本或可执行文件的执行能力，也无法读写当前用户工作区以外的服务器文件。
-这条边界由两层而非一句提示词来保证：
+后端不再维护自建 Agent、计划桥或安全守卫插件。运行时组合、工具清单、会话持久化、compaction 与重试都来自官方 `sdk` profile；`harness_runtime/cordis.patch.yml` 只包含官方 row override，用于部署侧的系统提示、工作区和权限策略。
 
-1. **运行时插件行关闭**（`harness_runtime/profiles/sdk/cordis.patch.yml`）：
-   `tool-bash` / `tool-pwsh` / `tool-jobs` / `tool-workflow` / `workflow-worker-thread` /
-   `tool-ralph` / `tool-fs-search`（会 spawn `rg`）全部 `disabled: true`。
-   这些工具不会出现在模型可见的工具清单里（实测清单：`read` / `read_image` / `write` / `edit` /
-   `skill` / `web_search` / `web_fetch` / `subagent*` / `todo_write` / `goal` /
-   `exit_plan_mode`），调用不会有任何东西响应。
-   注意：`bash-sandbox` / `shell-env` 这类**服务行必须留着**——它们只提供 `ctx.shell`/`ctx.shellEnv`
-   内部服务，权限预设等行在等它们；关掉会让整棵插件树加载失败（表现为问答永久挂起）。
-2. **工具层守卫插件** `@cola/dsh-safety-guard`（`harness_runtime/safety_guard/`）：
-   用官方 `ctx.tools.guard()` 做单调否决：执行类工具名一律拒绝；`read`/`write`/`edit`/`read_image`
-   等工具的参数路径只要落在租户工作区之外就拒绝。这一层不依赖模型是否听话——文档正文、技能指令、
-   用户输入里的提示注入都被这层拦住（官方沙箱只限制写、不限制读，所以读的收口必须在这里做）。
+当前部署关闭模型侧命令执行相关 row（`tool-bash`、`tool-pwsh`、`tool-jobs`、`tool-workflow`、`workflow-worker-thread`、`tool-ralph`、`tool-fs-search`），但保留官方 `read` / `read_image` / `write` / `edit` / `skill` / `web_search` / `web_fetch` / `subagent*` / `todo_write` / `goal` / plan 工具。`workspace-write` 只约束文件写入，官方文件工具仍可读取运行用户可读的文件；这是当前官方 sdk profile 的能力边界，不是后端自建的权限实现。生产环境应把 Harness 子进程放入最小权限用户或独立容器，并且不要在容器内放置可被读取的密钥文件。
 
-每个租户的工作区是 `harness-workspaces/users/<用户 id>`，`DSH_HOME` 是 `harness-home/users/<用户 id>`，
-技能、会话、附件、工作区全部按租户分目录，互不可见；上传白名单只收文档与图片（不含脚本、可执行文件）。
-改动上述任一层后，务必用「要求执行命令 / 要求读取 `.env` / 恶意技能」三类请求回归一次：
-正确表现是**零工具调用 + 明确说明能力边界**，且会话日志里的工具 schema 清单不含执行类工具。
+每个租户的工作区是 `harness-workspaces/users/<用户 id>`，`DSH_HOME` 是 `harness-home/users/<用户 id>`；技能、会话、附件与工作区按租户分开。升级官方 SDK/runtime 时，业务侧只需要更新官方 wheel 和官方 row id/配置，不要在应用层复制 Agent 逻辑。
 
 ## 服务边界
 
-小程序端只承担微信登录、文件选择与上传、页面展示和 SSE 对话呈现。`llm_wiki` 风格的文档整理（标题、摘要、标签、要点、持续的知识条目）以及 Harness 参考的会话流式事件都运行在本后端；小程序不包含 Node.js、Harness 运行时、整理提示词或任何模型密钥。启用 Harness 后，问答由后端 Harness profile/provider/model 执行；未启用 Harness 时，后端才通过 OpenAI-compatible 接口访问 DeepSeek、OpenAI 或 MiniMax。
-
+小程序端只承担微信登录、文件选择与上传、页面展示和 SSE 对话呈现。`llm_wiki` 风格的文档整理（标题、摘要、标签、要点、持续的知识条目）是后端非 Agent 工具；问答、技能和任务执行全部由后端官方 Harness `sdk` profile 完成。小程序不包含 Node.js、Harness 运行时、整理提示词或任何模型密钥。`HARNESS_ENABLED=false` 时聊天接口明确返回 `503`，不会回落到直连 Chat Completions。
 目前可以独立部署和完成本地接口联调。上线前仍需真实微信登录、支付回调与会员权益发放、模型输出质量、并发及上传安全验收。当前解析在请求内完成，长文档/OCR 应迁移到任务队列；检索为全文检索，展示分数不是经过校准的语义相似度。可运行不等于已通过微信上线审核。

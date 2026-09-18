@@ -32,8 +32,10 @@ curl http://127.0.0.1:8765/ready
 - 微信接口出现临时网络/TLS 故障时，启动校验会记录告警但不会让容器无限重启；微信明确返回凭证错误时仍会拒绝启动。
 - 头像：`POST /api/me/avatar`（≤ 2MB，jpg/png/webp）保存用户选定的微信头像。微信官方「头像填写能力」`<button open-type="chooseAvatar">` 回调给的是本机临时路径（`http://tmp/...` / `wxfile://...`），换设备或重装就失效，所以必须落到服务端。每个用户只保留一份（换头像时删旧文件，不留垃圾），`GET /api/avatars/{user_id}` 公开读取——小程序 `<image>` 带不了 Authorization 头，安全性靠文件名只保留 `[0-9A-Za-z_-]`（不可能路径穿越）+ user_id 是随机 32 位十六进制，与 `/api/content/assets` 同一取舍。`PATCH /api/me` 的 `nickname` / `avatar` 均为可选字段，未传即保持原值（只改昵称不会顺手把头像清掉）。
 - 当前支付模式为个人主体微信虚拟支付：需要 OfferID、现网 AppKey、道具 ID、道具价格和公网 HTTPS 发货推送地址。AppKey 只放在后端 `.env`，小程序端只接收服务端签名后的 `payData`。配置项见 `.env.example`。
+- 知识库头像：`POST /api/knowledge/{knowledge_id}/avatar`（≤ 2MB，jpg/png/webp）保存用户从个人相册主动选择的头像，`GET /api/knowledge-avatars/{knowledge_id}` 按知识库读取。头像随知识库隔离；用户发布到知识库广场后才随公开条目展示。删除或更换知识库头像时清理旧对象。
 - 登录与隐私（前端）：无令牌时 `ensureAuth()` 只回 `pages/login/index`，不会静默换取登录态。点击“微信登录”先弹底部协议提示，用户点“同意”后才调用 `wx.login`；服务端按 OpenID 自动创建或关联账号，默认昵称“微信用户”、默认头像使用产品图。用户之后可在“我的 → 账号设置”通过 `<button open-type="chooseAvatar">` 和 `<input type="nickname">` 主动选择并保存，登录本身不调用 `wx.getUserInfo` / `wx.getUserProfile` / `<open-data>`。相册、拍照、微信文件等系统隐私能力交给微信官方弹窗处理，`services/privacy.ts` 不注册 `wx.onNeedPrivacyAuthorization`。
 - 上传文档后会自动生成标题、摘要、标签和关键要点，并持久化到文档记录；已配置模型时使用两步整理提示，未配置模型时使用可追溯的本地基础整理。问答会优先参考整理结果，再引用原文片段。
+- 知识库头像权限（前端）：新建知识库点击头像图标时只调用个人相册选择 1 张图片，不打开相机；调用前经过微信官方隐私授权，拒绝后仍可使用默认头像创建知识库。
 - 模型配置见 `DEEPSEEK_*`、`OPENAI_*`、`MINIMAX_*`。未启用 Harness 时，三者使用 OpenAI Chat Completions 兼容协议；未配置模型时仍可完成本地基础整理，但问答只返回配置提示。
 - 对话与任务只有一条模型链路：官方 `deepseek-harness-sdk` 的 `DeepSeekHarness.run()`。`LLM_API_KEY` / `LLM_BASE_URL` 是官方适配器的凭据覆盖，`HARNESS_PROVIDER` 和 `HARNESS_MODEL` 决定 Harness 路由；`DEEPSEEK_*` / `OPENAI_*` / `MINIMAX_*` 仅保留给文档整理等非 Agent 后端工具，不能再作为聊天回退。
 - Harness 运行时由官方 SDK 自动启动并复用 bundled `dsh --profile sdk` runtime，不要求手工配置 `HARNESS_RUNTIME_MODE`、源码路径或自建插件：`HARNESS_ENABLED=true`、`HARNESS_HOME`、`HARNESS_PROFILE=sdk`、`HARNESS_PROVIDER=deepseek-official`、`HARNESS_MODEL=deepseek-v4-flash` 即可。每个用户使用独立的 `HARNESS_HOME` 与工作区；会话持久化、compaction、重试、工具循环和技能加载都由 Harness 自己负责。

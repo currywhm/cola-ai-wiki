@@ -34,11 +34,12 @@ from .db import (
     take_request_connections,
 )
 from .schemas import ArticleImportRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, PlanReviewRequest, PreferenceUpdate, ProfileUpdate, ShareCreate, ShareToKnowledge, SkillBuildRequest, SkillEnhanceRequest, SkillFlagUpdate, SkillForm, SkillPublishUpdate
-from .schemas import KnowledgeSubscriptionCreate
+from .schemas import KnowledgePublishUpdate, KnowledgeSubscriptionCreate
 
 from .security import create_token, current_user, current_user_optional, rate_limit
 from .services.documents import ALLOWED_SUFFIXES, extract_text, split_chunks
 from .services import content as content_service
+from .services import knowledge_policy
 from .services import skill_build
 from .services import artifacts as artifact_service
 from .services import storage
@@ -61,7 +62,7 @@ from .services.organizer import organize_document
 from .services.credits import estimate_usage, quote_turn, total_tokens
 from .services.virtual_pay import calc_pay_sig, calc_user_signature, query_order, sign_data, virtual_configured, virtual_product
 
-# 免费试用：注册当天起 30 天倒计时，期间 300MB / 1 个资料库。
+# 免费试用：注册当天起 30 天倒计时，期间 300MB / 2 个资料库。
 # 会员按租期开通（月/季/年）：Plus 10GB / Pro 30GB，另外区别在资料库数量、单文件大小与每月问答额度。
 TRIAL_DAYS = 30
 FREE_STORAGE_BYTES = 300 * 1024 * 1024
@@ -73,7 +74,7 @@ PRO_STORAGE_BYTES = 30 * 1024 * 1024 * 1024
 FREE_CREDITS_AFTER_TRIAL = 150
 
 MEMBERSHIP_LIMITS = {
-    'free': {'label': '免费试用', 'knowledge_bases': 1, 'storage_bytes': FREE_STORAGE_BYTES, 'monthly_credits': 600, 'max_file_bytes': 50 * 1024 * 1024, 'skills': 1},
+    'free': {'label': '免费试用', 'knowledge_bases': 2, 'storage_bytes': FREE_STORAGE_BYTES, 'monthly_credits': 600, 'max_file_bytes': 50 * 1024 * 1024, 'skills': 1},
     'plus': {'label': 'Plus 会员', 'knowledge_bases': 10, 'storage_bytes': PLUS_STORAGE_BYTES, 'monthly_credits': 3000, 'max_file_bytes': 100 * 1024 * 1024, 'skills': 5},
     'pro': {'label': 'Pro 会员', 'knowledge_bases': 50, 'storage_bytes': PRO_STORAGE_BYTES, 'monthly_credits': 15000, 'max_file_bytes': 300 * 1024 * 1024, 'skills': 10},
 }
@@ -375,6 +376,8 @@ def knowledge_view(row: Any, *, live_document_count: int | None = None, source_n
     「导入文件 / 删除 / 移动」等写入入口，避免收件人改到分享者的资料。
     """
     data = row_dict(row) or {}
+    avatar_id = str(data.get('mirror_of') or data.get('id') or '')
+    avatar_url = f"/api/knowledge-avatars/{avatar_id}?v={hashlib.sha1(str(data.get('updated_at') or '').encode()).hexdigest()[:10]}" if data.get('avatar') and avatar_id else ''
     mirror_of = str(data.get('mirror_of') or '')
     name = str(data.get('name') or '')
     count = live_document_count if live_document_count is not None else int(data.get('document_count') or 0)
@@ -384,10 +387,13 @@ def knowledge_view(row: Any, *, live_document_count: int | None = None, source_n
         'name': name,
         'description': data.get('description') or '',
         'icon': data.get('icon') or DEFAULT_KNOWLEDGE_ICON,
+        'avatar': avatar_url,
         'document_count': int(count or 0),
         'visibility': data.get('visibility') or 'private',
         'category': data.get('category') or '',
         'subscribers': int(data.get('subscribers') or 0),
+        'published': (data.get('visibility') or '') == 'public',
+        'published_at': data.get('published_at') or '',
         'status': data.get('status') or 'active',
         'created_at': data.get('created_at') or '',
         'updated_at': data.get('updated_at') or '',
@@ -399,6 +405,7 @@ def knowledge_view(row: Any, *, live_document_count: int | None = None, source_n
         'subscribed': bool(subscribed),
         'subscription_source': subscription_source,
         'inbox': name == SHARED_KNOWLEDGE_NAME,
+        'publishable': bool(name) and name not in (DEFAULT_KNOWLEDGE_NAME, SHARED_KNOWLEDGE_NAME) and not mirror_of,
         # 「微信用户的知识库」是每个人的私人默认空间，不允许分享；共享过来的库也不能再转发。
         # 「共享知识库」是收件箱：里面放着别人分享给你的内容，分享出去等于把收件箱给别人看。
         'shareable': bool(name) and name not in (DEFAULT_KNOWLEDGE_NAME, SHARED_KNOWLEDGE_NAME) and not mirror_of,
@@ -519,9 +526,14 @@ async def sync_mirror(db: Any, row: Any) -> dict:
     for leftover in existing.values():
         changed = True
         await drop_mirror_document(db, mirror_id, str(leftover['id']), str(leftover['storage_path'] or ''))
+    metadata_changed = any((
+        str(source[key] or '') != str(row[key] or '')
+        for key in ('name', 'description', 'icon', 'avatar')
+    ))
+    changed = changed or metadata_changed
     await db.execute(
-        "UPDATE knowledge_bases SET name=?,description=?,icon=?,document_count=?,mirror_state='ok',mirror_owner=?,updated_at=? WHERE id=?",
-        (str(source['name']), str(source['description'] or ''), str(source['icon'] or DEFAULT_KNOWLEDGE_ICON), count, str(source['user_id']),
+        "UPDATE knowledge_bases SET name=?,description=?,icon=?,avatar=?,document_count=?,mirror_state='ok',mirror_owner=?,updated_at=? WHERE id=?",
+        (str(source['name']), str(source['description'] or ''), str(source['icon'] or DEFAULT_KNOWLEDGE_ICON), str(source['avatar'] or ''), count, str(source['user_id']),
          str(source['updated_at'] or '') if changed else str(row['updated_at'] or ''), mirror_id),
     )
     return {'source_name': str(source['name'] or ''), 'source_missing': False, 'count': count}
@@ -872,6 +884,83 @@ async def get_avatar(user_id: str) -> Response:
         return Response(content=data, media_type=AVATAR_MEDIA_TYPES[suffix], headers={'Cache-Control': 'public, max-age=300'})
     raise HTTPException(404, '头像不存在')
 
+
+KNOWLEDGE_AVATAR_DIR_NAME = 'knowledge-avatars'
+
+
+def _knowledge_avatar_safe_id(knowledge_id: str) -> str:
+    return re.sub(r'[^0-9A-Za-z_-]', '', knowledge_id or '')
+
+
+@app.post('/api/knowledge/{knowledge_id}/avatar')
+async def upload_knowledge_avatar(knowledge_id: str, file: UploadFile = File(...), user_id: str = Depends(current_user)) -> dict:
+    """Persist a knowledge-base avatar and keep one active object."""
+    db = await connect()
+    kb = await fetchone(db, "SELECT id,avatar,mirror_of FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
+    if not kb:
+        await db.close()
+        raise HTTPException(404, '知识库不存在')
+    if str(kb['mirror_of'] or ''):
+        await db.close()
+        raise HTTPException(403, '共享或订阅知识库不能单独更换头像')
+    data = await file.read()
+    if not data:
+        await db.close()
+        raise HTTPException(422, '头像文件为空')
+    if len(data) > AVATAR_MAX_BYTES:
+        await db.close()
+        raise HTTPException(413, '头像不能超过 2MB')
+    suffix = Path(file.filename or '').suffix.lower()
+    if suffix not in AVATAR_MEDIA_TYPES:
+        suffix = '.png' if data.startswith(b'\x89PNG\r\n') else '.jpg'
+    safe_id = _knowledge_avatar_safe_id(knowledge_id)
+    if not safe_id:
+        await db.close()
+        raise HTTPException(422, '知识库信息不完整')
+    old_ref = str(kb['avatar'] or '')
+    object_key = f'{KNOWLEDGE_AVATAR_DIR_NAME}/{safe_id}-{uuid.uuid4().hex[:10]}{suffix}'
+    try:
+        avatar_ref = await storage.save_bytes(data, object_key, content_type=AVATAR_MEDIA_TYPES[suffix])
+    except storage.StorageError as exc:
+        await db.close()
+        raise HTTPException(503, '头像存储失败，请稍后重试') from exc
+    stamp = now()
+    await db.execute('UPDATE knowledge_bases SET avatar=?,updated_at=? WHERE id=? AND user_id=?', (avatar_ref, stamp, knowledge_id, user_id))
+    await db.commit()
+    await db.close()
+    if old_ref and old_ref != avatar_ref:
+        await storage.delete(old_ref)
+    return {'avatar': f'/api/knowledge-avatars/{knowledge_id}?v={int(time.time())}'}
+
+
+@app.get('/api/knowledge-avatars/{knowledge_id}')
+async def get_knowledge_avatar(knowledge_id: str) -> Response:
+    """Knowledge avatars are public because miniprogram <image> cannot send auth headers."""
+    db = await connect()
+    row = await fetchone(db, 'SELECT avatar FROM knowledge_bases WHERE id=? AND status=? ', (knowledge_id, 'active'))
+    await db.close()
+    ref = str(row['avatar'] or '') if row else ''
+    if not ref:
+        raise HTTPException(404, '知识库头像不存在')
+    try:
+        data = await storage.read_bytes(ref)
+    except storage.StorageError as exc:
+        raise HTTPException(404, '知识库头像不存在') from exc
+    media_type = mimetypes.guess_type(ref)[0] or 'image/jpeg'
+    return Response(content=data, media_type=media_type, headers={'Cache-Control': 'public, max-age=300'})
+
+
+async def enforce_published_knowledge_policy(db: Any, knowledge_id: str, *parts: str) -> str:
+    """Unpublish a public knowledge base when newly added content is rejected."""
+    kb = await fetchone(db, 'SELECT visibility FROM knowledge_bases WHERE id=? AND status=?', (knowledge_id, 'active'))
+    if not kb or str(kb['visibility'] or '') != 'public':
+        return ''
+    findings = knowledge_policy.review_content(*parts)
+    if not findings:
+        return ''
+    await db.execute("UPDATE knowledge_bases SET visibility='private',published_at='',updated_at=? WHERE id=?", (now(), knowledge_id))
+    return findings[0].message
+
 @app.get("/api/me/preferences")
 async def read_preferences(user_id: str = Depends(current_user)) -> dict:
     """用户偏好。skills 为 null 表示用户从未设置过，前端据此决定是否用本地值播种。"""
@@ -914,6 +1003,7 @@ async def update_preferences(payload: PreferenceUpdate, user_id: str = Depends(c
 async def delete_me(user_id: str = Depends(current_user)) -> dict:
     db = await connect()
     files = await fetchall(db, "SELECT storage_path FROM documents WHERE user_id=?", (user_id,))
+    knowledge_avatars = await fetchall(db, "SELECT avatar FROM knowledge_bases WHERE user_id=? AND status='active' AND COALESCE(mirror_of,'')='' AND COALESCE(avatar,'')<>''", (user_id,))
     owned_subscriptions = await fetchall(db, 'SELECT s.user_id,s.mirror_knowledge_id FROM knowledge_subscriptions s JOIN knowledge_bases k ON k.id=s.source_knowledge_id WHERE k.user_id=?', (user_id,))
     for item in owned_subscriptions:
         await purge_subscription_mirror(db, str(item['mirror_knowledge_id']), str(item['user_id']))
@@ -929,6 +1019,8 @@ async def delete_me(user_id: str = Depends(current_user)) -> dict:
     await db.close()
     for _suffix, ref in _avatar_refs(user_id):
         await storage.delete(ref)
+    for row in knowledge_avatars:
+        await storage.delete(str(row['avatar'] or ''))
     return {"ok": True}
 
 
@@ -1568,9 +1660,22 @@ async def market_knowledge(query: str = Query(default="", max_length=80), catego
     if category.strip():
         clauses.append("k.category=?")
         params.append(category.strip())
-    rows = await fetchall(db, f"SELECT k.id,k.user_id,k.name,k.description,k.icon,k.category,k.subscribers,k.document_count,k.updated_at FROM knowledge_bases k WHERE {' AND '.join(clauses)} ORDER BY k.subscribers DESC,k.updated_at DESC LIMIT 50", tuple(params))
+    rows = await fetchall(db, f"SELECT k.id,k.user_id,k.name,k.description,k.icon,k.avatar,k.category,k.subscribers,k.document_count,k.published_at,k.updated_at,u.nickname AS publisher_name,u.avatar AS publisher_avatar FROM knowledge_bases k JOIN users u ON u.id=k.user_id WHERE {' AND '.join(clauses)} ORDER BY k.subscribers DESC,k.published_at DESC,k.updated_at DESC LIMIT 50", tuple(params))
     await db.close()
-    return [{**{key: value for key, value in (row_dict(row) or {}).items() if key != 'user_id'}, 'documents': int(row['document_count'] or 0), 'subscribers': int(row['subscribers'] or 0), 'subscribed': str(row['id']) in subscribed, 'owned': bool(user_id and str(row['user_id']) == user_id)} for row in rows]
+    items = []
+    for row in rows:
+        value = {key: item for key, item in (row_dict(row) or {}).items() if key != 'user_id'}
+        value.update({
+            'avatar': (f"/api/knowledge-avatars/{row['id']}?v={hashlib.sha1(str(row['updated_at'] or '').encode()).hexdigest()[:10]}" if row['avatar'] else ''),
+            'publisher_name': str(row['publisher_name'] or '微信用户'),
+            'publisher_avatar': str(row['publisher_avatar'] or ''),
+            'documents': int(row['document_count'] or 0),
+            'subscribers': int(row['subscribers'] or 0),
+            'subscribed': str(row['id']) in subscribed,
+            'owned': bool(user_id and str(row['user_id']) == user_id),
+        })
+        items.append(value)
+    return items
 
 
 @app.get('/api/subscriptions')
@@ -1608,9 +1713,9 @@ async def subscribe_knowledge(payload: KnowledgeSubscriptionCreate, user_id: str
     timestamp = now()
     mirror_id = uuid.uuid4().hex
     await db.execute(
-        'INSERT INTO knowledge_bases(id,user_id,name,description,icon,document_count,visibility,status,created_at,updated_at,mirror_of,mirror_owner,mirror_state,mirror_token,mirror_at)'
-        ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        (mirror_id, user_id, str(source['name']), str(source['description'] or ''), str(source['icon'] or DEFAULT_KNOWLEDGE_ICON), 0, 'private', 'active',
+        'INSERT INTO knowledge_bases(id,user_id,name,description,icon,avatar,document_count,visibility,status,created_at,updated_at,mirror_of,mirror_owner,mirror_state,mirror_token,mirror_at)'
+        ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        (mirror_id, user_id, str(source['name']), str(source['description'] or ''), str(source['icon'] or DEFAULT_KNOWLEDGE_ICON), str(source['avatar'] or ''), 0, 'private', 'active',
          timestamp, timestamp, source_id, str(source['user_id']), 'ok', '', timestamp),
     )
     await db.execute('INSERT INTO knowledge_subscriptions(user_id,source_knowledge_id,mirror_knowledge_id,created_at) VALUES(?,?,?,?)', (user_id, source_id, mirror_id, timestamp))
@@ -1635,6 +1740,69 @@ async def unsubscribe_knowledge(source_knowledge_id: str, user_id: str = Depends
     subscribers = await refresh_subscriber_count(db, source_knowledge_id)
     await db.commit(); await db.close()
     return {'ok': True, 'removed': True, 'subscribers': subscribers}
+
+
+@app.post('/api/knowledge/{knowledge_id}/publish')
+async def publish_knowledge(knowledge_id: str, payload: KnowledgePublishUpdate, user_id: str = Depends(current_user)) -> dict:
+    """Move a personal knowledge base into or out of the public market."""
+    rate_limit(f'kb-publish:{user_id}', 20, 60, '操作过于频繁，请稍后再试')
+    db = await connect()
+    kb = await fetchone(db, "SELECT * FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
+    if not kb:
+        await db.close()
+        raise HTTPException(404, '知识库不存在')
+    if str(kb['mirror_of'] or ''):
+        await db.close()
+        raise HTTPException(403, '共享或订阅知识库不能发布到广场')
+    if str(kb['name'] or '') in (DEFAULT_KNOWLEDGE_NAME, SHARED_KNOWLEDGE_NAME):
+        await db.close()
+        raise HTTPException(403, '系统默认知识库不能发布到广场，请新建个人知识库后再发布')
+    if not payload.published:
+        await db.execute("UPDATE knowledge_bases SET visibility='private',published_at='',updated_at=? WHERE id=? AND user_id=?", (now(), knowledge_id, user_id))
+        await db.commit()
+        await db.close()
+        return {'ok': True, 'published': False, 'message': '已从知识库广场下架'}
+    if not payload.acknowledged:
+        await db.close()
+        raise HTTPException(422, '请先确认内容合规声明')
+    documents = await fetchall(
+        db,
+        "SELECT filename,organized_title,summary,extracted_text FROM documents WHERE knowledge_id=? AND status='completed' ORDER BY updated_at DESC LIMIT 80",
+        (knowledge_id,),
+    )
+    if not documents:
+        await db.close()
+        raise HTTPException(422, '知识库还没有完成解析的资料，暂时不能发布')
+    review_parts = [str(kb['name'] or ''), str(kb['description'] or '')]
+    for document in documents:
+        review_parts.extend([
+            str(document['organized_title'] or ''),
+            str(document['filename'] or ''),
+            str(document['summary'] or ''),
+            str(document['extracted_text'] or '')[:6000],
+        ])
+    findings = knowledge_policy.review_content(*review_parts)
+    if findings:
+        await db.close()
+        raise HTTPException(403, f'{findings[0].message}请修改或删除相关内容后再发布。')
+    category = knowledge_policy.classify_content(*review_parts)
+    published_at = now()
+    await db.execute(
+        "UPDATE knowledge_bases SET visibility='public',category=?,published_at=?,updated_at=? WHERE id=? AND user_id=? AND status='active'",
+        (category, published_at, published_at, knowledge_id, user_id),
+    )
+    await db.commit()
+    count = await fetchone(db, 'SELECT COUNT(*) AS count FROM knowledge_subscriptions WHERE source_knowledge_id=?', (knowledge_id,))
+    await db.close()
+    return {
+        'ok': True,
+        'published': True,
+        'category': category,
+        'published_at': published_at,
+        'subscribers': int(count['count'] or 0) if count else 0,
+        'reviewed_documents': len(documents),
+        'message': f'已发布到「{category}」分类',
+    }
 
 
 @app.post("/api/knowledge")
@@ -1665,6 +1833,7 @@ async def delete_knowledge(knowledge_id: str, user_id: str = Depends(current_use
     db = await connect(); kb = await fetchone(db, "SELECT * FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id)); user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
     if not kb:
         await db.close(); raise HTTPException(404, "知识库不存在")
+    avatar_ref = str(kb['avatar'] or '') if not str(kb['mirror_of'] or '') else ''
     subscription_source = await subscription_source_id(db, user_id, knowledge_id)
     if subscription_source:
         await db.execute('DELETE FROM knowledge_subscriptions WHERE user_id=? AND source_knowledge_id=?', (user_id, subscription_source))
@@ -1689,6 +1858,8 @@ async def delete_knowledge(knowledge_id: str, user_id: str = Depends(current_use
     for row in files:
         await unlink_if_unreferenced(db2, str(row["storage_path"] or ''))
     await db2.commit(); await db2.close()
+    if avatar_ref:
+        await storage.delete(avatar_ref)
     return {"ok": True}
 
 
@@ -1883,6 +2054,7 @@ async def upload_document(background_tasks: BackgroundTasks, knowledge_id: str, 
     status = "completed"
     error_message = ""
     extracted = ""
+    moderation_message = ""
     try:
         parsed_path = await storage.materialize(storage_ref, suffix=suffix)
         try:
@@ -1893,7 +2065,10 @@ async def upload_document(background_tasks: BackgroundTasks, knowledge_id: str, 
         db = await connect(); await db.execute("UPDATE documents SET page_count=?,status='embedding',progress=70,extracted_text=?,updated_at=? WHERE id=?", (pages, text, now(), document_id))
         for index, content in enumerate(chunks):
             chunk_id = uuid.uuid4().hex; await db.execute("INSERT INTO chunks(id,document_id,knowledge_id,content,page_number,chunk_index,created_at) VALUES(?,?,?,?,?,?,?)", (chunk_id, document_id, knowledge_id, content, min(pages, index + 1), index, now())); await db.execute("INSERT INTO chunks_fts(rowid,content,chunk_id,knowledge_id,filename,page_number) VALUES((SELECT COALESCE(MAX(rowid),0)+1 FROM chunks_fts),?,?,?,?,?)", (content, chunk_id, knowledge_id, safe_name, min(pages, index + 1)))
-        await db.execute("UPDATE documents SET status='completed',progress=100,updated_at=? WHERE id=?", (now(), document_id)); await db.execute("UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?", (knowledge_id, now(), knowledge_id)); await db.commit(); await db.close()
+        await db.execute("UPDATE documents SET status='completed',progress=100,updated_at=? WHERE id=?", (now(), document_id))
+        await db.execute("UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?", (knowledge_id, now(), knowledge_id))
+        moderation_message = await enforce_published_knowledge_policy(db, knowledge_id, safe_name, text)
+        await db.commit(); await db.close()
     except Exception as exc:
         status = "failed"; error_message = str(exc)
         db = await connect(); await db.execute("UPDATE documents SET status='failed',error_message=?,updated_at=? WHERE id=?", (error_message, now(), document_id)); await db.commit(); await db.close()
@@ -1904,7 +2079,7 @@ async def upload_document(background_tasks: BackgroundTasks, knowledge_id: str, 
     # organize_status 按实际有没有排整理任务回报：旧版 Office 格式正文为空，不会排整理，
     # 报 processing 会让调用方一直等一个永远不会到来的摘要。
     organized = status == 'completed' and bool(extracted.strip())
-    return {"id": document_id, "filename": safe_name, "status": status, "progress": 100 if status == "completed" else 0, "error_message": error_message, "organize_status": 'processing' if organized else 'pending'}
+    return {"id": document_id, "filename": safe_name, "status": status, "progress": 100 if status == "completed" else 0, "error_message": error_message, "organize_status": 'processing' if organized else 'pending', "moderation_message": moderation_message}
 
 
 @app.post("/api/knowledge/{knowledge_id}/import-article")
@@ -1949,6 +2124,7 @@ async def import_article(payload: ArticleImportRequest, background_tasks: Backgr
     await db.execute("INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (document_id, knowledge_id, user_id, safe_name, ".html", file_size, storage_ref, "processing", 15, payload.folder_id, timestamp, timestamp))
     await db.commit(); await db.close()
     status = "completed"; error_message = ""
+    moderation_message = ""
     try:
         chunks = split_chunks(article["text"])
         db = await connect()
@@ -1959,13 +2135,14 @@ async def import_article(payload: ArticleImportRequest, background_tasks: Backgr
             await db.execute("INSERT INTO chunks_fts(rowid,content,chunk_id,knowledge_id,filename,page_number) VALUES((SELECT COALESCE(MAX(rowid),0)+1 FROM chunks_fts),?,?,?,?,?)", (content, chunk_id, knowledge_id, safe_name, 1))
         await db.execute("UPDATE documents SET status='completed',progress=100,updated_at=? WHERE id=?", (now(), document_id))
         await db.execute("UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?", (knowledge_id, now(), knowledge_id))
+        moderation_message = await enforce_published_knowledge_policy(db, knowledge_id, safe_name, article["text"])
         await db.commit(); await db.close()
     except Exception as exc:
         status = "failed"; error_message = str(exc)
         db = await connect(); await db.execute("UPDATE documents SET status='failed',error_message=?,updated_at=? WHERE id=?", (error_message, now(), document_id)); await db.commit(); await db.close()
     if status == 'completed' and background_tasks is not None:
         background_tasks.add_task(organize_document, document_id)
-    return {"id": document_id, "filename": safe_name, "title": article["title"], "account": article["account"], "image_count": article["image_count"], "status": status, "progress": 100 if status == "completed" else 0, "error_message": error_message, "organize_status": 'processing' if status == 'completed' else 'pending'}
+    return {"id": document_id, "filename": safe_name, "title": article["title"], "account": article["account"], "image_count": article["image_count"], "status": status, "progress": 100 if status == "completed" else 0, "error_message": error_message, "organize_status": 'processing' if status == 'completed' else 'pending', "moderation_message": moderation_message}
 
 
 @app.get("/api/article-assets/{document_id}/{filename}")
@@ -2065,6 +2242,7 @@ async def retry_document(document_id: str, background_tasks: BackgroundTasks, us
     await db.execute("DELETE FROM chunks_fts WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)", (document_id,))
     await db.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
     await db.execute("UPDATE documents SET status='processing',progress=15,error_message='',updated_at=? WHERE id=?", (now(), document_id)); await db.commit(); await db.close()
+    moderation_message = ""
     try:
         try:
             text, pages = extract_text(path, suffix); chunks = split_chunks(text)
@@ -2075,10 +2253,13 @@ async def retry_document(document_id: str, background_tasks: BackgroundTasks, us
             chunk_id = uuid.uuid4().hex; page = min(pages, index + 1)
             await db.execute("INSERT INTO chunks(id,document_id,knowledge_id,content,page_number,chunk_index,created_at) VALUES(?,?,?,?,?,?,?)", (chunk_id, document_id, row["knowledge_id"], content, page, index, now()))
             await db.execute("INSERT INTO chunks_fts(rowid,content,chunk_id,knowledge_id,filename,page_number) VALUES((SELECT COALESCE(MAX(rowid),0)+1 FROM chunks_fts),?,?,?,?,?)", (content, chunk_id, row["knowledge_id"], row["filename"], page))
-        await db.execute("UPDATE documents SET status='completed',progress=100,updated_at=? WHERE id=?", (now(), document_id)); await db.execute("UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?", (row["knowledge_id"], now(), row["knowledge_id"])); await db.commit(); await db.close()
+        await db.execute("UPDATE documents SET status='completed',progress=100,updated_at=? WHERE id=?", (now(), document_id))
+        await db.execute("UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?", (row["knowledge_id"], now(), row["knowledge_id"]))
+        moderation_message = await enforce_published_knowledge_policy(db, str(row["knowledge_id"]), str(row["filename"] or ''), text)
+        await db.commit(); await db.close()
         if text.strip():
             background_tasks.add_task(organize_document, document_id)
-        return {"id": document_id, "status": "completed", "progress": 100, "organize_status": "processing"}
+        return {"id": document_id, "status": "completed", "progress": 100, "organize_status": "processing", "moderation_message": moderation_message}
     except Exception as exc:
         db = await connect(); await db.execute("UPDATE documents SET status='failed',progress=0,error_message=?,updated_at=? WHERE id=?", (str(exc), now(), document_id)); await db.commit(); await db.close()
         return {"id": document_id, "status": "failed", "progress": 0, "error_message": str(exc)}
@@ -2973,6 +3154,8 @@ async def register_knowledge_document(db: Any, *, knowledge_id: str, user_id: st
         "UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?",
         (knowledge_id, now(), knowledge_id),
     )
+    if text.strip():
+        await enforce_published_knowledge_policy(db, knowledge_id, name, text)
     return document_id, bool(text.strip())
 
 
@@ -3330,9 +3513,9 @@ async def accept_knowledge_share(token: str, user_id: str = Depends(current_user
         mirror_id = uuid.uuid4().hex
         timestamp = now()
         await db.execute(
-            'INSERT INTO knowledge_bases(id,user_id,name,description,icon,document_count,visibility,status,created_at,updated_at,mirror_of,mirror_owner,mirror_state,mirror_token,mirror_at)'
-            ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            (mirror_id, user_id, str(source['name']), str(source['description'] or ''), str(source['icon'] or DEFAULT_KNOWLEDGE_ICON), 0, 'private', 'active',
+            'INSERT INTO knowledge_bases(id,user_id,name,description,icon,avatar,document_count,visibility,status,created_at,updated_at,mirror_of,mirror_owner,mirror_state,mirror_token,mirror_at)'
+            ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (mirror_id, user_id, str(source['name']), str(source['description'] or ''), str(source['icon'] or DEFAULT_KNOWLEDGE_ICON), str(source['avatar'] or ''), 0, 'private', 'active',
              timestamp, timestamp, str(source['id']), str(source['user_id']), 'ok', token, timestamp),
         )
         await db.commit()

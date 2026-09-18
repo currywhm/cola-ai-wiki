@@ -28,6 +28,11 @@ class KnowledgeSubscriptionCreate(BaseModel):
     knowledge_id: str = Field(min_length=4, max_length=64)
 
 
+class KnowledgePublishUpdate(BaseModel):
+    published: bool = True
+    acknowledged: bool = False
+
+
 class ChatRequest(BaseModel):
     knowledge_id: str | None = None
     conversation_id: str | None = None

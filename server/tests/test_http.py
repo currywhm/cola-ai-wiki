@@ -137,11 +137,28 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
 
         created = self.client.post('/api/knowledge', headers=self.headers, json={'name': '项目资料'})
-        self.assertEqual(created.status_code, 403, created.text)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        rejected = self.client.post('/api/knowledge', headers=self.headers, json={'name': '第二个资料库'})
+        self.assertEqual(rejected.status_code, 403, rejected.text)
 
         second = self.client.get('/api/knowledge', headers=self.headers)
         self.assertEqual(second.status_code, 200, second.text)
-        self.assertEqual([item['name'] for item in second.json()], ['微信用户的知识库'])
+        self.assertEqual([item['name'] for item in second.json()], ['微信用户的知识库', '项目资料'])
+
+    def test_knowledge_avatar_upload_and_read(self):
+        kb = self.kb()
+        image = Image.new('RGB', (64, 64), 'green')
+        content = io.BytesIO(); image.save(content, format='JPEG')
+        uploaded = self.client.post(f'/api/knowledge/{kb}/avatar', headers=self.headers, files={'file': ('knowledge.jpg', content.getvalue())})
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        avatar_path = uploaded.json()['avatar'].split('?', 1)[0]
+        served = self.client.get(avatar_path)
+        self.assertEqual(served.status_code, 200, served.text)
+        self.assertEqual(served.headers['content-type'], 'image/jpeg')
+        self.assertTrue(served.content.startswith(b'\xff\xd8'))
+        detail = self.client.get(f'/api/knowledge/{kb}', headers=self.headers).json()
+        self.assertTrue(detail['knowledge']['avatar'].startswith(f'/api/knowledge-avatars/{kb}'))
 
     def test_document_search_retry_delete(self):
         kb = self.kb()
@@ -322,6 +339,89 @@ class HTTPTests(unittest.TestCase):
             self.client.delete('/api/me', headers=owner_headers)
             self.client.delete('/api/me', headers=receiver_headers)
             _ = (owner_id, receiver_id)
+
+    def test_knowledge_publish_requires_acknowledgement_and_content(self):
+        created = self.client.post('/api/knowledge', headers=self.headers, json={'name': '人工智能学习资料', 'description': '大模型知识整理'})
+        self.assertEqual(created.status_code, 200, created.text)
+        knowledge_id = created.json()['id']
+
+        no_documents = self.client.post(f'/api/knowledge/{knowledge_id}/publish', headers=self.headers, json={'published': True, 'acknowledged': True})
+        self.assertEqual(no_documents.status_code, 422, no_documents.text)
+        self.assertIn('资料', no_documents.json()['detail'])
+
+        self.upload(knowledge_id, content='人工智能和大模型的应用，以及机器学习基础知识。')
+        not_acknowledged = self.client.post(f'/api/knowledge/{knowledge_id}/publish', headers=self.headers, json={'published': True, 'acknowledged': False})
+        self.assertEqual(not_acknowledged.status_code, 422, not_acknowledged.text)
+        self.assertIn('合规', not_acknowledged.json()['detail'])
+
+    def test_knowledge_publish_market_subscription_and_unpublish(self):
+        created = self.client.post('/api/knowledge', headers=self.headers, json={'name': 'AI 学习资料', 'description': '人工智能和大模型知识整理'})
+        self.assertEqual(created.status_code, 200, created.text)
+        source_id = created.json()['id']
+        self.upload(source_id, content='人工智能、机器学习、大模型与数据库基础知识。')
+
+        published = self.client.post(f'/api/knowledge/{source_id}/publish', headers=self.headers, json={'published': True, 'acknowledged': True})
+        self.assertEqual(published.status_code, 200, published.text)
+        self.assertEqual(published.json()['category'], '科技')
+        self.assertEqual(published.json()['reviewed_documents'], 1)
+
+        detail = self.client.get(f'/api/knowledge/{source_id}', headers=self.headers).json()['knowledge']
+        self.assertTrue(detail['published'])
+        self.assertEqual(detail['category'], '科技')
+        self.assertTrue(detail['published_at'])
+
+        owner_market = self.client.get('/api/market', headers=self.headers).json()
+        owner_item = next(item for item in owner_market if item['id'] == source_id)
+        self.assertTrue(owner_item['owned'])
+        self.assertEqual(owner_item['documents'], 1)
+        self.assertEqual(owner_item['publisher_name'], '测试用户')
+
+        _, subscriber_headers = self.fixture_user()
+        try:
+            before = next(item for item in self.client.get('/api/market', headers=subscriber_headers).json() if item['id'] == source_id)
+            self.assertFalse(before['subscribed'])
+            subscribed = self.client.post('/api/subscriptions', headers=subscriber_headers, json={'knowledge_id': source_id})
+            self.assertEqual(subscribed.status_code, 200, subscribed.text)
+            self.assertEqual(subscribed.json()['subscribers'], 1)
+            self.assertEqual([item['id'] for item in self.client.get('/api/subscriptions', headers=subscriber_headers).json()], [subscribed.json()['knowledge_id']])
+            after = next(item for item in self.client.get('/api/market', headers=subscriber_headers).json() if item['id'] == source_id)
+            self.assertTrue(after['subscribed'])
+            self.assertEqual(after['subscribers'], 1)
+            removed = self.client.delete(f'/api/subscriptions/{source_id}', headers=subscriber_headers)
+            self.assertTrue(removed.json()['removed'])
+            self.assertEqual(self.client.get('/api/subscriptions', headers=subscriber_headers).json(), [])
+        finally:
+            self.client.delete('/api/me', headers=subscriber_headers)
+
+        unpublished = self.client.post(f'/api/knowledge/{source_id}/publish', headers=self.headers, json={'published': False, 'acknowledged': False})
+        self.assertEqual(unpublished.status_code, 200, unpublished.text)
+        self.assertFalse(unpublished.json()['published'])
+        self.assertFalse(any(item['id'] == source_id for item in self.client.get('/api/market', headers=self.headers).json()))
+
+    def test_knowledge_policy_blocks_state_secrets(self):
+        created = self.client.post('/api/knowledge', headers=self.headers, json={'name': '涉密资料', 'description': '国家秘密文件整理'})
+        self.assertEqual(created.status_code, 200, created.text)
+        knowledge_id = created.json()['id']
+        self.upload(knowledge_id, content='这里是国家秘密和绝密文件，禁止公开。')
+
+        rejected = self.client.post(f'/api/knowledge/{knowledge_id}/publish', headers=self.headers, json={'published': True, 'acknowledged': True})
+        self.assertEqual(rejected.status_code, 403, rejected.text)
+        self.assertIn('国家秘密', rejected.json()['detail'])
+        self.assertFalse(any(item['id'] == knowledge_id for item in self.client.get('/api/market', headers=self.headers).json()))
+
+    def test_new_risky_document_unpublishes_a_public_knowledge(self):
+        created = self.client.post('/api/knowledge', headers=self.headers, json={'name': '公开项目资料', 'description': '项目管理知识'})
+        self.assertEqual(created.status_code, 200, created.text)
+        knowledge_id = created.json()['id']
+        self.upload(knowledge_id, content='项目管理流程、团队协作和风险控制。')
+        published = self.client.post(f'/api/knowledge/{knowledge_id}/publish', headers=self.headers, json={'published': True, 'acknowledged': True})
+        self.assertEqual(published.status_code, 200, published.text)
+
+        risky = self.upload(knowledge_id, '风险资料.txt', content='国家秘密绝密资料。')
+        self.assertIn('国家秘密', risky['moderation_message'])
+        detail = self.client.get(f'/api/knowledge/{knowledge_id}', headers=self.headers).json()['knowledge']
+        self.assertFalse(detail['published'])
+        self.assertFalse(any(item['id'] == knowledge_id for item in self.client.get('/api/market', headers=self.headers).json()))
 
     def test_market_subscription_lifecycle(self):
         owner_id, owner_headers = self.fixture_user()

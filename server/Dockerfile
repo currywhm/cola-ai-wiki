@@ -18,7 +18,31 @@ RUN useradd --uid 10001 --create-home api \
     && chown -R api:api /app
 USER api
 ENV PYTHONUNBUFFERED=1
-EXPOSE 8000
-ENV PORT=8000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT','8000') + '/ready', timeout=3)"
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+ENV APP_ENV=production \
+    APP_NAME=cola知识库 \
+    PORT=80 \
+    UPLOAD_DIR=/app/uploads \
+    CONTENT_DIR=/app/content \
+    CORS_ORIGINS=* \
+    STORAGE_BACKEND=cos \
+    COS_PREFIX=cola \
+    WECHAT_API_BASE=https://api.weixin.qq.com \
+    WECHAT_OPENAPI_BASE=http://api.weixin.qq.com \
+    LLM_BASE_URL=https://api.deepseek.com \
+    LLM_MODEL=deepseek-chat \
+    HARNESS_ENABLED=true \
+    HARNESS_HOME=/app/harness-home \
+    HARNESS_PROFILE=sdk \
+    HARNESS_PROVIDER=deepseek-official \
+    HARNESS_MODEL=deepseek-v4-flash \
+    HARNESS_MAX_TOKENS=4096 \
+    DSH_PERMISSION_MODE=workspace-write \
+    HARNESS_REASONING_EFFORT=low \
+    HARNESS_WORKSPACES=/app/harness-workspaces \
+    HARNESS_MAX_RUNTIMES=6 \
+    HARNESS_IDLE_SECONDS=1800 \
+    HARNESS_QUICK_REASONING_EFFORT=low \
+    HARNESS_DEEP_REASONING_EFFORT=high
+EXPOSE 80
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT','80') + '/ready', timeout=3)"
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-80}"]

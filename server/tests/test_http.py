@@ -253,6 +253,76 @@ class HTTPTests(unittest.TestCase):
         finally:
             self.client.delete('/api/me', headers=other)
 
+    def test_share_card_and_knowledge_invitation_lifecycle(self):
+        owner_id, owner_headers = self.fixture_user()
+        receiver_id, receiver_headers = self.fixture_user()
+        source_id = uuid.uuid4().hex
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute(
+                "INSERT INTO knowledge_bases(id,user_id,name,description,icon,document_count,visibility,category,subscribers,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (source_id, owner_id, '邀请测试库', '完整邀请链路', 'book', 0, 'private', '', 0, 'active', '2026-09-18', '2026-09-18'),
+            )
+            db.commit()
+        try:
+            created = self.client.post('/api/shares', headers=owner_headers, json={
+                'title': '接口验证分享',
+                'question': '项目代号是什么？',
+                'answer': '蓝色海豚。',
+                'sources': [{'filename': '项目资料.txt', 'page_number': 1}],
+            })
+            self.assertEqual(created.status_code, 200, created.text)
+            share_id = created.json()['id']
+
+            public = self.client.get(f'/api/shares/{share_id}')
+            self.assertEqual(public.status_code, 200, public.text)
+            self.assertEqual(public.json()['answer'], '蓝色海豚。')
+            self.assertEqual(public.json()['sources'][0]['filename'], '项目资料.txt')
+
+            claimed = self.client.post(f'/api/shares/{share_id}/claim', headers=receiver_headers)
+            self.assertEqual(claimed.status_code, 200, claimed.text)
+            self.assertFalse(claimed.json()['already'])
+            self.assertTrue(claimed.json()['documents'])
+            claimed_again = self.client.post(f'/api/shares/{share_id}/claim', headers=receiver_headers)
+            self.assertTrue(claimed_again.json()['already'])
+
+            receiver_kb = next(
+                item['id'] for item in self.client.get('/api/knowledge', headers=receiver_headers).json()
+                if item['name'] == '微信用户的知识库'
+            )
+            to_kb = self.client.post('/api/shares/to-knowledge', headers=receiver_headers, json={
+                'knowledge_id': receiver_kb,
+                'title': '分享转存',
+                'content': '分享转存内容：蓝色海豚。',
+                'artifact_ids': [],
+            })
+            self.assertEqual(to_kb.status_code, 200, to_kb.text)
+            self.assertTrue(to_kb.json()['saved'])
+
+            invite = self.client.post(f'/api/knowledge/{source_id}/share', headers=owner_headers)
+            self.assertEqual(invite.status_code, 200, invite.text)
+            token = invite.json()['token']
+            preview = self.client.get(f'/api/knowledge-shares/{token}')
+            self.assertEqual(preview.status_code, 200, preview.text)
+            self.assertEqual(preview.json()['state'], 'open')
+            self.assertTrue(preview.json()['available'])
+
+            accepted = self.client.post(f'/api/knowledge-shares/{token}/accept', headers=receiver_headers)
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            mirror_id = accepted.json()['knowledge_id']
+            self.assertTrue(accepted.json()['read_only'])
+            mirrors = self.client.get('/api/knowledge', headers=receiver_headers).json()
+            self.assertIn(mirror_id, [item['id'] for item in mirrors])
+
+            revoked = self.client.post(f'/api/knowledge-shares/{token}/revoke', headers=owner_headers)
+            self.assertEqual(revoked.status_code, 200, revoked.text)
+            self.assertGreaterEqual(revoked.json()['removed'], 1)
+            after = self.client.get(f'/api/knowledge-shares/{token}')
+            self.assertEqual(after.json()['state'], 'revoked')
+        finally:
+            self.client.delete('/api/me', headers=owner_headers)
+            self.client.delete('/api/me', headers=receiver_headers)
+            _ = (owner_id, receiver_id)
+
     def test_market_subscription_lifecycle(self):
         owner_id, owner_headers = self.fixture_user()
         source_id = uuid.uuid4().hex

@@ -45,7 +45,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from ..config import settings
 from ..db import connect, fetchone
-from .wechat_http import create_wechat_client, wechat_api_url
+from .wechat_http import wechat_request
 
 TOKEN_CACHE_KEY = 'kf_access_token'
 # 官方给的 token 有效期 7200 秒，提前 5 分钟换掉，避免边界上刚好过期
@@ -113,20 +113,23 @@ async def access_token(force: bool = False) -> str:
         cached = await _cached_token()
         if cached:
             return cached
-    async with create_wechat_client(timeout=15) as client:
-        # stable_token 是官方推荐的稳定版：不会被其它业务刷新顶掉，也更容易做多实例
-        response = await client.post(
-            wechat_api_url('/cgi-bin/stable_token'),
-            json={'grant_type': 'client_credential', 'appid': settings.wechat_appid, 'secret': settings.wechat_secret, 'force_refresh': bool(force)},
+    # stable_token 是官方推荐的稳定版：不会被其它业务刷新顶掉，也更容易做多实例
+    response = await wechat_request(
+        'POST',
+        '/cgi-bin/stable_token',
+        timeout=15,
+        json={'grant_type': 'client_credential', 'appid': settings.wechat_appid, 'secret': settings.wechat_secret, 'force_refresh': bool(force)},
+    )
+    data = response.json() if response.content else {}
+    if not data.get('access_token'):
+        # 老账号/灰度账号可能还没有 stable_token，退回普通接口
+        response = await wechat_request(
+            'GET',
+            '/cgi-bin/token',
+            timeout=15,
+            params={'grant_type': 'client_credential', 'appid': settings.wechat_appid, 'secret': settings.wechat_secret},
         )
         data = response.json() if response.content else {}
-        if not data.get('access_token'):
-            # 老账号/灰度账号可能还没有 stable_token，退回普通接口
-            response = await client.get(
-                wechat_api_url('/cgi-bin/token'),
-                params={'grant_type': 'client_credential', 'appid': settings.wechat_appid, 'secret': settings.wechat_secret},
-            )
-            data = response.json() if response.content else {}
     token = str(data.get('access_token') or '')
     if not token:
         raise WeChatKfError(int(data.get('errcode') or -1), str(data.get('errmsg') or '获取 access_token 失败'))
@@ -141,13 +144,12 @@ async def _call(path: str, *, method: str = 'POST', payload: dict | None = None,
     token = await access_token()
     query = dict(params or {})
     query['access_token'] = token
-    async with create_wechat_client(timeout=30) as client:
-        if raw is not None:
-            response = await client.post(wechat_api_url(path), params=query, content=raw, headers={'Content-Type': content_type})
-        elif method == 'GET':
-            response = await client.get(wechat_api_url(path), params=query)
-        else:
-            response = await client.post(wechat_api_url(path), params=query, json=payload or {})
+    if raw is not None:
+        response = await wechat_request('POST', path, timeout=30, params=query, content=raw, headers={'Content-Type': content_type})
+    elif method == 'GET':
+        response = await wechat_request('GET', path, timeout=30, params=query)
+    else:
+        response = await wechat_request('POST', path, timeout=30, params=query, json=payload or {})
     if response.headers.get('content-type', '').startswith(('image/', 'audio/', 'video/', 'application/octet')):
         # /cgi-bin/media/get 成功时直接回文件字节
         return {'_binary': response.content, '_content_type': response.headers.get('content-type', '')}
@@ -280,12 +282,13 @@ async def typing(openid: str, command: str = 'Typing') -> dict:
 async def upload_temp_media(content: bytes, filename: str, media_type: str = 'image') -> dict:
     token = await access_token()
     files = {'media': (filename or 'upload.bin', content, 'application/octet-stream')}
-    async with create_wechat_client(timeout=60) as client:
-        response = await client.post(
-            wechat_api_url('/cgi-bin/media/upload'),
-            params={'access_token': token, 'type': media_type},
-            files=files,
-        )
+    response = await wechat_request(
+        'POST',
+        '/cgi-bin/media/upload',
+        timeout=60,
+        params={'access_token': token, 'type': media_type},
+        files=files,
+    )
     data = response.json() if response.content else {}
     if int(data.get('errcode') or 0):
         raise WeChatKfError(int(data['errcode']), str(data.get('errmsg') or '上传临时素材失败'), '/cgi-bin/media/upload')

@@ -19,8 +19,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', default='zhi-reader-api:verify')
     args = parser.parse_args()
-    docker('run', '--rm', '-v', f'{ROOT / "tests"}:/app/tests:ro', args.image,
-           'python', '-m', 'unittest', 'discover', '-s', '/app/tests', '-v', capture=False)
+    docker(
+        'run', '--rm',
+        '-e', 'APP_ENV=test',
+        '-e', 'STORAGE_BACKEND=local',
+        '-e', 'HARNESS_ENABLED=false',
+        '-v', f'{ROOT / "tests"}:/app/tests:ro',
+        '-v', f'{ROOT / ".env.cloud.example"}:/app/.env.cloud.example:ro',
+        args.image,
+        'python', '-m', 'unittest', 'discover', '-s', '/app/tests', '-v', capture=False,
+    )
     name = 'zhi-api-verify-' + uuid.uuid4().hex[:10]
     data, uploads = name + '-data', name + '-uploads'
     created_volumes = []
@@ -29,6 +37,7 @@ def main():
     def launch():
         # Random verification secret is never sent to the real server or printed.
         docker('run', '-d', '--name', name, '-e', 'APP_ENV=test', '-e', 'JWT_SECRET=' + secrets.token_urlsafe(48),
+               '-e', 'STORAGE_BACKEND=local', '-e', 'HARNESS_ENABLED=false', '-e', 'PORT=8000',
                '-v', data + ':/app/data', '-v', uploads + ':/app/uploads', args.image)
 
     def ready():

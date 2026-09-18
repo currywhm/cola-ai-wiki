@@ -44,3 +44,42 @@ def create_wechat_client(
             raise RuntimeError(f"WECHAT_CA_FILE 文件不存在：{path}")
         kwargs["verify"] = str(path)
     return httpx.AsyncClient(**kwargs)
+
+
+def wechat_api_urls(path: str) -> list[str]:
+    """候选地址，按优先级排列：先 HTTPS，失败后回退到平台内网 HTTP 端点。"""
+    urls = [wechat_api_url(path)]
+    if not settings.wechat_insecure_fallback:
+        return urls
+    fallback_base = settings.wechat_insecure_fallback_base.strip().rstrip("/")
+    if not fallback_base:
+        return urls
+    candidate = f"{fallback_base}/{path.lstrip('/')}"
+    if candidate not in urls:
+        urls.append(candidate)
+    return urls
+
+
+async def wechat_request(
+    method: str, path: str, *, timeout: httpx.Timeout | float | int = 15, **kwargs
+) -> httpx.Response:
+    """请求微信开放接口，仅在传输层（含 TLS 握手）失败时切换备用地址。
+
+    微信返回的 4xx/5xx 属于业务响应，直接交回调用方解析，不做地址回退。
+    """
+    urls = wechat_api_urls(path)
+    last_error: httpx.TransportError | None = None
+    for index, url in enumerate(urls):
+        try:
+            async with create_wechat_client(timeout=timeout) as client:
+                response = await client.request(method, url, **kwargs)
+        except httpx.TransportError as exc:
+            last_error = exc
+            if index + 1 < len(urls):
+                print(f"[wechat] {url} 连接失败（{exc}），改用备用地址 {urls[index + 1]}", flush=True)
+            continue
+        if index:
+            print(f"[wechat] 已改用备用地址 {url}", flush=True)
+        return response
+    assert last_error is not None
+    raise last_error

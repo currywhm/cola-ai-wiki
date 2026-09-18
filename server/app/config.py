@@ -12,7 +12,7 @@ DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./data/llmwiki.db"
 
 class Settings(BaseSettings):
     app_env: Literal['development', 'production', 'test'] = 'development'
-    app_name: str = "知库资料服务"
+    app_name: str = "cola知识库"
     database_url: str = DEFAULT_DATABASE_URL
     # 微信云托管 MySQL 模板直接注入这四项。未显式设置 DATABASE_URL 时，
     # 下面四项目会自动拼成 mysql+aiomysql 连接串。
@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # 微信云托管官方示例使用 Bucket / Region；保留 COS_* 作为兼容配置。
     bucket: str = ""
     region: str = ""
-    cos_prefix: str = ""
+    cos_prefix: str = "cola"
     # 本地联调 COS 时可直填永久密钥；云托管应留空并走开放接口临时密钥。
     cos_secret_id: str = ""
     cos_secret_key: str = ""
@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     # 仅在出口代理使用私有根证书时填写 PEM 格式 CA 文件。
     # 不要填写微信支付/开放平台的 API 证书。
     wechat_ca_file: str = ""
+    # 微信云托管等平台的出口可能对 api.weixin.qq.com 做 TLS 拦截，导致证书校验
+    # 失败（self-signed certificate）。HTTPS 仍是首选，连接层失败后才回退到
+    # 平台内网常用的 HTTP 端点；确认平台出口正常时可以关掉回退。
+    wechat_insecure_fallback: bool = True
+    wechat_insecure_fallback_base: str = "http://api.weixin.qq.com"
     # 微信客服：消息推送的 Token / EncodingAESKey 在 MP 后台「开发管理 → 消息推送」里填，
     # 这里必须与后台保持一致；后台选「安全模式」时 EncodingAESKey 必填。
     # 客服账号管理与会话列表是运营动作，不是普通用户接口，用 KF_ADMIN_TOKEN 单独护住。
@@ -89,8 +94,8 @@ class Settings(BaseSettings):
     # 统一大模型配置（优先于下面的 OpenAI-compatible 供应商配置）。
     # 云端只配置这三项即可切换兼容 OpenAI Chat Completions 的模型服务。
     llm_api_key: str = ""
-    llm_base_url: str = ""
-    llm_model: str = ""
+    llm_base_url: str = "https://api.deepseek.com"
+    llm_model: str = "deepseek-chat"
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"

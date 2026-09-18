@@ -12,7 +12,8 @@ from typing import Any
 import httpx
 
 from ..config import settings
-from .wechat_http import create_wechat_client, wechat_api_url
+from .wechat_http import wechat_request
+
 class WeChatAuthError(RuntimeError):
     """WeChat OpenAPI error with the original official errcode when present."""
 
@@ -42,14 +43,10 @@ async def validate_wechat_credentials() -> bool:
         "force_refresh": False,
     }
     try:
-        async with create_wechat_client(
-            timeout=httpx.Timeout(12, connect=5)
-        ) as client:
-            response = await client.post(
-                wechat_api_url("/cgi-bin/stable_token"),
-                json=payload,
-            )
-            data = response.json()
+        response = await wechat_request(
+            "POST", "/cgi-bin/stable_token", timeout=httpx.Timeout(12, connect=5), json=payload
+        )
+        data = response.json()
     except (httpx.HTTPError, ValueError) as exc:
         print(f"[wechat] 凭证在线校验跳过（网络或 TLS 暂不可用）：{exc}", flush=True)
         return False
@@ -67,17 +64,18 @@ async def exchange_code_for_session(code: str) -> dict[str, Any]:
     if not settings.wechat_appid or not settings.wechat_secret:
         raise WeChatAuthError(-1, "服务端未配置微信小程序登录参数")
     try:
-        async with create_wechat_client(timeout=10) as client:
-            response = await client.get(
-                wechat_api_url("/sns/jscode2session"),
-                params={
-                    "appid": settings.wechat_appid,
-                    "secret": settings.wechat_secret,
-                    "js_code": code,
-                    "grant_type": "authorization_code",
-                },
-            )
-            data = response.json()
+        response = await wechat_request(
+            "GET",
+            "/sns/jscode2session",
+            timeout=10,
+            params={
+                "appid": settings.wechat_appid,
+                "secret": settings.wechat_secret,
+                "js_code": code,
+                "grant_type": "authorization_code",
+            },
+        )
+        data = response.json()
     except (httpx.HTTPError, ValueError) as exc:
         raise WeChatAuthError(-1, f"微信登录校验请求失败：{exc}") from exc
     if not isinstance(data, dict):

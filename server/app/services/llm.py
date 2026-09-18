@@ -54,6 +54,7 @@ async def stream_answer(
     skills: list[dict] | None = None,
     mode: str = 'knowledge',
     user_id: str = '',
+    history: list[dict] | None = None,
     plan: bool = False,
 ) -> AsyncIterator[dict]:
     """Stream one official Harness turn.
@@ -73,6 +74,7 @@ async def stream_answer(
         skills=skills,
         mode=mode,
         user_id=user_id,
+        history=history,
         plan=plan,
     ):
         yield event

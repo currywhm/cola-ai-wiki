@@ -8,6 +8,7 @@ import json
 import unittest
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 from app.services import harness
 
@@ -16,6 +17,12 @@ class _Notification:
     def __init__(self, event):
         self.method = 'session.event'
         self.payload = {'event': event}
+
+
+class _Result:
+    def __init__(self, final_response=''):
+        self.final_response = final_response
+        self.events = []
 
 
 def _notification(event_type, data):
@@ -185,6 +192,52 @@ class HarnessEventTests(unittest.TestCase):
 
         self.assertEqual(result['tool_error'], 'permission denied')
         self.assertEqual(result['tool_result_summary'], 'permission denied')
+
+
+class HarnessContinuationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_session_collision_retries_on_new_official_session(self):
+        calls = []
+
+        def fake_run(prompt, session_id, *args):
+            calls.append((prompt, session_id))
+            if len(calls) == 1:
+                raise RuntimeError('session "persisted-id" already exists')
+            return _Result('继续回答成功'), None
+
+        with (
+            mock.patch.object(harness, 'configured', return_value=True),
+            mock.patch.object(harness, 'thinking_config', return_value=('sdk', 'deepseek-v4-flash', 'low')),
+            mock.patch.object(harness, 'sync_skills'),
+            mock.patch.object(harness, '_run_turn', side_effect=fake_run),
+        ):
+            events = [
+                event async for event in harness._stream_turn(
+                    '继续刚才的任务',
+                    '',
+                    'persisted-id',
+                    'deepseek-v4-flash',
+                    'quick',
+                    None,
+                    'tenant-a',
+                    with_usage=True,
+                    history=[
+                        {'role': 'user', 'content': '项目代号是什么'},
+                        {'role': 'assistant', 'content': '蓝色海豚'},
+                    ],
+                )
+            ]
+
+        session_ids = [event['session_id'] for event in events if event['kind'] == 'session']
+        self.assertEqual(session_ids[0], 'persisted-id')
+        self.assertNotEqual(session_ids[1], 'persisted-id')
+        self.assertEqual(len(calls), 2)
+        self.assertIn('蓝色海豚', calls[1][0])
+        self.assertIn('当前用户消息', calls[1][0])
+        self.assertEqual(''.join(event['text'] for event in events if event['kind'] == 'text'), '继续回答成功')
+
+    def test_session_collision_recognition_is_narrow(self):
+        self.assertTrue(harness._is_session_exists_error(RuntimeError('session "x" already exists')))
+        self.assertFalse(harness._is_session_exists_error(RuntimeError('network unavailable')))
 
 
 if __name__ == '__main__':

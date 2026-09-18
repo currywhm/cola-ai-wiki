@@ -68,38 +68,45 @@ curl http://127.0.0.1:8765/ready
 
 仓库根目录的 `Dockerfile` 专门用于云托管：它只复制 `server/` 后端目录，不包含 `miniprogram/`。云托管选择 GitHub 源码部署时，Dockerfile 路径填写 `/Dockerfile`，构建目录使用仓库根目录。
 
-可直接照着填的完整变量样例见 [`server/.env.cloud.example`](.env.cloud.example)。其中 `DATABASE_URL` 默认保持注释：使用云托管 MySQL 时让平台自动注入 `MYSQL_*`，手工指定完整连接串时再取消注释。
+云托管最小变量样例见 [`server/.env.cloud.example`](.env.cloud.example)。根目录 `Dockerfile` 已内置以下固定值，不需要在控制台重复配置：
+
+```text
+APP_ENV=production             APP_NAME=cola知识库
+PORT=80                        UPLOAD_DIR=/app/uploads
+CONTENT_DIR=/app/content       CORS_ORIGINS=*
+STORAGE_BACKEND=cos            COS_PREFIX=cola
+WECHAT_API_BASE=https://api.weixin.qq.com
+WECHAT_OPENAPI_BASE=http://api.weixin.qq.com
+LLM_BASE_URL=https://api.deepseek.com  LLM_MODEL=deepseek-chat
+HARNESS_ENABLED=true           HARNESS_PROFILE=sdk
+HARNESS_PROVIDER=deepseek-official
+HARNESS_MODEL=deepseek-v4-flash
+DSH_PERMISSION_MODE=workspace-write
+HARNESS_HOME=/app/harness-home
+HARNESS_WORKSPACES=/app/harness-workspaces
+```
 
 1. 在云托管控制台创建并开启 MySQL，数据库字符集使用 `utf8mb4`。平台会注入 `MYSQL_ADDRESS`、`MYSQL_USERNAME`、`MYSQL_PASSWORD`、`MYSQL_DATABASE`；也可以手工填完整 `DATABASE_URL`，它会覆盖这四项。
 2. 创建对象存储桶，记下桶名和地域；在云托管服务中开启「开放接口服务」，后端才能无密钥调用 `/_/cos/getauth`。开启后必须重新构建并发布新版本。
-3. 在服务环境变量中配置（MySQL 的四个 `MYSQL_*` 通常已由平台自动注入）：
+3. 在服务环境变量中只配置账号凭据、平台资源和合规信息（MySQL 的四个 `MYSQL_*` 通常已由平台自动注入）：
 
 ```env
+JWT_SECRET=至少32位随机字符串
+WECHAT_APPID=小程序AppID
+WECHAT_SECRET=小程序AppSecret
+LLM_API_KEY=大模型APIKey
 MYSQL_ADDRESS=内网IP:3306
 MYSQL_USERNAME=用户名
 MYSQL_PASSWORD=密码
 MYSQL_DATABASE=数据库名
-STORAGE_BACKEND=cos
 Bucket=对象存储桶名
 Region=ap-shanghai
-COS_PREFIX=
-WECHAT_OPENAPI_BASE=http://api.weixin.qq.com
-PORT=80
-APP_ENV=production
-JWT_SECRET=至少32位随机字符串
-WECHAT_APPID=小程序AppID
-WECHAT_SECRET=小程序AppSecret
-WECHAT_API_BASE=https://api.weixin.qq.com
-WECHAT_HTTPS_PROXY=
-WECHAT_CA_FILE=
-LLM_API_KEY=大模型APIKey
-LLM_BASE_URL=https://api.deepseek.com
-LLM_MODEL=deepseek-chat
-HARNESS_ENABLED=true
-DSH_PERMISSION_MODE=workspace-write
+LEGAL_OPERATOR_NAME=运营者名称
+LEGAL_CONTACT_EMAIL=联系邮箱
+LEGAL_ICP_NUMBER=ICP备案号
 ```
 
-`Bucket` / `Region` 是云托管官方对象存储示例的变量名；已有的 `COS_BUCKET` / `COS_REGION` 仍然兼容。
+`Bucket` / `Region` 是云托管官方对象存储示例的变量名；已有的 `COS_BUCKET` / `COS_REGION` 仍然兼容。容器默认监听端口为 `80`，与微信云托管当前服务的健康检查端口保持一致；如平台明确要求其他端口，可用 `PORT` 覆盖。
 
 4. 确认服务已关闭旧版 SQLite/本地上传卷依赖。新版本首次启动会创建 MySQL 表；`content/tips` 与 `content/legal` 仍会在启动时按指纹导入数据库。已有本地 SQLite 数据不会自动迁移到 MySQL，需要单独做一致性迁移。
 

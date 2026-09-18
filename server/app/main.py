@@ -727,6 +727,7 @@ async def login(payload: LoginRequest, request: Request) -> dict:
         data = await exchange_code_for_session(payload.code)
     except WeChatAuthError as exc:
         if exc.code == -1:
+            print(f"[wechat] 登录换取 session 失败：{exc}", flush=True)
             raise HTTPException(502, "微信登录服务暂时不可用，请稍后重试") from exc
         raise HTTPException(401, "微信登录校验失败") from exc
     openid = data["openid"]
@@ -2364,7 +2365,7 @@ async def create_chat_run(payload: ChatRequest, background_tasks: BackgroundTask
     conversation_id = payload.conversation_id or uuid.uuid4().hex
     if payload.conversation_id:
         # 归属校验即隔离边界：会话必须同时属于当前用户、当前知识库、当前文件夹（根目录 ''），
-        owner = await fetchone(db, 'SELECT id,folder_id FROM conversations WHERE id=? AND user_id=? AND knowledge_id=?', (conversation_id, user_id, knowledge_id))
+        owner = await fetchone(db, 'SELECT id,folder_id,harness_session_id FROM conversations WHERE id=? AND user_id=? AND knowledge_id=?', (conversation_id, user_id, knowledge_id))
         if not owner or (owner['folder_id'] or '') != folder_id:
             await db.close(); raise HTTPException(404, '对话不存在')
         active = await fetchone(db, "SELECT id FROM chat_runs WHERE conversation_id=? AND user_id=? AND status='running' LIMIT 1", (conversation_id, user_id))
@@ -2372,7 +2373,18 @@ async def create_chat_run(payload: ChatRequest, background_tasks: BackgroundTask
             await db.close()
             raise HTTPException(409, '当前对话还有任务正在执行，请先等待完成或停止任务')
     if not payload.conversation_id:
-        await db.execute("INSERT INTO conversations(id,user_id,knowledge_id,folder_id,title,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (conversation_id, user_id, knowledge_id, folder_id, payload.content[:32], now(), now()))
+        harness_session_id = uuid.uuid4().hex
+        await db.execute("INSERT INTO conversations(id,user_id,knowledge_id,folder_id,title,harness_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (conversation_id, user_id, knowledge_id, folder_id, payload.content[:32], harness_session_id, now(), now()))
+    else:
+        harness_session_id = str(owner['harness_session_id'] or conversation_id)
+
+    # 应用侧保留最近消息，仅在官方 runtime 回收且 session id 冲突时作为数据补回。
+    history_rows = await fetchall(
+        db,
+        "SELECT role,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC LIMIT 24",
+        (conversation_id,),
+    )
+    history = [{'role': row['role'], 'content': row['content']} for row in reversed(history_rows)]
     user_message_id = uuid.uuid4().hex
     await db.execute("INSERT INTO messages(id,conversation_id,role,content,sources_json,created_at) VALUES(?,?,?,?,?,?)", (user_message_id, conversation_id, "user", payload.content, "[]", now())); await db.commit()
     # 本轮技能：只有用户明确选择的技能才会注入——内置技能走技能包，我的技能走技能指令。
@@ -2410,7 +2422,7 @@ async def create_chat_run(payload: ChatRequest, background_tasks: BackgroundTask
     await db.close()
 
     async def events():
-        nonlocal db
+        nonlocal db, harness_session_id
         db = await connect()
         answer = ""
         # 过程区随正文一起落库：思考文字单独累积（增量太多，不入过程节点列表），
@@ -2466,16 +2478,25 @@ async def create_chat_run(payload: ChatRequest, background_tasks: BackgroundTask
                 question=payload.content,
                 context=context,
                 model=turn_model,
-                session_id=conversation_id,
+                session_id=harness_session_id or conversation_id,
                 thinking=payload.thinking,
                 skills=turn_skills,
                 mode=payload.mode,
                 user_id=user_id,
+                history=history,
                 plan=turn_plan,
             ):
                 kind = event.get('kind')
                 if await cancel_requested():
                     raise asyncio.CancelledError
+                if kind == 'session':
+                    # runtime 重启时官方 SDK 会换一个新 session id；应用侧会话 id 不变。
+                    new_session_id = str(event.get('session_id') or '').strip()
+                    if new_session_id and new_session_id != harness_session_id:
+                        harness_session_id = new_session_id
+                        await db.execute("UPDATE conversations SET harness_session_id=?,updated_at=? WHERE id=? AND user_id=?", (new_session_id, now(), conversation_id, user_id))
+                        await db.commit()
+                    continue
                 if kind == 'progress':
                     yield f"data: {json.dumps({'type':'progress','label':event['text']}, ensure_ascii=False)}\n\n"
                     continue
@@ -2518,6 +2539,8 @@ async def create_chat_run(payload: ChatRequest, background_tasks: BackgroundTask
                 if kind == 'usage':
                     # 用量事件不进正文、也不落过程节点，只用于计费
                     turn_usage = event.get('usage') or turn_usage
+                    continue
+                if kind != 'text':
                     continue
                 piece = event['text']
                 answer += piece

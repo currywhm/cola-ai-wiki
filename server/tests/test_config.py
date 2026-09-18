@@ -21,6 +21,19 @@ class ConfigurationTests(unittest.TestCase):
                 cwd=cwd, env={**os.environ, 'PYTHONPATH': str(ROOT)}, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_cloud_env_template_contains_only_deployment_inputs(self):
+        keys = set()
+        for raw in (ROOT / '.env.cloud.example').read_text(encoding='utf-8').splitlines():
+            line = raw.strip()
+            if line and not line.startswith('#') and '=' in line:
+                keys.add(line.split('=', 1)[0].strip())
+        self.assertEqual(keys, {
+            'JWT_SECRET', 'WECHAT_APPID', 'WECHAT_SECRET', 'LLM_API_KEY',
+            'MYSQL_ADDRESS', 'MYSQL_USERNAME', 'MYSQL_PASSWORD', 'MYSQL_DATABASE',
+            'Bucket', 'Region',
+            'LEGAL_OPERATOR_NAME', 'LEGAL_CONTACT_EMAIL', 'LEGAL_ICP_NUMBER',
+        })
+
     def test_generic_llm_environment_takes_precedence(self):
         sys.path.insert(0, str(ROOT))
         from app.services import llm

@@ -1,10 +1,10 @@
-<view class="nav-root nav-space" style="{{navStyle}}">
+<view class="nav-root nav-space {{plain ? 'nav-plain' : ''}}" style="{{navStyle}}">
   <view class="nav-bar" style="{{barStyle}}">
     <view class="nav-inner" style="{{innerStyle}}">
       <block wx:if="{{back}}">
         <button class="nav-button nav-back" aria-label="返回上一页" bindtap="goBack"><ui-icon name="chevron-left" size="{{22}}" /></button>
         <button wx:if="{{menu}}" class="nav-button nav-menu-left" aria-label="会话菜单" bindtap="openMenu"><ui-icon name="menu" size="{{22}}" /></button>
-        <text class="nav-page-title {{conversation ? 'nav-conversation-title' : ''}}">{{title}}</text>
+        <text wx:if="{{title}}" class="nav-page-title {{conversation ? 'nav-conversation-title' : ''}}">{{title}}</text>
         <button wx:if="{{action}}" class="nav-button nav-action" bindtap="openAction" aria-label="当前会话操作"><ui-icon name="{{action}}" size="{{21}}" /></button>
       </block>
       <block wx:elif="{{center}}">

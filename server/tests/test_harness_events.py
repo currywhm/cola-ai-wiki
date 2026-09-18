@@ -23,6 +23,36 @@ def _notification(event_type, data):
 
 
 class HarnessEventTests(unittest.TestCase):
+    def test_selected_skill_prompt_uses_official_invocation_and_hides_catalog(self):
+        prompt = harness._selected_skills_prompt(
+            '有哪些技能',
+            '',
+            'tenant-a',
+            [{'id': 'builtin-write-report', 'harness': 'write-report', 'label': '撰写报告'}],
+        )
+
+        self.assertTrue(prompt.startswith('/write-report\n'))
+        self.assertIn('本轮用户已明确选择技能：撰写报告', prompt)
+        self.assertIn('不要向用户逐个罗列全部技能', prompt)
+        self.assertIn('只说明本轮已启用的技能', prompt)
+
+    def test_omitted_skills_can_use_saved_selection_but_explicit_empty_clears_it(self):
+        saved = ['builtin-write-report']
+
+        self.assertEqual(
+            harness.select_turn_skill_ids(None, '', saved),
+            ['builtin-write-report'],
+        )
+        self.assertEqual(harness.select_turn_skill_ids([], '', saved), [])
+        self.assertEqual(
+            harness.select_turn_skill_ids([], 'builtin-make-deck', saved),
+            [],
+        )
+        self.assertEqual(
+            harness.select_turn_skill_ids(None, 'builtin-make-deck', saved),
+            ['builtin-make-deck'],
+        )
+
     def test_nested_tool_result_is_unwrapped(self):
         blocks = [{
             'type': 'tool-result',

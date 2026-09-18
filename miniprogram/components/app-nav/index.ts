@@ -1,6 +1,6 @@
 Component({
   // history: 居中标题栏左侧的历史对话入口（与对话页左上角那个「折叠」图标同款）
-  properties: { title: { type: String, value: 'cola知识库' }, context: { type: String, value: '' }, showContext: { type: Boolean, value: true }, menu: { type: Boolean, value: false }, back: { type: Boolean, value: false }, conversation: { type: Boolean, value: false }, action: { type: String, value: '' }, discover: { type: Boolean, value: false }, center: { type: Boolean, value: false }, history: { type: Boolean, value: false } },
+  properties: { title: { type: String, value: 'cola知识库' }, context: { type: String, value: '' }, showContext: { type: Boolean, value: true }, menu: { type: Boolean, value: false }, back: { type: Boolean, value: false }, conversation: { type: Boolean, value: false }, action: { type: String, value: '' }, discover: { type: Boolean, value: false }, center: { type: Boolean, value: false }, history: { type: Boolean, value: false }, plain: { type: Boolean, value: false } },
   data: { navStyle: 'height:88px;', barStyle: 'height:88px;padding-top:44px;', innerStyle: 'height:44px;', discoverStyle: 'right:92px;' },
   lifetimes: { attached() { this.measure() } },
   pageLifetimes: { show() { this.measure() }, resize() { this.measure() } },
@@ -19,13 +19,20 @@ Component({
     },
     goBack() {
       if (this.data.conversation) { this.triggerEvent('conversationback'); return }
-      if (getCurrentPages().length > 1) wx.navigateBack(); else wx.switchTab({ url: '/pages/ask/index' })
+      const pages = getCurrentPages()
+      const current = pages.length ? (pages[pages.length - 1] as any) : null
+      // 登录页左上角统一回到游客聊天页：即使用户是从「我的」进入登录页，
+      // 返回也不落到其他业务页，保持未登录状态下的入口规则一致。
+      if (current?.route === 'pages/login/index') { wx.switchTab({ url: '/pages/ask/index' }); return }
+      if (getCurrentPages().length > 1) { wx.navigateBack(); return }
+      if (wx.getStorageSync('llmwiki_token')) wx.switchTab({ url: '/pages/ask/index' })
+      else wx.reLaunch({ url: '/pages/login/index' })
     },
     openProfile() { const pages = getCurrentPages(); const current = pages[pages.length - 1] as any; if (current?.route === 'pages/mine/index') return; wx.switchTab({ url: '/pages/mine/index' }) },
     openHistory() { this.triggerEvent('historytap') },
     openContext() { this.triggerEvent('contexttap') },
     openMenu() { this.triggerEvent('menutap') },
     openAction() { this.triggerEvent('actiontap') },
-    openDiscover() { wx.navigateTo({ url: '/pages/market/index' }) },
+    openDiscover() { wx.navigateTo({ url: '/package-features/pages/market/index' }) },
   },
 })

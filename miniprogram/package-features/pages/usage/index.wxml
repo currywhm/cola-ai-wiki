@@ -1,0 +1,58 @@
+<view class="page usage-page">
+  <app-nav title="使用情况" back plain />
+
+  <view wx:if="{{loadState === 'loading'}}" class="usage-state">
+    <view class="usage-skeleton usage-skeleton-title"></view>
+    <view class="usage-skeleton usage-skeleton-card"></view>
+    <view class="usage-skeleton usage-skeleton-card"></view>
+  </view>
+
+  <view wx:elif="{{loadState === 'error'}}" class="usage-state">
+    <text class="usage-state-title">使用情况暂时打不开</text>
+    <text class="usage-state-desc">网络恢复后可以重试，或先返回上一页。</text>
+    <button class="usage-retry" bindtap="retry">重新加载</button>
+  </view>
+
+  <block wx:else>
+    <view class="usage-hero">
+      <text class="usage-hero-title">本月使用概览</text>
+      <text class="usage-hero-desc">{{accountState}}</text>
+    </view>
+
+    <view class="usage-section">
+      <text class="usage-section-title">内容数量</text>
+      <view class="usage-grid">
+        <view class="usage-item">
+          <text class="usage-num">{{stats.knowledge}}</text>
+          <text class="usage-label">资料库</text>
+        </view>
+        <view class="usage-item">
+          <text class="usage-num">{{stats.documents}}</text>
+          <text class="usage-label">文档</text>
+        </view>
+        <view class="usage-item">
+          <text class="usage-num">{{stats.knowledgeLimit}}</text>
+          <text class="usage-label">可建资料库</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="usage-section">
+      <view class="usage-section-head">
+        <text class="usage-section-title">存储空间</text>
+        <text class="usage-section-value">{{storageUsedLabel}} / {{storageLimitLabel}}</text>
+      </view>
+      <view class="usage-track"><view class="usage-fill" style="{{storageFillStyle}}"></view></view>
+      <text class="usage-note">删除文件后，占用空间会立即释放。</text>
+    </view>
+
+    <view class="usage-section">
+      <view class="usage-section-head">
+        <text class="usage-section-title">本月积分</text>
+        <text class="usage-section-value">{{quotaLabel}}</text>
+      </view>
+      <view class="usage-track quota"><view class="usage-fill quota-fill" style="width:{{quotaPercent}}%;"></view></view>
+      <text class="usage-note">积分按每次问答真实消耗的模型用量扣减，每月 1 日恢复。</text>
+    </view>
+  </block>
+</view>

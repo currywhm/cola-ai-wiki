@@ -1,4 +1,0 @@
-@import "../../styles/thread.wxss";
-
-/* 文件夹会话：与「问AI」问答页共用 thread.wxss 的同一套版式，只多一条浅灰底的文件横条 */
-page { overflow-x: hidden; background: #fff; }

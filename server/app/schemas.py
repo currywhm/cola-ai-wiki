@@ -42,7 +42,8 @@ class ChatRequest(BaseModel):
     # 前端技能面板选中的技能（kebab-case slug），后端据此要求 agent 先加载并注入该技能
     skill: str = Field(default="", max_length=40, pattern="^[a-z0-9-]*$")
     # 多选技能：优先于 skill；为空时回落到 skill（兼容旧客户端）
-    skills: list[str] = Field(default_factory=list, max_length=8)
+    skills: list[str] | None = Field(default=None, max_length=8)
+    # 前端未传时由服务端保存的偏好兜底；显式传空数组表示用户已取消全部技能。
     # Legacy field only. The public Harness Python SDK has no /plan transport,
     # so true is rejected instead of being silently emulated.
     plan: bool | None = None

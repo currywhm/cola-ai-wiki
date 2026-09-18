@@ -1,10 +1,63 @@
 <view class="page mine-page">
   <app-nav id="pageNav" title="我的" center />
   <view class="mine-content">
+    <block wx:if="{{!loggedIn}}">
+      <view class="guest-panel">
+        <view class="profile-card guest-profile-card" bindtap="openLogin">
+          <view class="profile-main">
+            <view class="profile-avatar guest-avatar"><ui-icon name="mine-login" size="{{48}}" rpx /></view>
+            <view class="profile-copy">
+              <text class="profile-name">登录</text>
+              <text class="profile-id">立即体验知识库</text>
+            </view>
+            <ui-icon name="chevron-right" size="{{18}}" />
+          </view>
+        </view>
+
+        <view class="menu-section guest-menu-section">
+          <button class="menu-row" bindtap="openLogin">
+            <view class="menu-icon"><ui-icon name="mine-usage" size="{{24}}" /></view>
+            <view class="menu-main"><text class="menu-title">使用情况</text><text class="menu-desc">查看资料、空间与本月积分</text></view>
+            <ui-icon name="chevron-right" size="{{16}}" />
+          </button>
+          <button class="menu-row" bindtap="openLogin">
+            <view class="menu-icon"><ui-icon name="mine-membership" size="{{24}}" /></view>
+            <view class="menu-main"><text class="menu-title">会员服务</text><text class="menu-desc">查看会员权益与空间方案</text></view>
+            <ui-icon name="chevron-right" size="{{16}}" />
+          </button>
+          <button class="menu-row" bindtap="openLogin">
+            <view class="menu-icon"><ui-icon name="mine-tips" size="{{24}}" /></view>
+            <view class="menu-main"><text class="menu-title">使用技巧</text><text class="menu-desc">上手指南、提问方法和权益说明</text></view>
+            <ui-icon name="chevron-right" size="{{16}}" />
+          </button>
+          <button class="menu-row" bindtap="openLogin">
+            <view class="menu-icon"><ui-icon name="mine-service" size="{{24}}" /></view>
+            <view class="menu-main"><text class="menu-title">联系客服</text><text class="menu-desc">订单与退款、注销账号、删除数据、侵权投诉</text></view>
+            <ui-icon name="chevron-right" size="{{16}}" />
+          </button>
+        </view>
+
+        <button class="guest-login-button" bindtap="openLogin">去登录</button>
+        <view class="legal-footer guest-legal-footer">
+          <view>
+            <button bindtap="openLegal" data-type="terms">服务协议</button>
+            <text class="legal-separator">|</text>
+            <button bindtap="openLegal" data-type="guide">隐私政策</button>
+            <text class="legal-separator">|</text>
+            <button bindtap="openLegal" data-type="ai-privacy">AI隐私政策</button>
+            <text class="legal-separator">|</text>
+            <button bindtap="openLegal" data-type="license">软件许可</button>
+          </view>
+        </view>
+      </view>
+    </block>
+    <block wx:else>
     <view class="profile-card">
       <view class="profile-main">
         <view class="profile-avatar">
-          <image class="profile-avatar-image" src="/assets/brand/cola-avatar.png" mode="aspectFit" />
+          <!-- 设过头像就显示微信头像；没设过仍用产品标识 -->
+          <image wx:if="{{avatarSrc}}" class="profile-avatar-image" src="{{avatarSrc}}" mode="aspectFill" />
+          <image wx:else class="profile-avatar-image" src="/assets/brand/cola-avatar.png" mode="aspectFit" />
         </view>
         <view class="profile-copy">
           <view class="profile-name-row">
@@ -13,7 +66,7 @@
           </view>
           <text class="profile-id">{{statusLine}}</text>
         </view>
-        <button class="profile-edit" bindtap="syncWechatProfile">
+        <button class="profile-edit" bindtap="openAccountSettings">
           <text>账号设置</text>
           <ui-icon name="chevron-right" size="{{17}}" />
         </button>
@@ -37,126 +90,133 @@
       </view>
     </view>
 
-    <view wx:if="{{loadState === 'ready'}}" class="usage-card">
-      <view class="section-heading">
-        <text class="section-title">使用情况</text>
-        <text class="section-hint">实时同步</text>
-      </view>
-      <view class="usage-grid">
-        <view class="usage-item">
-          <text class="usage-num">{{stats.knowledge}}</text>
-          <text class="usage-label">资料库</text>
+    <view class="menu-section">
+      <button class="menu-row" bindtap="openUsage">
+        <view class="menu-icon"><ui-icon name="mine-usage" size="{{24}}" /></view>
+        <view class="menu-main">
+          <text class="menu-title">使用情况</text>
+          <text class="menu-desc">{{loadState === 'ready' ? stats.knowledge + ' 个资料库 · ' + stats.documents + ' 个文档 · ' + quotaLabel : '查看资料、空间与本月积分'}}</text>
         </view>
-        <view class="usage-item">
-          <text class="usage-num">{{stats.documents}}</text>
-          <text class="usage-label">文档</text>
+        <ui-icon name="chevron-right" size="{{16}}" />
+      </button>
+
+      <button class="menu-row" bindtap="openMembership">
+        <view class="menu-icon"><ui-icon name="mine-membership" size="{{24}}" /></view>
+        <view class="menu-main">
+          <text class="menu-title">会员服务</text>
+          <text class="menu-desc">{{user.membership_label || '基础版'}} · Plus 10GB / Pro 30GB 空间</text>
         </view>
-        <view class="usage-item usage-item-wide">
-          <text class="usage-num">{{user.limits ? user.limits.knowledge_bases : 1}}</text>
-          <text class="usage-label">可建资料库</text>
+        <ui-icon name="chevron-right" size="{{16}}" />
+      </button>
+
+      <button class="menu-row" bindtap="openTips">
+        <view class="menu-icon"><ui-icon name="mine-tips" size="{{24}}" /></view>
+        <view class="menu-main">
+          <text class="menu-title">使用技巧</text>
+          <text class="menu-desc">上手指南、提问方法和权益说明</text>
         </view>
-      </view>
+        <ui-icon name="chevron-right" size="{{16}}" />
+      </button>
+
+      <button class="menu-row" open-type="contact" session-from="mine"
+        send-message-title="回到 Cola" send-message-path="pages/mine/index"
+        show-message-card="{{true}}" bindcontact="onContact">
+        <view class="menu-icon"><ui-icon name="mine-service" size="{{24}}" /></view>
+        <view class="menu-main">
+          <text class="menu-title">联系客服</text>
+          <text class="menu-desc">订单与退款、注销账号、删除数据、侵权投诉</text>
+        </view>
+        <ui-icon name="chevron-right" size="{{16}}" />
+      </button>
+
+      <button class="menu-row logout-bar" bindtap="openLogout">
+        <view class="menu-icon"><ui-icon name="mine-logout" size="{{23}}" /></view>
+        <text class="menu-title">退出登录</text>
+        <ui-icon name="chevron-right" size="{{16}}" />
+      </button>
     </view>
 
-    <view class="membership-card">
-      <view class="membership-main">
-        <view class="membership-icon"><ui-icon name="vip" size="{{21}}" /></view>
-        <view class="grow">
-          <text class="membership-title">升级会员服务</text>
-          <text class="membership-desc">Plus 10GB / Pro 30GB 空间，按租期开通</text>
-        </view>
-      </view>
-      <view class="membership-actions">
-        <text class="membership-copy">{{membershipCopy}}</text>
-        <button class="membership-button" bindtap="payPro">查看方案</button>
-      </view>
-    </view>
-
-    <view wx:if="{{planPickerVisible}}" class="plan-layer">
-      <view class="plan-mask" bindtap="closePlanPicker"></view>
+    <view wx:if="{{accountVisible}}" class="plan-layer">
+      <view class="plan-mask" bindtap="closeAccountSettings"></view>
       <view class="plan-picker" catchtap="stopPickerBubble">
         <view class="plan-picker-head">
           <view class="plan-heading-copy">
-            <text class="plan-picker-title">选择会员方案</text>
-            <text class="plan-picker-desc">会员即租期，到期后权益停止，不会自动续费</text>
+            <text class="plan-picker-title">账号设置</text>
+            <text class="plan-picker-desc">{{privacyNeeded ? '第 1 步 · 同意微信官方隐私提示' : '第 2 步 · 选用你的微信头像和昵称'}}</text>
           </view>
-          <button class="close-picker" bindtap="closePlanPicker" disabled="{{paying}}" aria-label="关闭会员方案">
+          <button class="close-picker" bindtap="closeAccountSettings" disabled="{{savingProfile}}" aria-label="关闭账号设置">
             <ui-icon name="close" size="{{18}}" />
           </button>
         </view>
-        <view class="tier-tabs">
-          <button class="tier-tab {{selectedTier === 'plus' ? 'active' : ''}}" data-tier="plus" bindtap="chooseTier" disabled="{{paying}}">
-            <text class="tier-tab-title">Plus</text>
-            <text class="tier-tab-desc">{{tierDesc.plus}}</text>
-          </button>
-          <button class="tier-tab {{selectedTier === 'pro' ? 'active' : ''}}" data-tier="pro" bindtap="chooseTier" disabled="{{paying}}">
-            <text class="tier-tab-title">Pro</text>
-            <text class="tier-tab-desc">{{tierDesc.pro}}</text>
-          </button>
-        </view>
-        <view class="plan-options">
-          <button wx:for="{{visiblePlans}}" wx:key="id" class="plan-option {{selectedPlan === item.id ? 'selected' : ''}}" data-plan="{{item.id}}" bindtap="choosePlan" disabled="{{paying}}">
-            <text class="plan-option-label">{{item.label}}</text>
-            <text class="plan-option-price">¥{{item.price}}</text>
-            <text class="plan-option-note">{{item.period}} · {{item.note}}</text>
-          </button>
-        </view>
-        <view class="plan-benefits">
-          <text class="plan-benefit">{{activeBenefit}}</text>
-        </view>
-        <button class="confirm-pay" bindtap="confirmPay" loading="{{paying}}" disabled="{{paying}}">
-          <text>{{paying ? '支付处理中' : '微信支付'}}</text>
-          <text wx:if="{{!paying}}" class="confirm-pay-price">¥{{selectedPlanPrice}}</text>
-        </button>
-        <button class="terms-link" bindtap="openLegal" data-type="plan">会员服务条款与权益说明</button>
-      </view>
-    </view>
 
-    <view class="service-section">
-      <view class="shortcut-grid">
-      <button class="shortcut" bindtap="openLegal" data-type="about">
-        <view class="shortcut-icon green"><ui-icon name="guanyu" size="{{25}}" /></view>
-        <text>关于 Cola</text>
-      </button>
-      <button class="shortcut" bindtap="openLegal" data-type="data">
-        <view class="shortcut-icon blue"><ui-icon name="shuju" size="{{25}}" /></view>
-        <text>数据管理</text>
-      </button>
-      <button class="shortcut" bindtap="openLegal" data-type="privacy">
-        <view class="shortcut-icon purple"><ui-icon name="anquanbaozhang" size="{{25}}" /></view>
-        <text>隐私安全</text>
-      </button>
-      <button class="shortcut" bindtap="openLegal" data-type="terms">
-        <view class="shortcut-icon orange"><ui-icon name="jieshao" size="{{25}}" /></view>
-        <text>服务协议</text>
-      </button>
-      </view>
-    </view>
+        <!-- 第 1 步：微信侧还没记录同意时，这里只给一个官方「同意」按钮。
+             open-type="agreePrivacyAuthorization" 是官方指定的隐私同意组件，点它弹出的是微信官方
+             隐私弹窗（「用户隐私保护提示」+ 拒绝 / 同意），不是我们自绘的弹层。 -->
+        <block wx:if="{{privacyNeeded}}">
+          <view class="official-notice">
+            <text class="official-notice-title">用户隐私保护提示</text>
+            <text class="official-notice-body">在你使用 cola知识库 服务之前，请仔细阅读 {{privacyContractName || '《cola知识库小程序隐私保护指引》'}}。如你同意该指引，请点击「同意」开始使用本小程序。</text>
+          </view>
+          <button class="confirm-pay" open-type="agreePrivacyAuthorization" bindagreeprivacyauthorization="onPrivacyAgreed" bindtap="onAgreeTap">
+            <text>同意并使用微信头像昵称</text>
+          </button>
+          <view class="account-privacy" bindtap="openPrivacyGuide">查看《小程序用户隐私保护指引》全文</view>
+        </block>
 
-    <view wx:if="{{tipGroups.length}}" class="section-block">
-      <view class="section-heading"><text class="section-title">使用技巧</text><text class="section-hint">持续更新</text></view>
-      <view wx:for="{{tipGroups}}" wx:for-item="group" wx:key="id" class="tip-group">
-        <text class="tip-group-title">{{group.title}}</text>
-        <button class="tip-item" wx:for="{{group.entries}}" wx:key="id" data-id="{{item.id}}" bindtap="openTip">
-          <view class="tip-thumb">
-            <image wx:if="{{item.cover}}" class="tip-thumb-img" src="{{item.cover}}" mode="aspectFill" lazy-load />
-            <ui-icon wx:else name="{{item.icon}}" size="{{30}}" />
+        <!-- 第 2 步：两个控件都是微信官方的，各点一下就能选用，不需要打字。
+             头像 = <button open-type="chooseAvatar">，昵称 = <input type="nickname">（键盘上方给微信昵称）。 -->
+        <block wx:else>
+          <button class="avatar-picker" open-type="chooseAvatar" bind:chooseavatar="onChooseAvatar">
+            <image wx:if="{{avatarPreview}}" class="avatar-picker-image" src="{{avatarPreview}}" mode="aspectFill" />
+            <image wx:elif="{{avatarSrc}}" class="avatar-picker-image" src="{{avatarSrc}}" mode="aspectFill" />
+            <image wx:else class="avatar-picker-image" src="/assets/brand/cola-avatar.png" mode="aspectFit" />
+            <view class="avatar-picker-badge"><ui-icon name="camera" size="{{26}}" rpx /></view>
+          </button>
+          <text class="avatar-picker-hint">点一下，选用你的微信头像</text>
+          <view class="account-row" bindtap="focusNickname">
+            <text class="account-row-label">微信昵称</text>
+            <input class="account-row-input" type="nickname" value="{{nicknameDraft}}" focus="{{nicknameFocus}}" placeholder="点一下一键选用" placeholder-class="account-placeholder" bindinput="onNicknameInput" bindblur="onNicknameBlur" />
+            <text class="account-row-tag">一键选用</text>
           </view>
-          <view class="tip-main">
-            <text class="tip-title">{{item.title}}</text>
-            <text class="tip-desc">{{item.summary}}</text>
-          </view>
-          <ui-icon name="chevron-right" size="{{16}}" />
-        </button>
+          <text class="account-note">头像和昵称用的都是微信官方控件里的那一份：点头像、点昵称各一次即可，不用打字。保存后仅用于在本小程序内显示你的账号。</text>
+          <button class="confirm-pay" bindtap="saveProfile" loading="{{savingProfile}}" disabled="{{savingProfile}}">
+            <text>{{savingProfile ? '保存中' : '保存'}}</text>
+          </button>
+          <view class="account-privacy" bindtap="openPrivacyGuide">查看《小程序用户隐私保护指引》全文</view>
+        </block>
       </view>
     </view>
 
     <view class="legal-footer">
       <view>
-        <button bindtap="openLegal" data-type="license">软件许可及服务协议</button>
+        <button bindtap="openLegal" data-type="terms">服务协议</button>
         <text class="legal-separator">|</text>
-        <button bindtap="openLegal" data-type="guide">小程序隐私保护指引</button>
+        <button bindtap="openLegal" data-type="guide">隐私政策</button>
+        <text class="legal-separator">|</text>
+        <button bindtap="openLegal" data-type="ai-privacy">AI隐私政策</button>
+        <text class="legal-separator">|</text>
+        <button bindtap="openLegal" data-type="license">软件许可</button>
       </view>
     </view>
+
+
+
+    <view wx:if="{{logoutVisible}}" class="logout-layer">
+      <view class="logout-mask" bindtap="closeLogout"></view>
+      <view class="logout-sheet" catchtap="stopLogoutBubble">
+        <view class="logout-head">
+          <text class="logout-title">退出登录</text>
+          <button class="logout-close" bindtap="closeLogout" disabled="{{loggingOut}}" aria-label="关闭退出登录确认">
+            <ui-icon name="close" size="{{19}}" />
+          </button>
+        </view>
+        <text class="logout-question">确认退出当前账号吗？</text>
+        <view class="logout-actions">
+          <button class="logout-button logout-cancel" bindtap="closeLogout" disabled="{{loggingOut}}">取消</button>
+          <button class="logout-button logout-confirm" bindtap="confirmLogout" loading="{{loggingOut}}" disabled="{{loggingOut}}">确认</button>
+        </view>
+      </view>
+    </view>
+    </block>
   </view>
 </view>

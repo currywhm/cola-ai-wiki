@@ -1,0 +1,4 @@
+@import "../../../styles/thread.wxss";
+
+/* 问答页：纯白底 + 悬浮输入卡片，与知识库 / 文件夹会话共用 thread.wxss 的同一套版式 */
+page { overflow-x: hidden; background: #fff; }

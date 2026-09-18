@@ -1,0 +1,67 @@
+<!-- 知识库邀请落地页：好友看到的只有「这是谁的什么资料库」+「接受」这一件事 -->
+<view class="kb-page">
+  <view class="kb-nav" style="height:{{navHeight}}px;">
+    <view class="kb-nav-row">
+      <image class="kb-logo" src="/assets/brand/cola-avatar.png" mode="aspectFit" />
+      <text class="kb-logo-text">cola知识库</text>
+    </view>
+  </view>
+
+  <scroll-view class="kb-body" scroll-y enhanced show-scrollbar="{{false}}">
+    <view wx:if="{{state === 'loading'}}" class="kb-skeleton">
+      <view class="kb-skeleton-line"></view>
+      <view class="kb-skeleton-line short"></view>
+      <view class="kb-skeleton-line"></view>
+    </view>
+
+    <block wx:elif="{{state === 'ready'}}">
+      <view class="kb-card">
+        <view class="kb-card-head">
+          <view class="kb-card-icon"><ui-icon name="knowledge-pick" size="{{56}}" rpx /></view>
+          <view class="kb-card-copy">
+            <text class="kb-card-name">{{name}}</text>
+            <text class="kb-card-meta">{{documentCount}} 份资料 · 好友共享</text>
+          </view>
+        </view>
+        <text wx:if="{{description}}" class="kb-card-desc">{{description}}</text>
+      </view>
+
+      <view class="kb-notes">
+        <view class="kb-note">
+          <view class="kb-note-icon"><ui-icon name="dui" size="{{26}}" rpx /></view>
+          <text class="kb-note-text">接受后它会出现在你「知识库」页的「共享知识库」里</text>
+        </view>
+        <view class="kb-note">
+          <view class="kb-note-icon"><ui-icon name="refresh" size="{{26}}" rpx /></view>
+          <text class="kb-note-text">资料由分享者维护，对方更新后你这边自动同步</text>
+        </view>
+        <view class="kb-note">
+          <view class="kb-note-icon"><ui-icon name="share" size="{{26}}" rpx /></view>
+          <text class="kb-note-text">你只能阅读和提问，不会改动对方的资料</text>
+        </view>
+      </view>
+    </block>
+
+    <view wx:else class="kb-state">
+      <view class="kb-state-icon"><ui-icon name="{{state === 'error' ? 'refresh' : 'jieshao'}}" size="{{46}}" rpx /></view>
+      <text class="kb-state-title">{{title}}</text>
+      <text class="kb-state-desc">{{desc}}</text>
+      <button wx:if="{{state === 'error'}}" class="kb-state-button" bindtap="retry">重新加载</button>
+    </view>
+
+    <view class="kb-bottom-space"></view>
+  </scroll-view>
+
+  <view class="kb-footer">
+    <block wx:if="{{state === 'ready'}}">
+      <text class="kb-hint">一条邀请只认第一个接受的好友，转发给第三个人将无法打开</text>
+      <view class="kb-footer-row">
+        <button class="kb-cta" bindtap="accept" loading="{{busy}}" disabled="{{busy}}">{{canOpen ? '打开我的共享知识库' : (busy ? '正在加入' : '接受并加入我的共享知识库')}}</button>
+        <button class="kb-forward" open-type="share" aria-label="转发给微信好友"><ui-icon name="share" size="{{34}}" rpx /></button>
+      </view>
+    </block>
+    <block wx:else>
+      <button class="kb-cta ghost" bindtap="enterApp">打开 cola知识库</button>
+    </block>
+  </view>
+</view>

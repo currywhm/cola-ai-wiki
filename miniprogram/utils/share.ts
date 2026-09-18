@@ -6,6 +6,7 @@
 // 同一次转发再把落库结果通过 promise 补上真实路径；3 秒内没落库完成就退回兜底路径
 // （打开小程序首页），不会出现「点了没反应」的情况。
 import { createShare, ShareSourcePayload } from '../services/api'
+import { collectSelection } from './pick'
 
 const MAX_ANSWER = 12000
 const MAX_QUESTION = 300
@@ -82,7 +83,7 @@ export function buildSharePayload(input: { message?: any; question?: string; kno
   const card = { title, path: SHARE_HOME_PATH, imageUrl: SHARE_IMAGE }
 
   const cached = cardCache[fingerprint(question, answer)]
-  if (cached) return { ...card, path: `/pages/share/index?id=${cached}` }
+  if (cached) return { ...card, path: `/package-features/pages/share/index?id=${cached}` }
 
   const promise = createShare({
     question,
@@ -93,13 +94,52 @@ export function buildSharePayload(input: { message?: any; question?: string; kno
     const id = String((result && result.id) || '')
     if (!id) return card
     cardCache[fingerprint(question, answer)] = id
-    return { ...card, path: `/pages/share/index?id=${id}` }
+    return { ...card, path: `/package-features/pages/share/index?id=${id}` }
   }).catch(() => card)
 
   return { ...card, promise }
 }
 
 /** 在消息列表里找这条回答对应的提问：往回找最近的一条用户消息。 */
+const MAX_FILES = 8
+
+/**
+ * 为「多选分享」生成转发内容：勾中的内容与文件一起落成一张分享卡片。
+ * 与单条分享共用同一套缓存与兑底：先同步给一张卡片让面板秒开，落库完成后再补真实路径。
+ */
+export function buildSelectionPayload(input: { messages: any[]; keys: string[]; knowledgeName?: string }): SharePayload {
+  const selection = collectSelection(input.messages || [], input.keys || [], input.knowledgeName || '')
+  if (!selection.count) return homePayload()
+  const answer = selection.text || (selection.fileCount ? `分享了 ${selection.fileCount} 个文件` : '')
+  if (!answer) return homePayload()
+  const title = (selection.title || 'cola知识库').slice(0, 40)
+  const card = { title, path: SHARE_HOME_PATH, imageUrl: SHARE_IMAGE }
+  const cacheKey = `pick:${fingerprint(title, answer)}`
+  const cached = cardCache[cacheKey]
+  if (cached) return { ...card, path: `/package-features/pages/share/index?id=${cached}` }
+
+  const files: { artifact_id: string; name: string }[] = []
+  const attached = selection.files || []
+  for (let index = 0; index < attached.length && index < MAX_FILES; index += 1) {
+    files.push({ artifact_id: String(attached[index].id || ''), name: String(attached[index].name || '') })
+  }
+
+  const promise = createShare({
+    title,
+    question: '' ,
+    answer: answer.slice(0, MAX_ANSWER),
+    knowledge_name: String(input.knowledgeName || '').slice(0, 80),
+    sources: shareSources(selection.sources),
+    files,
+  }).then((result) => {
+    const id = String((result && result.id) || '')
+    if (!id) return card
+    cardCache[cacheKey] = id
+    return { ...card, path: `/package-features/pages/share/index?id=${id}` }
+  }).catch(() => card)
+
+  return { ...card, promise }
+}
 export function questionFor(messages: any[], index: number): string {
   for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
     const message = messages[cursor]

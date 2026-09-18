@@ -44,13 +44,18 @@ from .services import artifacts as artifact_service
 from .services import storage
 from .services.wechat_article import ArticleFetchError, build_document_html, fetch_wechat_article
 from .services import wechat_kf as kf_service
-from .services.wechat_auth import validate_wechat_credentials
+from .services.wechat_auth import (
+    WeChatAuthError,
+    exchange_code_for_session,
+    validate_wechat_credentials,
+)
 from .services.llm import stream_answer
 from .services.harness import (
     SKILL_LABELS,
     configured as harness_configured,
     stream_raw_prompt,
     cancel_user_runtime,
+    select_turn_skill_ids,
 )
 from .services.organizer import organize_document
 from .services.credits import estimate_usage, quote_turn, total_tokens
@@ -718,11 +723,12 @@ async def login(payload: LoginRequest, request: Request) -> dict:
     rate_limit(f"login:{request.client.host if request.client else 'unknown'}", 10, 60, "登录尝试过于频繁，请一分钟后再试")
     if not settings.wechat_appid or not settings.wechat_secret:
         raise HTTPException(503, "服务端未配置微信小程序登录参数")
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.get("https://api.weixin.qq.com/sns/jscode2session", params={"appid": settings.wechat_appid, "secret": settings.wechat_secret, "js_code": payload.code, "grant_type": "authorization_code"})
-        data = response.json()
-    if data.get("errcode") or not data.get("openid"):
-        raise HTTPException(401, "微信登录校验失败")
+    try:
+        data = await exchange_code_for_session(payload.code)
+    except WeChatAuthError as exc:
+        if exc.code == -1:
+            raise HTTPException(502, "微信登录服务暂时不可用，请稍后重试") from exc
+        raise HTTPException(401, "微信登录校验失败") from exc
     openid = data["openid"]
     db = await connect()
     row = await fetchone(db, "SELECT * FROM users WHERE openid = ?", (openid,))
@@ -2373,7 +2379,10 @@ async def create_chat_run(payload: ChatRequest, background_tasks: BackgroundTask
     # 别人的私有技能在这里解析为空，保证「我的技能」严格隔离。
     # 本轮技能（可多选）：payload.skills 优先，为空时兼容旧的单选 skill 字段。
     # 只有用户明确选择的技能才会注入；别人的私有技能在这里解析为空，保证「我的技能」严格隔离。
-    requested_skills = [item for item in (payload.skills or []) if item] or ([payload.skill] if payload.skill else [])
+    saved_skill_ids = stored_preferences(account['preferences'] if account else '{}').get('skills')
+    if not isinstance(saved_skill_ids, list):
+        saved_skill_ids = []
+    requested_skills = select_turn_skill_ids(payload.skills, payload.skill, saved_skill_ids)
     turn_skills = await resolve_turn_skills(db, user_id, requested_skills)
     for item in turn_skills:
         await db.execute('UPDATE skills SET use_count=COALESCE(use_count,0)+1 WHERE id=?', (item['id'],))

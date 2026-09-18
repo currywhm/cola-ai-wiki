@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me-in-production"
     wechat_appid: str = ""
     wechat_secret: str = ""
+    # WeChat OpenAPI 登录/凭证/客服调用专用地址。默认走 HTTPS，并禁止
+    # httpx 自动继承云托管环境的 HTTP(S)_PROXY；如平台确需出口代理，
+    # 可通过 WECHAT_HTTPS_PROXY 显式配置。
+    wechat_api_base: str = "https://api.weixin.qq.com"
+    wechat_https_proxy: str = ""
+    # 仅在出口代理使用私有根证书时填写 PEM 格式 CA 文件。
+    # 不要填写微信支付/开放平台的 API 证书。
+    wechat_ca_file: str = ""
     # 微信客服：消息推送的 Token / EncodingAESKey 在 MP 后台「开发管理 → 消息推送」里填，
     # 这里必须与后台保持一致；后台选「安全模式」时 EncodingAESKey 必填。
     # 客服账号管理与会话列表是运营动作，不是普通用户接口，用 KF_ADMIN_TOKEN 单独护住。
@@ -212,6 +220,8 @@ class Settings(BaseSettings):
             raise ValueError('WECHAT_APPID 格式不正确，应为 wx 开头的 18 位小程序 AppID')
         if self.wechat_secret and not re.fullmatch(r'[0-9a-zA-Z]{32}', self.wechat_secret.strip()):
             raise ValueError('WECHAT_SECRET 格式不正确，应为 32 位小程序 AppSecret')
+        if self.wechat_ca_file.strip() and not self.resolve_path(self.wechat_ca_file).is_file():
+            raise ValueError('WECHAT_CA_FILE 文件不存在')
         if self.database_backend == 'mysql' and not self.database_url.startswith('mysql+aiomysql://'):
             raise ValueError('MySQL 部署必须使用 mysql+aiomysql:// 连接串')
         if self.storage_backend == 'cos' and (not self.cos_bucket_name or not self.cos_region_name):

@@ -1,0 +1,6 @@
+<view class="pb-bar">
+  <button class="pb-text" bindtap="onClose" aria-label="取消">取消</button>
+  <button class="pb-text" bindtap="onAll" aria-label="全选">{{count > 0 && count === total ? '取消全选' : '全选'}}</button>
+  <text class="pb-count">已选 {{count}} 项</text>
+  <button class="pb-share {{count > 0 ? '' : 'off'}}" bindtap="onShare" disabled="{{!count}}" aria-label="分享">分享</button>
+</view>

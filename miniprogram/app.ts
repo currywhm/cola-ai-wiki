@@ -1,5 +1,3 @@
-import { ensureAuth } from './services/api'
-
 // 按小程序运行环境切换后端地址：开发版连本地，体验版/正式版连生产域名（上线前替换为真实 HTTPS 域名）
 const API_BASE_BY_ENV: Record<string, string> = {
   develop: 'http://127.0.0.1:8765',
@@ -23,11 +21,7 @@ App<IAppOption>({
     if (cachedToken) this.globalData.token = cachedToken
     this.globalData.user = wx.getStorageSync('llmwiki_user') || null
     this.globalData.loggedOut = !!wx.getStorageSync('llmwiki_logged_out')
-    const startLogin = () => ensureAuth().catch((error) => console.warn('微信登录待配置:', error))
-    if (this.globalData.loggedOut) return
-    const privacyApi = wx as any
-    if (typeof privacyApi.getPrivacySetting !== 'function') { startLogin(); return }
-    privacyApi.getPrivacySetting({ success: (result: any) => { if (result.needAuthorization && typeof privacyApi.requirePrivacyAuthorize === 'function') privacyApi.requirePrivacyAuthorize({ success: startLogin, fail: (error: any) => console.warn('隐私授权未完成:', error) }); else startLogin() }, fail: startLogin })
+    // 微信登录必须由登录页中的用户操作触发；各业务入口与接口层负责游客拦截。
   },
   onShow(options?: any) {
     this.captureOpenFile?.(options)

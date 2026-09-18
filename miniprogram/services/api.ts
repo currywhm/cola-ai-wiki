@@ -1,4 +1,5 @@
 import { EventStream } from './event-stream'
+import { ensurePrivacyAuthorized } from './privacy'
 import { PREVIEW_FILE_TYPES } from '../utils/file-type'
 
 function appInstance() { return getApp<IAppOption>() }
@@ -14,21 +15,66 @@ function assetBase() {
 }
 function token() { return appInstance()?.globalData?.token || wx.getStorageSync('llmwiki_token') || '' }
 
+// 页面展示与业务请求要分开判断：游客仍可切换 tab、浏览入口，
+// 真正使用资料、问答或账号能力时再由 goLogin 统一进入登录页。
+export function isLoggedIn(): boolean { return !!token() }
+export function goLogin(): void { redirectToLogin() }
+
+export const AGREEMENT_VERSION = '2026-09-17.2'
+const AGREEMENT_KEY = 'llmwiki_agreements'
+
+export function hasAcceptedAgreements(): boolean {
+  const accepted = wx.getStorageSync(AGREEMENT_KEY)
+  return !!accepted && accepted.version === AGREEMENT_VERSION
+}
+
+export function markAgreementsAccepted(version = AGREEMENT_VERSION): void {
+  wx.setStorageSync(AGREEMENT_KEY, { version, acceptedAt: Date.now() })
+}
+
+export function clearAuthSession(): void {
+  const app = appInstance()
+  app.globalData.token = ''
+  app.globalData.user = null
+  app.globalData.loggedOut = true
+  wx.removeStorageSync('llmwiki_token')
+  wx.removeStorageSync('llmwiki_user')
+  wx.setStorageSync('llmwiki_logged_out', true)
+}
+
+function redirectToLogin(): void {
+  try {
+    const pages = getCurrentPages()
+    const route = pages.length ? (pages[pages.length - 1] as any).route : ''
+    if (route === 'pages/login/index') return
+  } catch { /* getCurrentPages 在极少数启动阶段不可用，继续跳登录页 */ }
+  wx.reLaunch({ url: '/pages/login/index' })
+}
+
+
 let authPromise: Promise<void> | null = null
 function rawRequest<T>(path: string, method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE' = 'GET', data?: any): Promise<T> {
   return new Promise((resolve, reject) => wx.request({ url: `${base()}${path}`, method: method as any, data, header: { Authorization: `Bearer ${token()}` }, success: (res) => { if (res.statusCode >= 200 && res.statusCode < 300) resolve(res.data as T); else reject(Object.assign(new Error((res.data as any)?.detail || `请求失败（${res.statusCode}）`), { statusCode: res.statusCode })) }, fail: reject }))
 }
+// 微信登录只允许从登录页的用户明确操作触发。其他页面没有令牌时只负责回到登录页，
+// 不在这里静默调用 wx.login，避免绕过登录页直接进入问 AI 首页。
 export function ensureAuth(): Promise<void> {
   if (token()) return Promise.resolve()
-  if (wx.getStorageSync('llmwiki_logged_out')) return Promise.reject(Object.assign(new Error('你已退出登录，请重新使用微信登录'), { loggedOut: true }))
+  redirectToLogin()
+  return Promise.reject(Object.assign(new Error('请先使用微信登录'), { needsLogin: true, loggedOut: !!wx.getStorageSync('llmwiki_logged_out') }))
+}
+
+function performWechatLogin(): Promise<void> {
+  if (token()) return Promise.resolve()
   if (authPromise) return authPromise
   authPromise = new Promise<void>((resolve, reject) => wx.login({ success: ({ code }) => rawRequest<{ token: string; user: any }>('/api/auth/login', 'POST', { code }).then((result) => { appInstance().globalData.token = result.token; appInstance().globalData.user = result.user; appInstance().globalData.loggedOut = false; wx.removeStorageSync('llmwiki_logged_out'); wx.setStorageSync('llmwiki_token', result.token); wx.setStorageSync('llmwiki_user', result.user); resolve() }).catch((error) => reject(error.statusCode === 401 ? Object.assign(error, { loggedOut: true }) : error)), fail: reject })).finally(() => { authPromise = null })
   return authPromise
 }
+
 export function resumeWechatLogin(): Promise<void> {
   wx.removeStorageSync('llmwiki_logged_out')
   appInstance().globalData.loggedOut = false
-  return ensureAuth()
+  return performWechatLogin()
 }
 function request<T>(path: string, method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE' = 'GET', data?: any): Promise<T> {
   return ensureAuth().then(() => {
@@ -75,14 +121,38 @@ export function downloadArtifact(artifactId: string): Promise<string> {
   }))
 }
 
-export type Knowledge = { id: string; name: string; description: string; icon: string; document_count: number; updated_at: string }
+// shared/read_only：好友共享过来的只读镜像；source_name 是来源库名称；source_missing 表示来源已被删掉
+export type Knowledge = { id: string; name: string; description: string; icon: string; document_count: number; updated_at: string; shared?: boolean; subscribed?: boolean; subscription_source?: string; read_only?: boolean; source_name?: string; source_missing?: boolean; inbox?: boolean; shareable?: boolean }
 export type Document = { id: string; filename: string; file_type: string; file_size: number; page_count: number; status: string; progress: number; error_message: string; organized_title?: string; summary?: string; tags?: string[]; key_points?: string[]; organize_status?: string; organize_method?: string }
 export type Source = { id: string; document_id?: string; filename: string; page_number: number; quote: string; score: number; url?: string }
 
 // 后端 harness 桥的过程节点：与 deepseek-harness 前端一致的过程展示数据
 export type TraceKind = 'step' | 'reason' | 'tool' | 'skill' | 'agent' | 'note' | 'plan'
 export type TraceState = 'run' | 'done' | 'error' | 'catalog' | 'load'
-export type TraceItem = { type?: string; kind: TraceKind; state?: TraceState; title?: string; text?: string; detail?: string; name?: string; index?: number; /* 计划模式：kind==='plan' 时携带完整计划 markdown 与评审 id（= 该轮 harness 会话 id） */ plan?: string; review_id?: string }
+export type TraceItem = {
+  type?: string
+  kind: TraceKind
+  state?: TraceState
+  title?: string
+  text?: string
+  detail?: string
+  name?: string
+  index?: number
+  /* 工具调用：call_id 用来合并同一调用的 run/done，并隔离并行同名工具。 */
+  call_id?: string
+  tool_variant?: string
+  tool_summary?: string
+  tool_input?: string
+  tool_meta?: any
+  tool_output?: string
+  tool_error?: string
+  tool_result_summary?: string
+  tool_result_meta?: any
+  duration_ms?: number
+  /* 计划模式：kind==='plan' 时携带完整计划 markdown 与评审 id（= 该轮 harness 会话 id） */
+  plan?: string
+  review_id?: string
+}
 export async function login(code: string) { const result = await rawRequest<{ token: string; user: any }>('/api/auth/login', 'POST', { code }); appInstance().globalData.token = result.token; wx.setStorageSync('llmwiki_token', result.token); wx.setStorageSync('llmwiki_user', result.user); return result }
 export const getMe = () => request<any>('/api/me')
 // 用户偏好（目前用于持久化「已选技能」）：skills 为 null 表示服务端从未设置过
@@ -112,12 +182,34 @@ export type LegalIndex = { version: string; title: string; subtitle: string; upd
 export type LegalDetail = LegalDocMeta & { blocks: TipBlock[] }
 export const getLegalIndex = () => rawRequest<LegalIndex>('/api/content/legal')
 export const getLegalDoc = (id: string) => rawRequest<LegalDetail>(`/api/content/legal/${id}`)
-export const updateMe = (data: { nickname: string; avatar: string }) => request<any>('/api/me', 'PATCH', data)
+// 两个字段都可选：只改昵称时不会顺手把头像清掉（后端同样按“未传则保持原值”处理）
+export const updateMe = (data: { nickname?: string; avatar?: string }) => request<any>('/api/me', 'PATCH', data)
+
+// 微信「头像昵称填写能力」回调给的是本机临时路径（http://tmp/... 或 wxfile://...），
+// 换设备或重装就失效，所以选完要立刻上传到服务端持久化。
+export function uploadAvatar(filePath: string): Promise<{ avatar: string }> {
+  return ensureAuth().then(() => new Promise((resolve, reject) => {
+    wx.uploadFile({
+      url: `${base()}/api/me/avatar`, filePath, name: 'file',
+      header: { Authorization: `Bearer ${token()}` },
+      success: res => { try { const body = JSON.parse(res.data); if (res.statusCode >= 200 && res.statusCode < 300) resolve(body); else reject(Object.assign(new Error(body?.detail || '头像上传失败'), { statusCode: res.statusCode })) } catch { reject(new Error('头像上传响应无效，请重试')) } },
+      fail: reject,
+    })
+  }))
+}
+
+// 后端存的是相对地址（/api/avatars/...），渲染前先补上 base
+export const userAvatarUrl = (avatar?: string) => (avatar ? contentAssetUrl(avatar) : '')
+
 export const deleteAccount = () => request<any>('/api/me', 'DELETE')
 export const getKnowledge = () => request<Knowledge[]>('/api/knowledge')
-export type MarketKnowledge = { id: string; name: string; description: string; icon: string; category: string; subscribers: number; documents: number; updated_at: string }
+export type MarketKnowledge = { id: string; name: string; description: string; icon: string; category: string; subscribers: number; documents: number; updated_at: string; subscribed: boolean; owned: boolean }
 export const getMarketKnowledge = (query = '', category = '') => request<MarketKnowledge[]>(`/api/market?query=${encodeURIComponent(query)}&category=${encodeURIComponent(category)}`)
-export const getRecent = () => request<{ knowledge: any[]; items: any[] }>('/api/recent')
+export type SubscriptionResult = { knowledge_id: string; name: string; documents: number; subscribers: number; already: boolean; message: string }
+export const subscribeKnowledge = (knowledgeId: string) => request<SubscriptionResult>('/api/subscriptions', 'POST', { knowledge_id: knowledgeId })
+export const unsubscribeKnowledge = (knowledgeId: string) => request<{ ok: boolean; removed: boolean; subscribers: number }>(`/api/subscriptions/${knowledgeId}`, 'DELETE')
+// 最近知识只展示最新的 20 条（服务端同样按 20 条收敛，不白拉数据）
+export const getRecent = (limit = 20) => request<{ knowledge: any[]; items: any[] }>(`/api/recent?limit=${limit}`)
 export const createKnowledge = (data: { name: string; description: string }) => request<Knowledge>('/api/knowledge', 'POST', data)
 export const deleteKnowledge = (id: string) => request<any>(`/api/knowledge/${id}`, 'DELETE')
 export const getKnowledgeDetail = (id: string) => request<{ knowledge: Knowledge; documents: Document[] }>(`/api/knowledge/${id}`)
@@ -172,12 +264,32 @@ export const getConversations = (params: { knowledgeId?: string; folderId?: stri
 export const getConversation = (id: string) => request<any[]>(`/api/conversations/${id}`)
 export const deleteConversation = (id: string) => request<any>(`/api/conversations/${id}`, 'DELETE')
 export const pinConversation = (id: string, pinned: boolean) => request<any>(`/api/conversations/${id}/pin`, 'POST', { pinned })
-// 分享给微信好友：把一条回答落成一张分享卡片，好友点开 /pages/share/index?id=xxx 查看
+// 分享给微信好友：把一条回答落成一张分享卡片，好友点开 /package-features/pages/share/index?id=xxx 查看
+// 知识库邀请：把整个资料库分享给微信好友。一条链接只认第一个接受的好友，
+// 领取后对方在自己的「共享知识库」里得到一份只读镜像（来源更新会自动同步）。
+export type KnowledgeShareLink = { token: string; path: string; name: string; expires_at: string; days: number }
+export type KnowledgeShareView = { state: 'open' | 'mine' | 'taken' | 'expired' | 'revoked' | 'missing'; available: boolean; name: string; description: string; document_count: number; expires_at: string; joined_knowledge_id: string }
+export const createKnowledgeShare = (knowledgeId: string) => request<KnowledgeShareLink>(`/api/knowledge/${encodeURIComponent(knowledgeId)}/share`, 'POST', {})
+// 分享页对未登录的微信访客开放：不带 token 拿概览，带了就顺带告诉我这条是不是我领的
+export const getKnowledgeShare = (token: string) => rawRequest<KnowledgeShareView>(`/api/knowledge-shares/${encodeURIComponent(token)}`)
+export type KnowledgeAcceptResult = { knowledge_id: string; name: string; documents: number; already: boolean; read_only: boolean; message: string }
+export const acceptKnowledgeShare = (token: string) => request<KnowledgeAcceptResult>(`/api/knowledge-shares/${encodeURIComponent(token)}/accept`, 'POST', {})
+export const revokeKnowledgeShare = (token: string) => request<{ ok: boolean; removed: number }>(`/api/knowledge-shares/${encodeURIComponent(token)}/revoke`, 'POST', {})
 export type ShareSourcePayload = { filename: string; page_number: number; url: string }
-export type ShareCard = { id: string; question: string; answer: string; knowledge_name: string; sources: ShareSourcePayload[]; views: number; created_at: string }
-export const createShare = (data: { question: string; answer: string; knowledge_name: string; sources: ShareSourcePayload[] }) => request<{ id: string }>('/api/shares', 'POST', data)
+export type ShareFilePayload = { artifact_id: string; name: string }
+export type ShareFileView = { index: number; name: string; size: number; suffix: string }
+export type ShareCard = { id: string; title: string; question: string; answer: string; knowledge_name: string; sources: ShareSourcePayload[]; files: ShareFileView[]; views: number; created_at: string }
+export const createShare = (data: { title?: string; question: string; answer: string; knowledge_name: string; sources: ShareSourcePayload[]; files?: ShareFilePayload[] }) => request<{ id: string }>('/api/shares', 'POST', data)
 // 分享页对未登录的微信访客开放：不走登录态，也不用带 token
 export const getShare = (id: string) => rawRequest<ShareCard>(`/api/shares/${encodeURIComponent(id)}`)
+// 收进自己的「共享知识库」：这一步要登录（小程序里就是微信登录），所以要带 token
+export type ShareClaimResult = { knowledge_id: string; knowledge_name: string; folder_id: string; documents: any[]; skipped: string[]; already: boolean; message: string }
+export const claimShare = (id: string) => request<ShareClaimResult>(`/api/shares/${encodeURIComponent(id)}/claim`, 'POST', {})
+// 分享页里的文件：公开只读，凭分享 id + 序号取件，不需要登录态
+export const shareFileUrl = (id: string, index: number) => `${base()}/api/shares/${encodeURIComponent(id)}/files/${index}`
+/** 把对话里勾选的内容与文件存进指定知识库（分享面板的「存到知识库」）。 */
+export const saveSelectionToKnowledge = (data: { knowledge_id: string; folder_id?: string; title: string; content: string; artifact_ids: string[] }) =>
+  request<{ knowledge_id: string; knowledge_name: string; saved: any[]; skipped: string[]; message: string }>('/api/shares/to-knowledge', 'POST', data)
 // 技能：技能广场（所有人可用）与我的技能（用户级隔离，仅作者本人可见可用）
 export type Skill = {
   id: string; name: string; summary: string; prompt: string; icon: string
@@ -240,8 +352,8 @@ export const moveDocument = (documentId: string, folderId: string) => request<an
 export const importArticle = (knowledgeId: string, url: string, folderId = '') => request<any>(`/api/knowledge/${knowledgeId}/import-article`, 'POST', { url, folder_id: folderId })
 export type MembershipPlan = 'plus_monthly' | 'plus_quarterly' | 'plus_yearly' | 'pro_monthly' | 'pro_quarterly' | 'pro_yearly'
 export type PayPlanOption = { id: MembershipPlan; amount: number; price: string; days: number; available: boolean }
-export type PayTier = { id: 'plus' | 'pro'; label: string; storage_bytes: number; storage_label: string; knowledge_bases: number; monthly_questions: number; max_file_label: string; plans: PayPlanOption[] }
-export type PayCatalog = { trial_days: number; free: { label: string; storage_label: string; knowledge_bases: number; monthly_questions: number; monthly_questions_after_trial: number }; tiers: PayTier[] }
+export type PayTier = { id: 'plus' | 'pro'; label: string; storage_bytes: number; storage_label: string; knowledge_bases: number; monthly_credits: number; max_file_label: string; plans: PayPlanOption[] }
+export type PayCatalog = { trial_days: number; free: { label: string; storage_label: string; knowledge_bases: number; monthly_credits: number; monthly_credits_after_trial: number }; tiers: PayTier[] }
 export const getPayPlans = () => rawRequest<PayCatalog>('/api/pay/plans')
 export type LegacyMembershipPlan = MembershipPlan
 export const createPayOrder = (plan: MembershipPlan) => request<any>('/api/pay/orders', 'POST', { plan })
@@ -294,7 +406,18 @@ function timestampName(prefix: string) {
   return `${prefix}_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}.jpg`
 }
 
+// 相册 / 拍照 / 微信文件都属于微信隐私接口：调用前必须已取得用户对
+// 《小程序用户隐私保护指引》的同意，否则微信会直接拒绝调用。
+// 这里先兜底校验一次，没同意就直接抛错，由调用方给出可读提示。
 function chooseLocalUpload(source: UploadSource): Promise<LocalUpload> {
+  return ensurePrivacyAuthorized().then((granted) => {
+    // 打上 privacy 标记，调用方可以弹「去同意」而不是干巴巴的 toast
+    if (!granted) throw Object.assign(new Error('需要先同意《小程序用户隐私保护指引》才能选择资料'), { privacy: true })
+    return pickLocalUpload(source)
+  })
+}
+
+function pickLocalUpload(source: UploadSource): Promise<LocalUpload> {
   if (source === 'file') return new Promise((resolve, reject) => wx.chooseMessageFile({
     count: 1, type: 'file', extension: ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'txt', 'md', 'markdown', 'csv', 'jpg', 'jpeg', 'png', 'webp'],
     success: pick => { const item = pick.tempFiles[0]; if (!item) { reject(new Error('没有选择文件')); return }; resolve({ path: item.path, filename: item.name || '未命名文件' }) }, fail: reject,
@@ -343,13 +466,164 @@ export async function uploadDocument(knowledgeId: string, source?: UploadSource,
   const file = await chooseLocalUpload(selected)
   return uploadPickedFile(knowledgeId, file, folderId)
 }
-export function streamChat(payload: { knowledge_id?: string; conversation_id?: string; folder_id?: string; content: string; model?: string; mode?: 'knowledge' | 'web'; thinking?: 'quick' | 'deep'; skill?: string; skills?: string[] }, onMeta: (value: any) => void, onDelta: (value: string) => void, onDone: () => void, onError: (error: any) => void, onProgress?: (label: string) => void, onTrace?: (item: TraceItem) => void, onArtifact?: (artifact: ArtifactView) => void) {
-  let task: any; let finished = false; let receivedChunk = false
+export type ChatRunSnapshot = {
+  id: string
+  conversation_id: string
+  user_message_id: string
+  knowledge_id: string
+  folder_id: string
+  status: 'running' | 'completed' | 'error' | 'cancelled' | 'interrupted'
+  model: string
+  mode: string
+  thinking: string
+  answer: string
+  sources: Source[]
+  trace: TraceItem[]
+  reason: string
+  artifacts: ArtifactView[]
+  error: string
+  revision: number
+  duration_ms: number
+  created_at: string
+  updated_at: string
+  finished_at: string
+}
+
+export const startChatRun = (payload: { knowledge_id?: string; conversation_id?: string; folder_id?: string; content: string; model?: string; mode?: 'knowledge' | 'web'; thinking?: 'quick' | 'deep'; skill?: string; skills?: string[] }) =>
+  request<ChatRunSnapshot>('/api/chat/runs', 'POST', payload)
+export const getChatRun = (runId: string) => request<ChatRunSnapshot>(`/api/chat/runs/${runId}`)
+export const getActiveChatRun = (conversationId: string) => request<ChatRunSnapshot | null>(`/api/conversations/${conversationId}/active-run`)
+export const stopChatRun = (runId: string) => request<ChatRunSnapshot>(`/api/chat/runs/${runId}/stop`, 'POST', {})
+
+type ChatRunHandlers = {
+  onSnapshot: (run: ChatRunSnapshot) => void
+  onDone: () => void
+  onError: (error: any) => void
+}
+
+/**
+ * 订阅一个已经启动的服务端聊天任务。网络断开时自动续订；返回的函数只退订，不停止服务端任务。
+ */
+export function followChatRun(runId: string, handlers: ChatRunHandlers): () => void {
+  let finished = false
+  let task: any = null
+  let retryTimer: any = null
+  let revision = 0
+  let receivedChunk = false
+
+  const fail = (error: any) => {
+    if (finished) return
+    finished = true
+    handlers.onError(error)
+  }
+
+  const retry = () => {
+    if (finished || retryTimer) return
+    retryTimer = setTimeout(() => {
+      retryTimer = null
+      connect()
+    }, 800)
+  }
+
+  const connect = () => {
+    if (finished) return
+    receivedChunk = false
+    const parser = new EventStream((data) => {
+      if (finished) return
+      if (data.type === 'snapshot' && data.run) {
+        const run = data.run as ChatRunSnapshot
+        revision = Number(run.revision || revision || 0)
+        handlers.onSnapshot(run)
+        return
+      }
+      if (data.type === 'done' || data.type === 'cancelled') {
+        finished = true
+        handlers.onDone()
+        return
+      }
+      if (data.type === 'error') fail(new Error(data.message || '任务未完成'))
+    })
+    task = wx.request({
+      url: `${base()}/api/chat/runs/${runId}/stream?after=${revision}`,
+      method: 'GET',
+      enableChunked: true,
+      responseType: 'text',
+      timeout: 1800000,
+      header: { Authorization: `Bearer ${token()}` },
+      success: (res: any) => {
+        if (finished) return
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          let detail = ''
+          try { detail = (typeof res.data === 'string' ? JSON.parse(res.data) : res.data)?.detail || '' } catch { /* 非 JSON 错误体 */ }
+          fail(new Error(detail || `订阅任务失败（${res.statusCode}）`))
+          return
+        }
+        try {
+          if (!receivedChunk && typeof res.data === 'string') parser.push(res.data)
+        } catch { fail(new Error('回答数据格式异常，请重试。')) }
+        if (!finished) retry()
+      },
+      fail: () => retry(),
+    } as any)
+    task.onChunkReceived((chunk: any) => {
+      if (finished) return
+      receivedChunk = true
+      try { parser.push(chunk.data) } catch { fail(new Error('回答数据格式异常，请重试。')) }
+    })
+  }
+
+  connect()
+  return () => {
+    finished = true
+    if (retryTimer) clearTimeout(retryTimer)
+    if (task) task.abort()
+  }
+}
+
+export function streamChat(payload: { knowledge_id?: string; conversation_id?: string; folder_id?: string; content: string; model?: string; mode?: 'knowledge' | 'web'; thinking?: 'quick' | 'deep'; skill?: string; skills?: string[] }, onMeta: (value: any) => void, onDelta: (value: string) => void, onDone: () => void, onError: (error: any) => void, _onProgress?: (label: string) => void, onTrace?: (item: TraceItem) => void, onArtifact?: (artifact: ArtifactView) => void, onSnapshot?: (run: ChatRunSnapshot) => void) {
+  let follow: (() => void) | null = null
+  let finished = false
+  let previousAnswer = ''
+  let previousTrace: TraceItem[] = []
+  let previousArtifacts: ArtifactView[] = []
   const fail = (error: any) => { if (!finished) { finished = true; onError(error) } }
-  // 工具产物：agent 生成的文件随时回流，边写边出现在对话里；历史回放走 /api/conversations/:id
-  const parser = new EventStream((data) => { if (finished) return; if (data.type === 'meta') onMeta(data); else if (data.type === 'delta') onDelta(data.content || ''); else if (data.type === 'progress') { if (onProgress) onProgress(data.label || '') } else if (data.type === 'artifact') { if (onArtifact && data.artifact) onArtifact(data.artifact as ArtifactView) } else if (data.type === 'trace') { const item = data as TraceItem; if (onTrace) onTrace(item); else if (onProgress) { if (item.kind === 'tool' || item.kind === 'skill' || item.kind === 'agent') { if (item.state === 'run' || item.state === 'load') onProgress(`${item.title || '处理中'}…`) } else if (item.kind === 'step') onProgress('正在思考…'); else onProgress(item.title || '') } } else if (data.type === 'error') fail(new Error(data.message || '回答未完成')); else if (data.type === 'done') { finished = true; onDone() } })
-  ensureAuth().then(() => { if (finished) return; task = wx.request({ url: `${base()}/api/chat/stream`, method: 'POST', enableChunked: true, responseType: 'text', data: payload, timeout: 1800000, header: { 'content-type': 'application/json', Authorization: `Bearer ${token()}` }, success: (res: any) => { if (finished) return; if (res.statusCode < 200 || res.statusCode >= 300) { let detail = ''; try { detail = (typeof res.data === 'string' ? JSON.parse(res.data) : res.data)?.detail || '' } catch { /* 非 JSON 错误体 */ } fail(new Error(detail || `回答请求失败（${res.statusCode}）`)); return }; try { if (!receivedChunk && typeof res.data === 'string') parser.push(res.data); if (!finished) fail(new Error('连接已中断，回答未完成，请重新提问。')) } catch { fail(new Error('回答数据格式异常，请重试。')) } }, fail } as any); task.onChunkReceived((chunk: any) => { if (finished) return; receivedChunk = true; try { parser.push(chunk.data) } catch { fail(new Error('回答数据格式异常，请重试。')) } }) }).catch(fail)
-  return () => { finished = true; if (task) task.abort() }
+
+  ensureAuth()
+    .then(() => startChatRun(payload))
+    .then((run) => {
+      if (finished) return
+      onMeta({ conversation_id: run.conversation_id, sources: run.sources, run })
+      previousAnswer = run.answer || ''
+      previousTrace = run.trace || []
+      previousArtifacts = run.artifacts || []
+      follow = followChatRun(run.id, {
+        onSnapshot: (snapshot) => {
+          if (finished) return
+          if (onSnapshot) {
+            onSnapshot(snapshot)
+          } else {
+            const next = snapshot.answer || ''
+            if (next.startsWith(previousAnswer)) onDelta(next.slice(previousAnswer.length))
+            previousAnswer = next
+            if (onTrace) {
+              const count = previousTrace.length
+              ;(snapshot.trace || []).slice(count).forEach((item) => onTrace(item))
+            }
+            previousTrace = snapshot.trace || []
+            if (onArtifact) {
+              const seen = new Set(previousArtifacts.map((item) => item.id))
+              ;(snapshot.artifacts || []).forEach((item) => { if (!seen.has(item.id)) onArtifact(item) })
+            }
+            previousArtifacts = snapshot.artifacts || []
+          }
+        },
+        onDone: () => { if (!finished) { finished = true; onDone() } },
+        onError: (error) => fail(error),
+      })
+    })
+    .catch(fail)
+
+  return () => { finished = true; if (follow) follow() }
 }
 
 // 计划评审：把用户在计划卡片上的结论回写给后端（后端转给运行时，

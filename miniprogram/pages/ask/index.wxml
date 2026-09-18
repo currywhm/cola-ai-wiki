@@ -2,7 +2,7 @@
   <!-- 顶部栏与其他 tab 页一致：居中标题 + 左侧历史对话入口，高度自动避让胶囊按钮 -->
   <app-nav title="cola AI" center history bind:historytap="openHistory" />
   <scroll-view class="ask-body" scroll-y enhanced show-scrollbar="{{false}}">
-    <view class="ask-hero-icon"><ui-icon name="ask-hero" size="{{108}}" rpx /></view>
+    <view class="ask-hero-icon"><image class="ask-hero-gif" src="/assets/brand/cola-chat.gif" mode="aspectFit" /></view>
     <text class="ask-hero-title">{{loggedIn ? '今天从哪里开始？' : '快来开启你的 AI 知识库'}}</text>
 
     <!-- 登录后：能力入口 + 推荐提问 -->
@@ -43,7 +43,7 @@
   <view class="ask-footer">
     <view class="ask-composer" bindtap="onComposerTap">
       <!-- 点输入框直接进问答页，这里不放置发送/更多图标，保持纯入口的观感 -->
-      <text class="ask-placeholder">基于知识问AI</text>
+      <text class="ask-placeholder">基于知识聊天</text>
     </view>
   </view>
 

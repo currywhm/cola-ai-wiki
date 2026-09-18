@@ -3,6 +3,8 @@ node_modules/
 miniprogram_npm/
 dist/
 *.log
+__pycache__/
+*.pyc
 
 # WeChat local/editor state
 project.private.config.json

@@ -1,0 +1,111 @@
+<!-- 新建 / 编辑「我的技能」：默认私有，只有自己能用；需要协作时再发布到技能广场。 -->
+<view class="se-page">
+  <!-- 顶部不留标题栏：左侧返回、中间标题，右侧空出来避让胶囊按钮 -->
+  <view class="se-nav" style="height:{{navHeight}}px;">
+    <button class="se-back" bindtap="goBack" aria-label="返回"><ui-icon name="back" size="{{36}}" rpx /></button>
+    <view class="se-nav-title-wrap"><text class="se-nav-title">{{id ? '编辑技能' : '新建技能'}}</text></view>
+  </view>
+
+  <scroll-view class="se-body" scroll-y enhanced show-scrollbar="{{false}}">
+    <view wx:if="{{loading}}" class="se-loading">正在加载技能…</view>
+
+    <block wx:else>
+      <view class="se-intro">
+        <text class="se-intro-title">{{id ? '调整技能内容' : '把你的做法写成技能'}}</text>
+        <text class="se-intro-desc">保存后在对话里选中它才会生效，没选中的技能不会影响回答。</text>
+      </view>
+
+      <view class="se-card">
+        <text class="se-label">技能名称</text>
+        <input class="se-input" value="{{name}}" maxlength="30" placeholder="例如：周报生成" placeholder-class="se-placeholder" bindinput="onName" />
+      </view>
+
+      <view class="se-card">
+        <text class="se-label">一句话说明</text>
+        <input class="se-input" value="{{summary}}" maxlength="60" placeholder="让使用的人一眼知道它能做什么" placeholder-class="se-placeholder" bindinput="onSummary" />
+      </view>
+
+      <view class="se-card">
+        <text class="se-label">技能图标</text>
+        <view class="se-icons">
+          <view wx:for="{{icons}}" wx:key="name" class="se-icon {{icon === item.name ? 'on' : ''}}" data-icon="{{item.name}}" bindtap="pickIcon">
+            <image class="se-icon-img" src="{{item.src}}" mode="aspectFit" />
+          </view>
+        </view>
+      </view>
+
+      <view class="se-card">
+        <view class="se-label-row">
+          <text class="se-label">技能指令</text>
+          <text class="se-counter">{{prompt.length}}/4000</text>
+        </view>
+        <!-- 增强提示词：平时只露一个图标（贴在指令输入框右下角），悬停或按住才显示文字 -->
+        <view class="se-prompt">
+          <textarea class="se-textarea" value="{{prompt}}" maxlength="4000" placeholder="写清楚：这个技能按什么步骤做、输出成什么格式。对话时只要选中它，就会按这段指令执行。" placeholder-class="se-placeholder" show-confirm-bar="{{false}}" auto-height bindinput="onPrompt"></textarea>
+          <button class="se-enhance {{enhanceHint ? 'on' : ''}}" bindtap="onEnhance" bindmouseenter="onEnhanceHint" bindmouseleave="offEnhanceHint" bindtouchstart="onEnhanceHint" bindtouchend="offEnhanceHint" disabled="{{enhancing || building}}" aria-label="增强提示词">
+            <ui-icon name="enhance" size="34" rpx />
+          </button>
+          <view class="se-enhance-hint">{{enhancing ? '正在整理…' : '增强提示词'}}</view>
+        </view>
+      </view>
+
+      <view class="se-card">
+        <text class="se-label">开发者微信号</text>
+        <input class="se-input" value="{{wechat}}" maxlength="40" placeholder="选填，发布到广场后展示给使用者" placeholder-class="se-placeholder" bindinput="onWechat" />
+      </view>
+
+      <!-- 技能包型技能：把生成的包内文件列出来，让作者看得到到底生成了什么 -->
+      <view wx:if="{{isPackage && files.length}}" class="se-card">
+        <text class="se-label">技能包文件</text>
+        <view class="se-files">
+          <view wx:for="{{files}}" wx:key="*this" class="se-file">
+            <ui-icon name="book" size="28" rpx />
+            <text class="se-file-name">{{item}}</text>
+          </view>
+        </view>
+      </view>
+
+      <view class="se-note">
+        <text class="se-note-text">{{published ? '这个技能已发布到技能广场，所有人都能使用。' : '没发布的技能只保存在你的「我的技能」里，其他人看不到也用不了。'}}</text>
+      </view>
+    </block>
+
+    <view class="se-bottom-space"></view>
+  </scroll-view>
+
+  <view class="se-footer">
+    <button wx:if="{{id && !loading}}" class="se-ghost" bindtap="togglePublish" disabled="{{saving}}">{{published ? '从广场下架' : '发布到广场'}}</button>
+    <view class="se-footer-row">
+      <button wx:if="{{id && !loading}}" class="se-danger" bindtap="remove" disabled="{{saving}}">删除</button>
+      <button class="se-save" bindtap="submit" disabled="{{saving || building}}">{{saving ? '保存中…' : (id ? '保存' : '制作技能')}}</button>
+      <!-- 新建时按钮写「制作技能」：这一步不是存文字，而是让 harness 真的生成技能包 -->
+    </view>
+  </view>
+
+  <!-- 制作过程：生成要跑完整一轮 agent，用遮罩把阶段文案显示出来 -->
+  <view wx:if="{{building}}" class="se-make">
+    <view class="se-make-mask"></view>
+    <view class="se-make-panel">
+      <view class="se-make-dots">
+        <view class="se-make-dot d1"></view>
+        <view class="se-make-dot d2"></view>
+        <view class="se-make-dot d3"></view>
+      </view>
+      <text class="se-make-title">正在制作技能</text>
+      <text class="se-make-stage">{{buildStage}}</text>
+      <text class="se-make-hint">这一步由模型完成，通常需要十几秒，请稍等。</text>
+      <button class="se-make-cancel" bindtap="onCancelBuild">停止制作</button>
+    </view>
+  </view>
+
+  <!-- 制作完成后问一句：要不要发布到广场。点遮罩关掉，技能已经存好了 -->
+  <view wx:if="{{askVisible}}" class="se-ask">
+    <view class="se-ask-mask" catchtap="closeAsk"></view>
+    <view class="se-ask-panel">
+      <text class="se-ask-title">技能做好了</text>
+      <text class="se-ask-desc">它已经存进「我的技能」。发布后所有人都能在技能广场用到它，之后也可以随时下架。</text>
+      <button class="se-ask-primary" bindtap="submitAndPublish" disabled="{{saving}}">发布到技能广场</button>
+      <button class="se-ask-ghost" bindtap="submitPrivate">先自己用</button>
+    </view>
+  </view>
+</view>

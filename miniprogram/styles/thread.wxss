@@ -45,6 +45,12 @@ button.qa-prompt::after { border: 0; }
 /* 消息 */
 .qa-message { margin: 26rpx 0 34rpx; }
 .qa-message.user { display: flex; justify-content: flex-end; }
+/* 多选态：消息往右让出勾选框的位置；勾选只用形状与淡底变化，不再加重底色 */
+.qa-message.picking { position: relative; padding-left: 64rpx; }
+.qa-pick { position: absolute; top: 6rpx; left: 0; display: flex; align-items: center; justify-content: center; width: 44rpx; height: 44rpx; box-sizing: border-box; border: 2rpx solid #d3d7dc; border-radius: 50%; background: #fff; }
+.qa-pick.on { border-color: #e8f1fe; background: #e8f1fe; }
+.qa-pick.inline { position: static; flex: 0 0 44rpx; width: 44rpx; min-width: 44rpx; }
+.qa-message.picking .qa-user-bubble { max-width: 78%; }
 .qa-user-bubble { max-width: 84%; padding: 20rpx 26rpx; border-radius: 22rpx 22rpx 6rpx 22rpx; background: #1f1f1f; color: #fff; font-size: 30rpx; line-height: 1.62; word-break: break-word; }
 .qa-answer { min-width: 0; }
 /* 正文：产品级字号（比初版小两档）与更紧的行高，长回答也不窒息 */
@@ -110,8 +116,18 @@ button.qa-prompt::after { border: 0; }
 .qa-progress { display: inline-flex; align-items: center; gap: 10rpx; padding: 12rpx 22rpx 12rpx 16rpx; border-radius: 999rpx; background: #f4f5f6; }
 .qa-progress-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 32rpx; width: 32rpx; height: 32rpx; animation: qa-breathe 1.6s ease-in-out infinite; }
 .qa-progress-text { color: #8b98a5; font-size: 26rpx; line-height: 1.5; }
-.qa-sources { margin-top: 18rpx; padding-top: 16rpx; border-top: 1rpx solid #eceff0; }
-.qa-source-title { display: block; margin-bottom: 10rpx; color: #8b98a5; font-size: 22rpx; }
+.qa-sources { margin-top: 10rpx; }
+/*
+  参考出处：默认收起，只留一行标题，点标题行才展开文件列表。
+  收起态不画分隔线，靠上方留白和正文分开，回答底下更干净。
+*/
+.qa-sources-open { padding-top: 16rpx; border-top: 1rpx solid #eceff0; }
+/* 标题行整行可点：上下各留 12rpx，点击区做到 ~36px 高，手指好按又不显空旷 */
+.qa-source-head { display: flex; align-items: center; gap: 8rpx; padding: 12rpx 0 10rpx; }
+.qa-source-title { display: block; color: #8b98a5; font-size: 22rpx; line-height: 1.4; }
+.qa-source-arrow { display: flex; align-items: center; justify-content: center; width: 26rpx; height: 26rpx; transition: transform 0.18s ease; }
+.qa-sources-open .qa-source-arrow { transform: rotate(180deg); }
+.qa-source-list { margin-top: 12rpx; }
 .qa-source { display: flex; flex-direction: column; gap: 4rpx; margin-bottom: 10rpx; padding: 16rpx 18rpx; border-radius: 14rpx; background: #f7f9fa; }
 .qa-source-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 44rpx; width: 44rpx; height: 44rpx; }
 .qa-source-copy { flex: 1 1 auto; min-width: 0; }
@@ -128,6 +144,7 @@ button.qa-prompt::after { border: 0; }
 .qa-file { display: flex; align-items: center; justify-content: flex-start; gap: 18rpx; margin-bottom: 12rpx; padding: 20rpx; border: 1rpx solid #eceef0; border-radius: 18rpx; background: #fff; }
 .qa-file:last-child { margin-bottom: 0; }
 .qa-file-hover { background: #f7f9fa; }
+.qa-file.picked { border-color: #dbe7fb; background: #f6f9ff; }
 .qa-file-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 56rpx; width: 56rpx; height: 56rpx; }
 .qa-file-copy { flex: 1 1 auto; min-width: 0; }
 .qa-file-name { display: block; color: #22262b; font-size: 28rpx; font-weight: 600; line-height: 1.42; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

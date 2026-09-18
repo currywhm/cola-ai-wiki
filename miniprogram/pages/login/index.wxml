@@ -1,0 +1,52 @@
+<view class="login-page">
+  <app-nav back plain title="" />
+
+  <view class="login-body">
+    <view class="login-brand">
+      <image class="login-logo" src="/assets/brand/cola-login.gif" mode="aspectFit" />
+      <text class="login-brand-name">cola知识库</text>
+    </view>
+
+    <view class="login-actions">
+      <button class="login-button" bindtap="login" loading="{{loggingIn}}" disabled="{{loggingIn}}">
+        <ui-icon name="wechat-white" size="{{36}}" rpx />
+        <text>微信登录</text>
+      </button>
+      <view class="agreement-consent" bindtap="toggleAgreement" role="checkbox" aria-checked="{{agreementChecked}}">
+        <view class="agreement-check {{agreementChecked ? 'checked' : ''}}">
+          <ui-icon name="{{agreementChecked ? 'agreement-checked' : 'agreement-unchecked'}}" size="{{32}}" rpx />
+        </view>
+        <text class="agreement-consent-text">已阅读并同意<text class="agreement-consent-link" data-type="terms" catchtap="openDoc">《服务协议》</text><text class="agreement-consent-link" data-type="guide" catchtap="openDoc">《隐私政策》</text><text class="agreement-consent-link" data-type="ai-privacy" catchtap="openDoc">《AI隐私政策》</text></text>
+      </view>
+    </view>
+  </view>
+
+  <view wx:if="{{agreementVisible}}" class="agreement-layer">
+    <view class="agreement-mask" bindtap="closeAgreement"></view>
+    <view class="agreement-sheet" catchtap="stopTap">
+      <view class="agreement-head">
+        <text class="agreement-title">cola知识库隐私政策提示</text>
+        <button class="agreement-close" bindtap="closeAgreement" aria-label="关闭隐私政策提示">
+          <ui-icon name="close" size="{{20}}" />
+        </button>
+      </view>
+
+      <view class="agreement-content">
+        <text class="agreement-copy">欢迎使用 cola知识库！请您仔细阅读 cola知识库 </text>
+        <text class="agreement-link" data-type="terms" catchtap="openDoc">服务协议</text>
+        <text class="agreement-copy">、</text>
+        <text class="agreement-link" data-type="guide" catchtap="openDoc">隐私政策</text>
+        <text class="agreement-copy">、</text>
+        <text class="agreement-link" data-type="ai-privacy" catchtap="openDoc">AI隐私政策</text>
+        <text class="agreement-copy">。</text>
+      </view>
+
+      <text class="agreement-note">如您理解并同意以上政策，请点击“同意”开始使用 cola知识库。</text>
+
+      <view class="agreement-actions">
+        <button class="agreement-button agreement-reject" bindtap="rejectAgreement" disabled="{{loggingIn}}">拒绝</button>
+        <button class="agreement-button agreement-accept" bindtap="agreeAndLogin" loading="{{loggingIn}}" disabled="{{loggingIn}}">同意</button>
+      </view>
+    </view>
+  </view>
+</view>

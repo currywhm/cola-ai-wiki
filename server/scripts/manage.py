@@ -62,6 +62,7 @@ def start(port):
     if not PYTHON.exists() or not (ROOT / '.env').exists():
         raise SystemExit('Run: python3 scripts/manage.py setup')
     with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind(('127.0.0.1', port))
         except OSError:

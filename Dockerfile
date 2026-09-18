@@ -1,13 +1,13 @@
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 WORKDIR /app
-ARG DEBIAN_MIRROR=https://mirrors.aliyun.com
+ARG DEBIAN_MIRROR=https://mirrors.cloud.tencent.com
 RUN sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::https::Timeout=60 -o Acquire::Retries=5 update \
     && apt-get -o Acquire::https::Timeout=60 -o Acquire::Retries=5 install -y --no-install-recommends tesseract-ocr tesseract-ocr-chi-sim \
     && rm -rf /var/lib/apt/lists/*
 COPY server/requirements.txt ./requirements.txt
-ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
-RUN pip install --no-cache-dir --timeout 60 --retries 5 --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple -r requirements.txt
+ARG PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+RUN pip install --no-cache-dir --timeout 60 --retries 5 --index-url "${PIP_INDEX_URL}" -r requirements.txt
 COPY server/app ./app
 COPY server/content ./content
 COPY server/harness_runtime ./harness_runtime

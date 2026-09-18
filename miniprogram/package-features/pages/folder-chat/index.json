@@ -1,0 +1,13 @@
+{
+  "navigationBarTitleText": "cola知识库",
+  "usingComponents": {
+    "ui-icon": "/components/ui-icon/index"
+    ,"markdown-view": "/components/markdown-view/index"
+    ,"tool-card": "/components/tool-card/index"
+    ,"plan-card": "/components/plan-card/index",
+    "skill-picker": "/components/skill-picker/index",
+    "history-drawer": "/components/history-drawer/index"
+    ,"pick-bar": "/components/pick-bar/index"
+    ,"share-sheet": "/components/share-sheet/index"
+  }
+}

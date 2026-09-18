@@ -1,0 +1,136 @@
+<view class="tool-card {{node.state}} {{node.depth ? 'tool-nested' : ''}}">
+  <view class="tool-head" bindtap="toggle">
+    <view class="tool-icon"><ui-icon name="{{node.icon || 'atom'}}" size="{{28}}" rpx /></view>
+    <text class="tool-title">{{node.title || '调用工具'}}</text>
+    <text wx:if="{{view.summary}}" class="tool-summary {{node.state === 'error' ? 'tool-error-text' : ''}}">{{view.summary}}</text>
+    <text wx:if="{{node.durationLabel}}" class="tool-duration">{{node.durationLabel}}</text>
+    <text wx:elif="{{node.stateLabel}}" class="tool-state {{node.state}}">{{node.stateLabel}}</text>
+    <view class="tool-chevron {{open ? 'open' : ''}}"><ui-icon name="chevron-down" size="{{18}}" rpx /></view>
+  </view>
+
+  <view wx:if="{{open && view.expandable}}" class="tool-body">
+    <!-- 终端：命令在上，输出在下，和 Web TerminalBlock 的信息层级一致。 -->
+    <view wx:if="{{view.variant === 'terminal'}}" class="tool-section terminal-card">
+      <view class="tool-section-head">
+        <text class="tool-section-title">命令</text>
+        <button class="tool-copy" catchtap="copySection" data-kind="terminal">复制输出</button>
+      </view>
+      <text class="terminal-command">{{view.terminal.command}}</text>
+      <text wx:if="{{view.terminal.cwd}}" class="tool-meta-line">{{view.terminal.cwd}}</text>
+      <view wx:if="{{view.terminal.exitText}}" class="terminal-status">{{view.terminal.exitText}}</view>
+      <view wx:if="{{view.terminal.hasOutput}}" class="terminal-output"><text class="terminal-output-text" user-select>{{view.terminal.output}}</text></view>
+    </view>
+
+    <!-- 搜索：Web 端分为来源、匹配和路径三种结果，这里保持同一分组语义。 -->
+    <view wx:elif="{{view.variant === 'search'}}" class="tool-section">
+      <view class="tool-section-head">
+        <text class="tool-section-title">搜索结果{{view.search.total ? ' · ' + view.search.total + ' 条' : ''}}</text>
+        <text wx:if="{{view.search.truncated}}" class="tool-pill">已截断</text>
+      </view>
+      <view wx:if="{{view.search.hasSources}}" class="search-list">
+        <view wx:for="{{view.search.sources}}" wx:key="url" class="search-source">
+          <text class="search-source-title">{{item.title}}</text>
+          <text wx:if="{{item.snippet}}" class="search-source-snippet">{{item.snippet}}</text>
+          <text class="search-source-url">{{item.url}}</text>
+        </view>
+      </view>
+      <view wx:elif="{{view.search.hasFiles}}" class="search-list">
+        <view wx:for="{{view.search.files}}" wx:key="path" class="search-file">
+          <text class="search-file-path">{{item.path}}</text>
+          <view wx:for="{{item.matches}}" wx:for-item="match" wx:key="lineNumber" class="search-match">
+            <text class="search-line-no">{{match.lineNumber}}</text>
+            <text class="search-line-text">{{match.line}}</text>
+          </view>
+        </view>
+      </view>
+      <view wx:elif="{{view.search.hasPaths}}" class="search-paths">
+        <text wx:for="{{view.search.paths}}" wx:key="*this" class="search-path">{{item}}</text>
+      </view>
+      <view wx:else class="tool-empty">没有结构化结果，展开下方通用输出查看原文。</view>
+    </view>
+
+    <!-- 读取：行号和正文分开，避免长文件挤成一段。 -->
+    <view wx:elif="{{view.variant === 'read'}}" class="tool-section">
+      <view class="tool-section-head">
+        <text class="tool-section-title">{{view.read.isFetch ? '读取网页' : '读取文件'}}</text>
+        <button class="tool-copy" catchtap="copySection" data-kind="output">复制</button>
+      </view>
+      <text class="read-path">{{view.read.path}}</text>
+      <text wx:if="{{view.read.isFetch}}" class="tool-meta-line">{{view.read.statusText || '网页内容'}}{{view.read.truncated ? ' · 已截断' : ''}}</text>
+      <text wx:else class="tool-meta-line">{{view.read.lang || '文本'}} · 从第 {{view.read.offset}} 行开始{{view.read.totalLines ? ' · 共 ' + view.read.totalLines + ' 行' : ''}}</text>
+      <view wx:if="{{view.read.hasLines}}" class="read-lines">
+        <view wx:for="{{view.read.lines}}" wx:key="number" class="read-line">
+          <text class="read-line-no">{{item.number}}</text>
+          <text class="read-line-text">{{item.text}}</text>
+        </view>
+      </view>
+      <view wx:elif="{{view.read.fallback}}" class="terminal-output"><text class="terminal-output-text" user-select>{{view.read.fallback}}</text></view>
+    </view>
+
+    <!-- Diff：Web 端是 applied contextual hunk；这里用原生行级增删视图等价呈现。 -->
+    <view wx:elif="{{view.variant === 'diff' || view.variant === 'write'}}" class="tool-section">
+      <view class="tool-section-head">
+        <text class="tool-section-title">文件变更</text>
+        <button class="tool-copy" catchtap="copySection" data-kind="diff">复制变动</button>
+      </view>
+      <view wx:for="{{view.diffs}}" wx:key="path" class="diff-file">
+        <view class="diff-head">
+          <text class="diff-path">{{item.path}}</text>
+          <text class="diff-stat"><text class="add">+{{item.added}}</text> <text class="remove">-{{item.removed}}</text></text>
+        </view>
+        <view class="diff-lines">
+          <view wx:for="{{item.lines}}" wx:for-item="line" wx:key="key" class="diff-line {{line.kind}}">
+            <text class="diff-no">{{line.oldNo || ' '}}</text>
+            <text class="diff-no">{{line.newNo || ' '}}</text>
+            <text class="diff-mark">{{line.kind === 'add' ? '+' : line.kind === 'remove' ? '-' : ' '}}</text>
+            <text class="diff-text">{{line.text}}</text>
+          </view>
+        </view>
+        <text wx:if="{{item.truncated}}" class="tool-empty">差异过大，仅显示前 280 行。</text>
+      </view>
+    </view>
+
+    <!-- 图片结果：附件地址目前后端未暴露，保留卡片语义并明确展示元数据。 -->
+    <view wx:elif="{{view.variant === 'image'}}" class="tool-section image-list">
+      <view wx:for="{{view.images}}" wx:key="key" class="image-card">
+        <image wx:if="{{item.src}}" class="image-preview" src="{{item.src}}" mode="widthFix" bindtap="previewImage" data-src="{{item.src}}" />
+        <view class="image-icon"><ui-icon name="image" size="{{48}}" rpx /></view>
+        <text class="image-name">{{item.name}}</text>
+        <text class="tool-meta-line">{{item.mediaType}}{{item.dimensions ? ' · ' + item.dimensions : ''}}{{item.size ? ' · ' + item.size : ''}}</text>
+      </view>
+      <view wx:if="{{!view.images.length}}" class="tool-empty">图片结果暂无可展示的附件。</view>
+    </view>
+
+    <!-- Todo：与 Web TodoRow 一样展示总进度和逐项状态。 -->
+    <view wx:elif="{{view.variant === 'todo'}}" class="tool-section">
+      <view class="tool-section-head">
+        <text class="tool-section-title">任务清单 · {{view.todos.done}} / {{view.todos.total}}</text>
+      </view>
+      <view wx:for="{{view.todos.items}}" wx:key="key" class="todo-row {{item.status}}">
+        <view class="todo-box"><ui-icon wx:if="{{item.status === 'completed' || item.status === 'done'}}" name="dui" size="{{22}}" rpx /></view>
+        <text class="todo-text">{{item.content}}</text>
+        <text class="todo-status">{{item.statusLabel}}</text>
+      </view>
+    </view>
+
+    <!-- 其它工具：输入 / 输出 / 错误，保留 Web Generic 的 IN/OUT 展开体。 -->
+    <view wx:else class="tool-section">
+      <view wx:if="{{view.generic.hasError}}" class="tool-error-box">{{view.generic.error}}</view>
+      <view wx:if="{{view.generic.hasInput}}" class="io-block">
+        <view class="tool-section-head">
+          <text class="tool-section-title">输入</text>
+          <button class="tool-copy" catchtap="copySection" data-kind="input">复制</button>
+        </view>
+        <text class="io-text" user-select>{{view.generic.input}}</text>
+      </view>
+      <view wx:if="{{view.generic.hasOutput}}" class="io-block">
+        <view class="tool-section-head">
+          <text class="tool-section-title">输出</text>
+          <button class="tool-copy" catchtap="copySection" data-kind="output">复制</button>
+        </view>
+        <text class="io-text" user-select>{{view.generic.output}}</text>
+      </view>
+      <view wx:if="{{!view.generic.hasInput && !view.generic.hasOutput && !view.generic.hasError}}" class="tool-empty">执行已完成，没有额外输出。</view>
+    </view>
+  </view>
+</view>

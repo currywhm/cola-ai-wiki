@@ -1,6 +1,6 @@
 // 问AI页：一个吉祥物 + 一句标题 + 若干入口胶囊 + 一个输入框，其余全部留白
 // 登录前展示导入引导（图1），登录后展示能力入口与推荐提问（图2）
-import { deleteConversation, ensureAuth, getConversations, pinConversation } from '../../services/api'
+import { deleteConversation, getConversations, goLogin, isLoggedIn, pinConversation } from '../../services/api'
 
 // 推荐提问池：每次「换一换」向后轮换，避免永远展示同一组问题
 const SUGGESTION_POOL: string[] = [
@@ -33,11 +33,7 @@ function pickSuggestions(start: number): string[] {
 
 // 微信登录在 app.onLaunch 中异步完成，这里同时看内存态与本地缓存
 function readLoggedIn(): boolean {
-  try {
-    const app = getApp<IAppOption>()
-    if (app && app.globalData && (app.globalData.token || app.globalData.user)) return true
-  } catch (e) { /* 忽略 */ }
-  return !!wx.getStorageSync('llmwiki_token') || !!wx.getStorageSync('llmwiki_user')
+  return isLoggedIn()
 }
 
 Page({
@@ -60,16 +56,16 @@ Page({
     this.syncTabBar()
     this.syncLogin()
     this.finishBoot()
-    // 微信登录在 app.onLaunch 里异步完成，登录一完成就必须让本页切换两态：
-    // 只靠固定 900ms 补一次，会在慢启动 / 重新登录 / 退出登录后停在「登录前」的样式上，
-    // 所以这里直接跟着登录结果同步（已有 token 时立即 resolve，不额外发请求）。
-    ensureAuth().then(() => this.syncLogin()).catch(() => this.syncLogin())
-    setTimeout(() => this.syncLogin(), 900)
   },
   onHide() { this.finishBoot() },
   syncLogin() {
     const loggedIn = readLoggedIn()
     if (loggedIn !== this.data.loggedIn) this.setData({ loggedIn })
+  },
+  requireLogin(): boolean {
+    if (isLoggedIn()) return true
+    goLogin()
+    return false
   },
   finishBoot() {
     if (!this.data.booting) return
@@ -79,9 +75,10 @@ Page({
   },
   // 三个入口都落到真实功能：建库走创建页，其余把诉求带进问答页
   onAction(e: any) {
+    if (!this.requireLogin()) return
     const action = String(e.currentTarget.dataset.action || '')
     if (action === 'build') {
-      wx.navigateTo({ url: '/pages/create/index' })
+      wx.navigateTo({ url: '/package-features/pages/create/index?from=library' })
       return
     }
     const drafts: Record<string, string> = {
@@ -95,6 +92,7 @@ Page({
     this.setData({ suggestionStart: start, suggestions: pickSuggestions(start) })
   },
   onSuggestion(e: any) {
+    if (!this.requireLogin()) return
     const text = String(e.currentTarget.dataset.text || '')
     if (!text) return
     this.openChat(text, true)
@@ -103,26 +101,28 @@ Page({
   onPromoAsk() { this.openChat('', false) },
   // 进入问答：独立页面（不带底部 bar），把提问内容一起带过去
   openChat(draft: string, autoSend: boolean) {
+    if (!this.requireLogin()) return
     if (draft) wx.setStorageSync('qa_draft', draft)
     wx.setStorageSync('qa_auto_send', !!autoSend)
     wx.setStorageSync('qa_mode', 'knowledge')
-    wx.navigateTo({ url: '/pages/qa/index' })
+    wx.navigateTo({ url: '/package-features/pages/qa/index' })
   },
   // 顶部栏左侧的历史对话：与对话页共用同一个抽屉，取当前用户的全部会话
   openHistory() {
+    if (!this.requireLogin()) return
     if (this.data.historyVisible) return
     this.setData({ historyVisible: true, historyLoading: true })
-    // 未登录时先走一次微信登录再取历史；登不上就关掉抽屉并说明原因，不留白屏
-    ensureAuth().then(() => getConversations({ knowledgeId: '', folderId: '' })).then((items) => {
+    getConversations({ knowledgeId: '', folderId: '' }).then((items) => {
       this.setData({ historyItems: items || [], historyLoading: false })
     }).catch(() => {
       this.setData({ historyVisible: false, historyLoading: false, historyItems: [] })
-      wx.showToast({ title: '登录后可查看历史对话', icon: 'none' })
+      wx.showToast({ title: '历史对话加载失败，请稍后重试', icon: 'none' })
     })
   },
   closeHistory() { this.setData({ historyVisible: false }) },
   // 选中一条历史：进问答页并直接恢复那条会话（会话与所属知识库随本地缓存带过去）
   pickHistory(e: any) {
+    if (!this.requireLogin()) return
     const id = String((e.detail && e.detail.id) || '')
     if (!id) return
     const item = (this.data.historyItems as any[]).find((row: any) => row.id === id) || {}
@@ -132,10 +132,11 @@ Page({
     else wx.removeStorageSync('qa_knowledge_id')
     wx.removeStorageSync('qa_draft')
     wx.removeStorageSync('qa_auto_send')
-    wx.navigateTo({ url: '/pages/qa/index' })
+    wx.navigateTo({ url: '/package-features/pages/qa/index' })
   },
   // 新建对话：清掉待恢复的会话，直接进一个空白问答页
   newConversation() {
+    if (!this.requireLogin()) return
     this.setData({ historyVisible: false })
     wx.removeStorageSync('qa_conversation_id')
     wx.removeStorageSync('qa_knowledge_id')
@@ -143,6 +144,7 @@ Page({
   },
   // 置顶 / 取消置顶：只改当前用户自己的会话，置顶后排到列表最前
   pinHistory(e: any) {
+    if (!this.requireLogin()) return
     const id = String((e.detail && e.detail.id) || '')
     const pinned = !!(e.detail && e.detail.pinned)
     if (!id) return
@@ -153,6 +155,7 @@ Page({
   },
   // 删除：二次确认后再删，删完立刻从列表里移除，不走重新拉取
   removeHistory(e: any) {
+    if (!this.requireLogin()) return
     const id = String((e.detail && e.detail.id) || '')
     if (!id) return
     wx.showModal({

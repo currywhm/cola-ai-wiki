@@ -1,0 +1,32 @@
+<view wx:if="{{blocks.length}}" class="md-view">
+  <block wx:for="{{blocks}}" wx:key="key">
+    <rich-text wx:if="{{item.type === 'html'}}" class="qa-answer-text md-part" nodes="{{item.html}}"></rich-text>
+
+    <view wx:elif="{{item.type === 'code'}}" class="md-code-card">
+      <view class="md-code-head">
+        <text class="md-code-lang">{{item.label || '代码'}}</text>
+        <button class="md-code-copy" catchtap="copyCode" data-key="{{item.key}}" aria-label="复制代码">
+          <ui-icon name="{{copiedKey === item.key ? 'dui' : 'copy'}}" size="26" rpx />
+          <text>{{copiedKey === item.key ? '已复制' : '复制'}}</text>
+        </button>
+      </view>
+      <view class="md-code-scroll"><rich-text class="md-code-content" nodes="{{item.html}}"></rich-text></view>
+    </view>
+
+    <view wx:elif="{{item.type === 'image'}}" class="md-image-card" bindtap="previewImage" data-src="{{item.src}}">
+      <image class="md-image" src="{{item.src}}" mode="widthFix" lazy-load />
+      <text wx:if="{{item.alt}}" class="md-image-caption">{{item.alt}}</text>
+    </view>
+  </block>
+
+  <view wx:if="{{links.length}}" class="md-links">
+    <text class="md-links-title">参考链接 · {{links.length}} 条</text>
+    <button wx:for="{{links}}" wx:key="url" class="md-link-row" bindtap="copyLink" data-url="{{item.url}}">
+      <view class="md-link-copy">
+        <text class="md-link-label">{{item.label}}</text>
+        <text class="md-link-url">{{item.url}}</text>
+      </view>
+      <ui-icon name="copy" size="28" rpx />
+    </button>
+  </view>
+</view>

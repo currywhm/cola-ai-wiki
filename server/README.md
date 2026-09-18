@@ -7,7 +7,7 @@
 需要 Python 3.11+。图片 OCR 还需要 Tesseract 中文语言包（Homebrew：`brew install tesseract tesseract-lang`）。
 
 ```bash
-cd /Users/mac/WeChatProjects/zhi-reader-api
+cd /Users/mac/WeChatProjects/wechatllmwiki/server
 python3 scripts/manage.py setup
 .venv/bin/python scripts/manage.py start
 .venv/bin/python scripts/manage.py status
@@ -28,6 +28,8 @@ curl http://127.0.0.1:8765/ready
 - `UPLOAD_DIR` 默认 `./uploads`。数据库、上传目录、支付证书的相对路径均以本后端目录为基准。
 - 微信登录需要 `WECHAT_APPID`、`WECHAT_SECRET`，没有测试账号回退接口。
 - `WECHAT_APPID` 就是小程序后台“开发者 ID / AppID”，格式为 `wx` 开头 18 位；`WECHAT_SECRET` 为 32 位 AppSecret。`APP_ENV=production` 启动时会调用微信 `stable_token` 实时校验，格式错误或凭证无效都会导致服务启动失败。
+- 微信登录、凭证和客服接口默认使用 `https://api.weixin.qq.com`，且不继承云托管环境的 `HTTP(S)_PROXY`，避免出口代理证书被误当成微信官方证书。只有平台明确要求出口代理时才设置 `WECHAT_HTTPS_PROXY`；代理使用私有根证书时用 `WECHAT_CA_FILE` 指向 PEM CA，不能使用微信支付/开放平台 API 证书。
+- 微信接口出现临时网络/TLS 故障时，启动校验会记录告警但不会让容器无限重启；微信明确返回凭证错误时仍会拒绝启动。
 - 头像：`POST /api/me/avatar`（≤ 2MB，jpg/png/webp）保存用户选定的微信头像。微信官方「头像填写能力」`<button open-type="chooseAvatar">` 回调给的是本机临时路径（`http://tmp/...` / `wxfile://...`），换设备或重装就失效，所以必须落到服务端。每个用户只保留一份（换头像时删旧文件，不留垃圾），`GET /api/avatars/{user_id}` 公开读取——小程序 `<image>` 带不了 Authorization 头，安全性靠文件名只保留 `[0-9A-Za-z_-]`（不可能路径穿越）+ user_id 是随机 32 位十六进制，与 `/api/content/assets` 同一取舍。`PATCH /api/me` 的 `nickname` / `avatar` 均为可选字段，未传即保持原值（只改昵称不会顺手把头像清掉）。
 - 当前支付模式为个人主体微信虚拟支付：需要 OfferID、现网 AppKey、道具 ID、道具价格和公网 HTTPS 发货推送地址。AppKey 只放在后端 `.env`，小程序端只接收服务端签名后的 `payData`。配置项见 `.env.example`。
 - 登录与隐私（前端）：无令牌时 `ensureAuth()` 只回 `pages/login/index`，不会静默换取登录态。点击“微信登录”先弹底部协议提示，用户点“同意”后才调用 `wx.login`；服务端按 OpenID 自动创建或关联账号，默认昵称“微信用户”、默认头像使用产品图。用户之后可在“我的 → 账号设置”通过 `<button open-type="chooseAvatar">` 和 `<input type="nickname">` 主动选择并保存，登录本身不调用 `wx.getUserInfo` / `wx.getUserProfile` / `<open-data>`。相册、拍照、微信文件等系统隐私能力交给微信官方弹窗处理，`services/privacy.ts` 不注册 `wx.onNeedPrivacyAuthorization`。
@@ -46,7 +48,7 @@ curl http://127.0.0.1:8765/ready
 - 技能不进对话展示：用户在小程序里选中的技能由后端解析并注入（内置技能包走 Harness `skill` 工具、我的技能走技能指令），选中状态只体现在输入框技能图标变蓝；接口不返回技能过程节点。
 - `APP_ENV=production` 启动时检查微信登录参数；所有环境均拒绝默认或过短的 JWT 密钥。
 
-原小程序的 `server` 现在仅为指向本目录的兼容符号链接；后续后端改动以本目录为唯一代码源。现有数据库和上传文件随目录移动保留。新生成的 JWT 密钥会使旧开发 token 失效，需要重新微信登录。
+后端源码统一维护在本仓库的 `server/` 目录；现有数据库和上传文件随目录移动保留。新生成的 JWT 密钥会使旧开发 token 失效，需要重新微信登录。
 
 ## 运营内容（使用技巧）
 
@@ -87,6 +89,9 @@ APP_ENV=production
 JWT_SECRET=至少32位随机字符串
 WECHAT_APPID=小程序AppID
 WECHAT_SECRET=小程序AppSecret
+WECHAT_API_BASE=https://api.weixin.qq.com
+WECHAT_HTTPS_PROXY=
+WECHAT_CA_FILE=
 LLM_API_KEY=大模型APIKey
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-chat

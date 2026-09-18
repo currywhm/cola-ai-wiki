@@ -19,6 +19,19 @@ export interface TraceNode {
   stateLabel: string
   /** 分组层级：0=step 容器或独立节点，1=挂在「第 N 步 · 动作」下面的具体调用 */
   depth?: number
+  /** 工具调用标识；同一调用的 run/result 靠它合并，不靠可能重复的工具名。 */
+  callId?: string
+  name?: string
+  variant?: string
+  summary?: string
+  toolInput?: string
+  toolMeta?: any
+  toolOutput?: string
+  toolError?: string
+  resultSummary?: string
+  resultMeta?: any
+  durationMs?: number
+  durationLabel?: string
   /** 计划模式：kind==='plan' 时携带完整计划 markdown（页面附着卡片展示） */
   plan?: string
   /** 计划正文渲染后的 HTML（rich-text 使用） */
@@ -63,6 +76,14 @@ const KIND_ICONS: Record<string, string> = { reason: 'dengpao', step: 'liebiao',
 function nodeIcon(kind: string, name?: string): string {
   if (kind === 'tool' && name && TOOL_ICONS[name]) return TOOL_ICONS[name]
   return KIND_ICONS[kind] || 'atom'
+}
+
+function toolDurationLabel(durationMs?: number): string {
+  const ms = Number(durationMs || 0)
+  if (!ms) return ''
+  if (ms < 1000) return '<1 秒'
+  const seconds = Math.round(ms / 1000)
+  return seconds < 60 ? `${seconds} 秒` : `${Math.round(seconds / 60)} 分钟`
 }
 
 function nodeStateLabel(state: string): string {
@@ -186,28 +207,71 @@ export function appendTrace(messages: any[], id: string, item: any): TraceResult
     if (at >= 0) trace[at] = { ...trace[at], ...node }
     else trace.push(node)
   } else if (item.kind === 'tool' || item.kind === 'skill' || item.kind === 'agent') {
-    // 同一动作先 run 后 done：按 key 合并状态，避免出现两条重复节点
     const state = String(item.state || 'done')
-    const key = `${item.kind}:${item.name || item.title || ''}`
-    let at = trace.findIndex((node) => node.key === key)
-    // 结束事件不一定带 name（技能：run 是「加载技能 · X」、done 是「技能已加载」，
-    // 子智能体同理），key 对不上时回退到同类型最后一个未结束的节点合并，避免多出一行
+    const callId = String(item.call_id || '')
+    const toolName = String(item.name || '')
+    // 工具必须按 callId 合并：并行同名调用不能用工具名做 key。
+    const key = item.kind === 'tool' && callId
+      ? `tool:${callId}`
+      : `${item.kind}:${toolName || item.title || trace.length}`
+    let at = trace.findIndex((node) => node.key === key || (item.kind === 'tool' && callId && node.callId === callId))
+    // 旧事件没有 callId 时，只回并最后一个同类型未完成节点；结果事件尽量保持原 key。
     if (at < 0 && (state === 'done' || state === 'error')) {
       for (let idx = trace.length - 1; idx >= 0; idx -= 1) {
-        if (trace[idx].kind === item.kind && (trace[idx].state === 'run' || trace[idx].state === 'load')) { at = idx; break }
+        const candidate = trace[idx]
+        if (candidate.kind !== item.kind || (candidate.state !== 'run' && candidate.state !== 'load')) continue
+        if (item.kind === 'tool' && toolName && candidate.name && candidate.name !== toolName) continue
+        at = idx
+        break
       }
     }
-    const node: TraceNode = { key, kind: item.kind, state, title: item.title || '', detail: item.detail || '', icon: nodeIcon(item.kind, item.name), stateLabel: nodeStateLabel(state) }
+    const durationMs = Number(item.duration_ms || 0)
+    const node: TraceNode = {
+      key,
+      kind: item.kind,
+      state,
+      title: item.title || '',
+      detail: item.detail || '',
+      icon: nodeIcon(item.kind, toolName),
+      stateLabel: nodeStateLabel(state),
+      callId,
+      name: toolName,
+      variant: String(item.tool_variant || ''),
+      summary: String(item.tool_result_summary || item.tool_summary || item.detail || ''),
+      toolInput: String(item.tool_input || ''),
+      toolMeta: item.tool_meta || {},
+      toolOutput: String(item.tool_output || ''),
+      toolError: String(item.tool_error || ''),
+      resultSummary: String(item.tool_result_summary || ''),
+      resultMeta: item.tool_result_meta || {},
+      durationMs: durationMs || undefined,
+      durationLabel: toolDurationLabel(durationMs),
+    }
     if (at >= 0) {
       const prev = trace[at]
-      // 动作结束后沿用动作本身的标题（「检索全网资料」而不是「检索全网资料完成」），
-      // 是否结束交给右侧状态字；图标也保留 run 那次选中的，不因缺 name 而回退
       const title = state === 'done' && prev.title ? prev.title : (node.title || prev.title)
-      const icon = item.name ? nodeIcon(item.kind, item.name) : (prev.icon || node.icon)
-      // 缩进层级沿用第一次出现时的判断，动作结束后不会突然跳回顶层
-      trace[at] = { ...prev, ...node, title, icon, detail: node.detail || prev.detail, depth: prev.depth || 0 }
+      const icon = toolName ? nodeIcon(item.kind, toolName) : (prev.icon || node.icon)
+      trace[at] = {
+        ...prev,
+        ...node,
+        key: prev.key || key,
+        title,
+        icon,
+        name: toolName || prev.name || '',
+        variant: node.variant || prev.variant || '',
+        detail: node.detail || prev.detail || '',
+        summary: node.summary || prev.summary || '',
+        toolInput: node.toolInput || prev.toolInput || '',
+        toolMeta: node.toolMeta && Object.keys(node.toolMeta).length ? node.toolMeta : (prev.toolMeta || {}),
+        toolOutput: node.toolOutput || prev.toolOutput || '',
+        toolError: node.toolError || prev.toolError || '',
+        resultSummary: node.resultSummary || prev.resultSummary || '',
+        resultMeta: node.resultMeta && Object.keys(node.resultMeta).length ? node.resultMeta : (prev.resultMeta || {}),
+        durationMs: node.durationMs || prev.durationMs,
+        durationLabel: node.durationLabel || prev.durationLabel || '',
+        depth: prev.depth || 0,
+      }
     } else {
-      // 挂在当前这一步「第 N 步 · 动作」下面；没有开着的 step 就是独立一行
       node.depth = openStepNode(trace) ? 1 : 0
       trace.push(node)
     }

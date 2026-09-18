@@ -1,3 +1,7 @@
+/* 组件 wxss 不允许标签选择器（旧写法 button.hd-xxx 会报 “Some selectors are not allowed in component wxss”），
+   但微信基础库对 <button> 的默认样式是 wx-button[class]（特异性 0,1,1），单类选择器压不住，
+   会表现为「按钮没边框、文字居中、padding/宽度丢失」。
+   因此这里把按钮类名连写两遍（如 .hd-new.hd-new）把特异性提到 0,2,0，等价于原来的 button.hd-new。 */
 /* 技能选择面板：技能广场 / 我的技能。
    全程不用分隔线，列表靠留白与圆角卡片区分；点赞收藏只用小图标 + 数字，保持安静。 */
 
@@ -11,9 +15,9 @@
 .sk-head-copy { flex: 1 1 auto; min-width: 0; }
 .sk-title { display: block; color: #14171b; font-size: 38rpx; font-weight: 700; line-height: 1.25; letter-spacing: -.4rpx; }
 .sk-sub { display: block; margin-top: 6rpx; color: #9aa1a9; font-size: 23rpx; font-weight: 400; line-height: 1.4; }
-button.sk-close { display: flex; align-items: center; justify-content: center; flex: 0 0 64rpx; width: 64rpx; min-width: 64rpx; height: 64rpx; min-height: 64rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: #f4f5f6; }
-button.sk-close::after { border: 0; }
-button.sk-close:active { background: #ebedee; }
+.sk-close.sk-close { display: flex; align-items: center; justify-content: center; flex: 0 0 64rpx; width: 64rpx; min-width: 64rpx; height: 64rpx; min-height: 64rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: #f4f5f6; }
+.sk-close.sk-close::after { border: 0; }
+.sk-close.sk-close:active { background: #ebedee; }
 
 /* 两栏：技能广场 / 我的技能 */
 .sk-tabs { display: flex; gap: 20rpx; margin-top: 28rpx; }
@@ -28,8 +32,8 @@ button.sk-close:active { background: #ebedee; }
 .sk-search { display: flex; align-items: center; gap: 14rpx; height: 84rpx; margin-top: 24rpx; padding: 0 26rpx; border-radius: 999rpx; background: #f5f6f7; }
 .sk-search-input { flex: 1 1 auto; min-width: 0; height: 84rpx; border: 0; background: transparent; color: #1f2227; font-size: 28rpx; }
 .sk-search-ph { color: #a8adb3; font-size: 28rpx; }
-button.sk-search-clear { display: flex; align-items: center; justify-content: center; flex: 0 0 40rpx; width: 40rpx; min-width: 40rpx; height: 40rpx; min-height: 40rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; opacity: .5; }
-button.sk-search-clear::after { border: 0; }
+.sk-search-clear.sk-search-clear { display: flex; align-items: center; justify-content: center; flex: 0 0 40rpx; width: 40rpx; min-width: 40rpx; height: 40rpx; min-height: 40rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; opacity: .5; }
+.sk-search-clear.sk-search-clear::after { border: 0; }
 
 .sk-body { flex: 1 1 auto; min-height: 0; margin-top: 12rpx; }
 
@@ -60,10 +64,10 @@ button.sk-search-clear::after { border: 0; }
 .sk-item-foot { display: flex; align-items: center; gap: 12rpx; margin-top: 14rpx; }
 .sk-item-actions { display: flex; align-items: center; gap: 12rpx; flex: 0 0 auto; }
 .sk-item-wechat { max-width: 300rpx; overflow: hidden; color: #a8adb3; font-size: 21rpx; font-weight: 400; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
-button.sk-mini { display: flex; align-items: center; justify-content: center; height: 48rpx; min-height: 48rpx; margin: 0; padding: 0 20rpx; border: 1rpx solid #e3e6e8; border-radius: 999rpx; background: #fff; color: #5c646c; font-size: 21rpx; font-weight: 400; line-height: 1; }
-button.sk-mini.primary { border-color: transparent; background: #eef1f4; color: #35404a; font-weight: 500; }
-button.sk-mini::after { border: 0; }
-button.sk-mini:active { opacity: .8; }
+.sk-mini.sk-mini { display: flex; align-items: center; justify-content: center; height: 48rpx; min-height: 48rpx; margin: 0; padding: 0 20rpx; border: 1rpx solid #e3e6e8; border-radius: 999rpx; background: #fff; color: #5c646c; font-size: 21rpx; font-weight: 400; line-height: 1; }
+.sk-mini.sk-mini.primary { border-color: transparent; background: #eef1f4; color: #35404a; font-weight: 500; }
+.sk-mini.sk-mini::after { border: 0; }
+.sk-mini.sk-mini:active { opacity: .8; }
 .sk-stats { display: flex; align-items: center; gap: 18rpx; flex: 0 1 auto; margin-left: auto; }
 .sk-stat { display: flex; align-items: center; gap: 6rpx; padding: 4rpx 2rpx; }
 .sk-stat-hover { opacity: .6; }

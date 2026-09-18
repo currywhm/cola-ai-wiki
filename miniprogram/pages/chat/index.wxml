@@ -8,27 +8,25 @@
   <view wx:if="{{!conversationActive}}" class="library-toolbar">
     <button class="library-title-wrap" bindtap="openKnowledgePicker" disabled="{{sending}}" aria-label="切换知识库">
       <text>{{knowledgeName || '微信用户的知识库'}}</text>
+      <text wx:if="{{knowledgeReadOnly}}" class="library-tag">{{knowledgeSourceMissing ? '已失效' : '共享'}}</text>
       <view class="library-switch"><ui-icon name="chevron-down" size="{{30}}" rpx /></view>
     </button>
     <view class="toolbar-actions">
-      <button class="toolbar-button" bindtap="goSearch" disabled="{{!knowledgeId}}" aria-label="搜索知识库"><ui-icon name="search" size="{{46}}" rpx /></button>
-      <button class="toolbar-button add-button" bindtap="openUpload" disabled="{{!knowledgeId || sending}}" aria-label="导入文件"><ui-icon name="upload" size="{{44}}" rpx /></button>
-      <button class="toolbar-button" bindtap="openKnowledgeActions" disabled="{{!knowledgeId || sending}}" aria-label="知识库管理"><ui-icon name="menu" size="{{44}}" rpx /></button>
+      <button class="toolbar-button" bindtap="goSearch" disabled="{{loadState !== 'guest' && !knowledgeId}}" aria-label="搜索知识库"><ui-icon name="search" size="{{38}}" rpx /></button>
+      <!-- 好友共享过来的库是只读的：不摆上传入口，避免点了才知道不能写 -->
+      <button wx:if="{{!knowledgeReadOnly}}" class="toolbar-button add-button" bindtap="openUpload" disabled="{{sending || (loadState !== 'guest' && !knowledgeId)}}" aria-label="导入文件"><ui-icon name="upload" size="{{38}}" rpx /></button>
+      <button class="toolbar-button" bindtap="openKnowledgeActions" disabled="{{sending || (loadState !== 'guest' && !knowledgeId)}}" aria-label="知识库管理"><ui-icon name="menu" size="{{38}}" rpx /></button>
     </view>
   </view>
   <view wx:if="{{!conversationActive && knowledgeDesc}}" class="library-desc">{{knowledgeDesc}}</view>
+  <!-- 来源知识库被删掉时，共享库会保留但内容停止同步，这里直说不会让人以为是网络问题 -->
+  <view wx:if="{{!conversationActive && knowledgeSourceMissing}}" class="library-desc">来源知识库已被删除，这个共享库已停止同步</view>
   <scroll-view class="messages" scroll-y scroll-with-animation enhanced show-scrollbar="{{false}}" scroll-into-view="{{lastMessageId}}">
     <view wx:if="{{loadState === 'error'}}" class="state-panel">
       <view class="state-icon"><ui-icon name="response" size="{{28}}" /></view>
       <text class="state-title">暂时无法连接资料</text>
       <text class="state-desc">登录或网络暂不可用，请稍后重试。</text>
       <button class="outline-button" bindtap="load">重新加载</button>
-    </view>
-    <view wx:elif="{{loadState === 'loggedout'}}" class="state-panel">
-      <view class="state-icon"><ui-icon name="user" size="{{28}}" /></view>
-      <text class="state-title">需要重新登录</text>
-      <text class="state-desc">当前微信登录状态已退出，请重新登录后继续使用资料问答。</text>
-      <button class="outline-button" bindtap="login">使用微信重新登录</button>
     </view>
     <view wx:elif="{{loadState === 'ready' && !knowledgeId}}" class="state-panel">
       <view class="state-icon"><ui-icon name="folder" size="{{28}}" /></view>
@@ -111,7 +109,8 @@
     </view>
     <!-- 消息渲染与「问AI」问答页完全一致（含 harness 过程区），只复用 thread.wxss 里的 qa-* 样式 -->
     <block wx:for="{{messages}}" wx:key="id">
-      <view id="{{item.id}}" class="qa-message {{item.role}}">
+      <view id="{{item.id}}" class="qa-message {{item.role}} {{pickMode ? 'picking' : ''}}" bindlongpress="enterPick" data-key="msg:{{item.id}}">
+        <view wx:if="{{pickMode && item.content && !item.greeting && !item.local}}" class="qa-pick {{pickedMap['msg:' + item.id] ? 'on' : ''}}" catchtap="togglePickItem" data-key="msg:{{item.id}}"><ui-icon wx:if="{{pickedMap['msg:' + item.id]}}" name="dui" size="{{26}}" rpx /></view>
         <view wx:if="{{item.role === 'user'}}" class="qa-user-bubble">{{item.content}}</view>
         <!-- 开场白：头像 + 招呼 + 当前范围（本地消息，不写入历史） -->
         <view wx:elif="{{item.greeting}}" class="qa-hello">
@@ -137,40 +136,50 @@
             </view>
           </view>
           <view wx:if="{{item.trace.length}}" class="qa-process">
-            <view wx:for="{{item.trace}}" wx:for-item="node" wx:key="key" class="qa-node {{node.kind}} {{node.state}} {{node.depth ? 'nested' : ''}}">
-              <view class="qa-node-icon"><ui-icon name="{{node.icon || 'atom'}}" size="{{28}}" rpx /></view>
-              <view class="qa-node-copy">
-                <text class="qa-node-title">{{node.title}}</text>
-                <text wx:if="{{node.detail}}" class="qa-node-detail">{{node.detail}}</text>
+            <block wx:for="{{item.trace}}" wx:for-item="node" wx:key="key">
+              <tool-card wx:if="{{node.kind === 'tool'}}" node="{{node}}" />
+              <view wx:else class="qa-node {{node.kind}} {{node.state}} {{node.depth ? 'nested' : ''}}">
+                <view class="qa-node-icon"><ui-icon name="{{node.icon || 'atom'}}" size="{{28}}" rpx /></view>
+                <view class="qa-node-copy">
+                  <text class="qa-node-title">{{node.title}}</text>
+                  <text wx:if="{{node.detail}}" class="qa-node-detail">{{node.detail}}</text>
+                </view>
+                <text wx:if="{{node.stateLabel}}" class="qa-node-state {{node.state}}">{{node.stateLabel}}</text>
               </view>
-              <text wx:if="{{node.stateLabel}}" class="qa-node-state {{node.state}}">{{node.stateLabel}}</text>
-            </view>
+            </block>
           </view>
           <plan-card wx:if="{{item.planNode}}" node="{{item.planNode}}" message-id="{{item.id}}" open="{{item.planOpen}}" bind:review="onPlanReview" bind:toggle="onPlanToggle" />
           <view wx:if="{{!item.content && !item.trace.length && !item.reason}}" class="qa-progress">
             <view class="qa-progress-icon"><ui-icon name="dengpao" size="{{26}}" rpx /></view>
             <text class="qa-progress-text">{{item.progress || '正在思考…'}}</text>
           </view>
-          <rich-text wx:if="{{item.content}}" class="qa-answer-text" nodes="{{item.html || item.content}}"></rich-text>
+          <markdown-view wx:if="{{item.content}}" source="{{item.content}}" streaming="{{item.running}}" />
           <!-- 生成的文件：agent 本轮真的写出来的文件。点卡片预览，右侧按钮保存到微信 -->
           <view wx:if="{{item.artifacts.length}}" class="qa-files">
             <text class="qa-files-title">生成的文件 · {{item.artifacts.length}}</text>
-            <view wx:for="{{item.artifacts}}" wx:for-item="file" wx:key="id" class="qa-file" hover-class="qa-file-hover" hover-stay-time="60" bindtap="openArtifact" data-id="{{file.id}}">
+            <view wx:for="{{item.artifacts}}" wx:for-item="file" wx:key="id" class="qa-file {{pickedMap['file:' + file.id] ? 'picked' : ''}}" hover-class="qa-file-hover" hover-stay-time="60" bindtap="onFileTap" data-id="{{file.id}}">
+              <view wx:if="{{pickMode}}" class="qa-pick inline {{pickedMap['file:' + file.id] ? 'on' : ''}}"><ui-icon wx:if="{{pickedMap['file:' + file.id]}}" name="dui" size="{{24}}" rpx /></view>
               <view class="qa-file-icon"><ui-icon name="{{file.icon || 'recent-text'}}" size="{{52}}" rpx /></view>
               <view class="qa-file-copy">
                 <text class="qa-file-name">{{file.name}}</text>
                 <text class="qa-file-meta">{{file.meta}}</text>
               </view>
-              <button class="qa-file-save" catchtap="saveArtifact" data-id="{{file.id}}" aria-label="保存到微信"><ui-icon name="download" size="{{30}}" rpx /></button>
+              <button wx:if="{{!pickMode}}" class="qa-file-save" catchtap="saveArtifact" data-id="{{file.id}}" aria-label="保存到微信"><ui-icon name="download" size="{{30}}" rpx /></button>
             </view>
           </view>
-          <view wx:if="{{item.sources.length}}" class="qa-sources">
-            <text class="qa-source-title">参考出处 · {{item.sources.length}} 条</text>
-            <view wx:for="{{item.sources}}" wx:for-item="source" wx:key="id" class="qa-source" bindtap="openSource" data-id="{{source.document_id || source.id}}" data-url="{{source.url || ''}}">
-              <view class="qa-source-icon"><ui-icon name="{{source.iconName || 'recent-text'}}" size="{{34}}" rpx /></view>
-              <view class="qa-source-copy">
-                <text class="qa-source-file">{{source.filename}}</text>
-                <text class="qa-source-page">{{source.url ? '公开网页 · 点击复制链接' : '第 ' + source.page_number + ' 页'}}</text>
+          <!-- 参考出处默认收起：只露一行标题，点一下才展开文件列表 -->
+          <view wx:if="{{item.sources.length}}" class="qa-sources {{item.sourcesOpen ? 'qa-sources-open' : ''}}">
+            <view class="qa-source-head" bindtap="toggleSources" data-key="{{item.id}}">
+              <text class="qa-source-title">参考出处 · {{item.sources.length}} 条</text>
+              <view class="qa-source-arrow"><ui-icon name="chevron-down" size="{{20}}" rpx /></view>
+            </view>
+            <view wx:if="{{item.sourcesOpen}}" class="qa-source-list">
+              <view wx:for="{{item.sources}}" wx:for-item="source" wx:key="id" class="qa-source" bindtap="openSource" data-id="{{source.document_id || source.id}}" data-url="{{source.url || ''}}">
+                <view class="qa-source-icon"><ui-icon name="{{source.iconName || 'recent-text'}}" size="{{34}}" rpx /></view>
+                <view class="qa-source-copy">
+                  <text class="qa-source-file">{{source.filename}}</text>
+                  <text class="qa-source-page">{{source.url ? '公开网页 · 点击复制链接' : '第 ' + source.page_number + ' 页'}}</text>
+                </view>
               </view>
             </view>
           </view>
@@ -190,7 +199,7 @@
       <text class="qa-prompts-hint">正在根据这个知识库的资料生成提问建议…</text>
     </view>
   </scroll-view>
-  <view class="chat-footer">
+  <view wx:if="{{!pickMode}}" class="chat-footer">
     <!-- 目录视图的提问入口：和问AI首页同款胶囊输入框，点一下才进问答页，
          这里只是入口，不放任何切换 / 发送图标 -->
     <view wx:if="{{!conversationActive && !askLayerVisible && knowledgeId && loadState === 'ready'}}" class="dir-composer" bindtap="openDirectoryAsk">
@@ -218,6 +227,8 @@
       </view>
     </view>
   </view>
+  <pick-bar wx:if="{{pickMode}}" count="{{pickCount}}" total="{{pickTotal}}" bind:close="exitPick" bind:all="togglePickAll" bind:share="openShareSheet" />
+  <share-sheet visible="{{shareSheetVisible}}" message-count="{{pickMessageCount}}" file-count="{{pickFileCount}}" knowledges="{{shareKnowledges}}" knowledge-loading="{{shareKnowledgeLoading}}" hint="{{shareHintText}}" bind:close="closeShareSheet" bind:wechat="armShareWechat" bind:copy="shareCopy" bind:knowledgeopen="loadShareKnowledges" bind:knowledgepick="saveShareToKnowledge" />
   <view wx:if="{{askLayerVisible}}" class="ask-layer">
     <app-nav conversation back title="{{knowledgeName || '微信用户的知识库'}}" bind:conversationback="closeAskLayer" />
     <scroll-view class="ask-body" scroll-y enhanced show-scrollbar="{{false}}">
@@ -282,20 +293,38 @@
       <view class="search-bar picker-search"><ui-icon name="search" size="{{40}}" rpx /><input value="{{pickerQuery}}" placeholder="搜索知识库" bindinput="filterPicker" /></view>
       <scroll-view class="picker-list" scroll-y>
         <view class="picker-group">
-          <view class="picker-group-head"><view class="picker-group-title"><text>个人知识库</text><ui-icon name="chevron-down" size="{{28}}" rpx /></view><button class="picker-add" bindtap="createFromPicker" aria-label="创建知识库"><ui-icon name="plus" size="{{42}}" rpx /></button></view>
-          <view wx:for="{{filteredKnowledge}}" wx:key="id" class="picker-item {{item.id === knowledgeId ? 'selected' : ''}}" bindtap="selectKnowledge" data-id="{{item.id}}"><view class="picker-folder"><ui-icon name="knowledge" size="{{48}}" rpx /></view><view class="grow"><text class="picker-name">{{item.name}}</text><text class="picker-meta">{{item.document_count || 0}} 份文档</text></view><view wx:if="{{item.id === knowledgeId}}" class="picker-check"><ui-icon name="check" size="{{34}}" rpx /></view></view>
-          <view wx:if="{{!filteredKnowledge.length}}" class="picker-empty">没有找到匹配的知识库</view>
+          <view class="picker-group-head"><view class="picker-group-title" data-group="personal" bindtap="togglePickerGroup"><text>个人知识库</text><view class="picker-chevron {{personalExpanded ? '' : 'collapsed'}}"><ui-icon name="chevron-down" size="{{28}}" rpx /></view></view><button class="picker-add" catchtap="createFromPicker" aria-label="创建知识库"><ui-icon name="plus" size="{{42}}" rpx /></button></view>
+          <view wx:if="{{personalExpanded}}">
+            <view wx:for="{{filteredKnowledge}}" wx:key="id" class="picker-item {{item.id === knowledgeId ? 'selected' : ''}}" bindtap="selectKnowledge" data-id="{{item.id}}"><view class="picker-folder"><ui-icon name="knowledge-pick" size="{{48}}" rpx /></view><view class="grow"><text class="picker-name">{{item.name}}</text><text class="picker-meta">{{item.metaLabel}}</text></view><view wx:if="{{item.id === knowledgeId}}" class="picker-check"><ui-icon name="check" size="{{34}}" rpx /></view></view>
+            <view wx:if="{{!filteredKnowledge.length}}" class="picker-empty">{{pickerQuery ? '没有找到匹配的知识库' : '还没有个人知识库，点右上角新建'}}</view>
+          </view>
         </view>
         <view class="picker-group">
-          <view class="picker-group-head"><view class="picker-group-title"><text>共享知识库</text><ui-icon name="chevron-down" size="{{28}}" rpx /></view></view>
-          <view class="picker-empty-row">暂无共享知识库</view>
+          <view class="picker-group-head"><view class="picker-group-title" data-group="shared" bindtap="togglePickerGroup"><text>共享知识库</text><view class="picker-chevron {{sharedExpanded ? '' : 'collapsed'}}"><ui-icon name="chevron-down" size="{{28}}" rpx /></view></view></view>
+          <view wx:if="{{sharedExpanded}}">
+            <view wx:for="{{filteredShared}}" wx:key="id" class="picker-item {{item.id === knowledgeId ? 'selected' : ''}}" bindtap="selectKnowledge" data-id="{{item.id}}">
+              <view class="picker-folder"><ui-icon name="knowledge-pick" size="{{48}}" rpx /></view>
+              <view class="grow"><text class="picker-name">{{item.name}}</text><text class="picker-meta">{{item.metaLabel}}</text></view>
+              <text wx:if="{{item.badgeLabel}}" class="picker-badge">{{item.badgeLabel}}</text>
+              <view wx:if="{{item.id === knowledgeId}}" class="picker-check"><ui-icon name="check" size="{{34}}" rpx /></view>
+            </view>
+            <view wx:if="{{!filteredShared.length}}" class="picker-empty-row">{{pickerQuery ? '没有找到匹配的共享知识库' : '暂无共享知识库'}}</view>
+          </view>
         </view>
         <view class="picker-group">
-          <view class="picker-group-head"><view class="picker-group-title"><text>订阅知识库</text><ui-icon name="chevron-down" size="{{28}}" rpx /></view></view>
-          <view class="picker-empty-row">暂无订阅知识库</view>
+          <view class="picker-group-head"><view class="picker-group-title" data-group="subscriptions" bindtap="togglePickerGroup"><text>订阅知识库</text><view class="picker-chevron {{subscriptionsExpanded ? '' : 'collapsed'}}"><ui-icon name="chevron-down" size="{{28}}" rpx /></view></view></view>
+          <view wx:if="{{subscriptionsExpanded}}">
+            <view wx:for="{{filteredSubscriptions}}" wx:key="id" class="picker-item {{item.id === knowledgeId ? 'selected' : ''}}" bindtap="selectKnowledge" data-id="{{item.id}}">
+              <view class="picker-folder"><ui-icon name="knowledge-pick" size="{{48}}" rpx /></view>
+              <view class="grow"><text class="picker-name">{{item.name}}</text><text class="picker-meta">{{item.metaLabel}}</text></view>
+              <text wx:if="{{item.badgeLabel}}" class="picker-badge">{{item.badgeLabel}}</text>
+              <view wx:if="{{item.id === knowledgeId}}" class="picker-check"><ui-icon name="check" size="{{34}}" rpx /></view>
+            </view>
+            <view wx:if="{{!filteredSubscriptions.length}}" class="picker-empty-row">{{pickerQuery ? '没有找到匹配的订阅知识库' : '暂无订阅，点右上角发现'}}</view>
+          </view>
         </view>
         <!-- 两个链接挨着居中：button 自带 auto 左右外边距，在 flex 里会被拉开，必须清零 -->
-        <view class="picker-footer"><button bindtap="openAgreement">服务协议</button><text class="picker-footer-dot">·</text><button bindtap="openPrivacy">隐私政策</button></view>
+        <view class="picker-footer"><button bindtap="openAgreement">服务协议</button><text class="picker-footer-dot">·</text><button bindtap="openPrivacy">隐私政策</button><text class="picker-footer-dot">·</text><button bindtap="openAiPrivacy">AI隐私政策</button></view>
       </scroll-view>
     </view>
   </view>
@@ -333,6 +362,8 @@
           <text>创建文件夹</text>
         </button>
       </view>
+      <!-- 相册 / 拍照 / 微信文件都是隐私接口：把指引入口放在选择动作旁边，审核和用户都看得到 -->
+      <view class="privacy-line" bindtap="openPrivacyGuide">选择文件前会先展示《小程序用户隐私保护指引》；点此可查看全文</view>
       <button class="upload-cancel" bindtap="closeUploadSheet">取消</button>
     </view>
   </view>
@@ -351,6 +382,24 @@
   </view>
   <!-- 技能：把常用任务写进输入框，随知识库资料执行；与问AI问答页共用同一套技能包 -->
   <!-- 技能：与问AI问答页共用同一份数据源（技能广场 + 我的技能），只有选中的才会注入后端 -->
+  <!-- 邀请好友一起用这个知识库：先在服务端换一条一次性邀请链接，再让微信拉起转发 -->
+  <view wx:if="{{kbShareVisible}}" class="picker-layer">
+    <view class="picker-mask" bindtap="closeKnowledgeShare"></view>
+    <view class="share-kb-sheet">
+      <view class="picker-head"><button class="picker-close" bindtap="closeKnowledgeShare" aria-label="关闭"><ui-icon name="close" size="{{44}}" rpx /></button><text class="picker-title">邀请好友一起用</text></view>
+      <view class="share-kb-card">
+        <view class="share-kb-icon"><ui-icon name="knowledge-pick" size="{{44}}" rpx /></view>
+        <view class="share-kb-copy"><text class="share-kb-name">{{knowledgeName || '微信用户的知识库'}}</text><text class="share-kb-meta">好友接受后会在他的「共享知识库」里</text></view>
+      </view>
+      <view class="share-kb-notes">
+        <view class="share-kb-note"><ui-icon name="dui" size="{{26}}" rpx /><text>资料由你维护，好友那边自动同步</text></view>
+        <view class="share-kb-note"><ui-icon name="dui" size="{{26}}" rpx /><text>好友只能阅读和提问，改不到你的资料</text></view>
+        <view class="share-kb-note"><ui-icon name="dui" size="{{26}}" rpx /><text>一条链接只认第一个接受的好友，{{kbShareDays}} 天内有效</text></view>
+      </view>
+      <button class="share-kb-cta" open-type="share" aria-label="选择微信好友"><ui-icon name="wechat" size="{{38}}" rpx /><text>选择微信好友</text></button>
+      <button class="share-kb-cancel" bindtap="closeKnowledgeShare">取消</button>
+    </view>
+  </view>
   <skill-picker visible="{{skillSheetVisible}}" selected="{{selectedSkillIds}}" bind:close="closeSheets" bind:select="onSkillSelect" bind:create="onSkillCreate" bind:edit="onSkillEdit" />
   <!-- 历史对话：后端持久化，按用户 + 知识库收窄，长按可删 -->
   <history-drawer visible="{{historyVisible}}" loading="{{historyLoading}}" activeId="{{conversationId}}" items="{{historyItems}}" bind:pick="pickHistory" bind:create="newConversation" bind:close="closeHistory" bind:pin="pinHistory" bind:remove="removeHistory" />

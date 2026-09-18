@@ -1,0 +1,40 @@
+/* 组件 wxss 不允许标签选择器（旧写法 button.hd-xxx 会报 “Some selectors are not allowed in component wxss”），
+   但微信基础库对 <button> 的默认样式是 wx-button[class]（特异性 0,1,1），单类选择器压不住，
+   会表现为「按钮没边框、文字居中、padding/宽度丢失」。
+   因此这里把按钮类名连写两遍（如 .hd-new.hd-new）把特异性提到 0,2,0，等价于原来的 button.hd-new。 */
+/* 分享面板：四个去处一行排开，只有圆形浅底 + 文字，不画分隔线、不用重底色。
+   底下那行说明是「点下去会发生什么」的预告，随选中的内容变化。 */
+
+.ss-layer { position: fixed; z-index: 220; top: 0; right: 0; bottom: 0; left: 0; }
+.ss-mask { position: absolute; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0, 0, 0, .42); }
+.ss-panel { position: absolute; right: 0; bottom: 0; left: 0; max-width: 750rpx; margin: 0 auto; box-sizing: border-box; padding: 34rpx 30rpx calc(26rpx + env(safe-area-inset-bottom)); border-radius: 30rpx 30rpx 0 0; background: #fff; animation: ss-up .2s ease-out; }
+@keyframes ss-up { from { transform: translateY(40rpx); opacity: .5; } to { transform: translateY(0); opacity: 1; } }
+
+.ss-head { display: flex; align-items: center; justify-content: space-between; gap: 20rpx; }
+.ss-title { color: #14171b; font-size: 34rpx; font-weight: 700; line-height: 1.3; letter-spacing: -.4rpx; }
+.ss-close.ss-close { display: flex; align-items: center; justify-content: center; flex: 0 0 64rpx; width: 64rpx !important; min-width: 64rpx !important; height: 64rpx; min-height: 64rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: #f4f5f6; }
+.ss-close.ss-close::after { border: 0; }
+.ss-close.ss-close:active { background: #ebedee; }
+
+.ss-body { margin-top: 26rpx; }
+.ss-count { display: block; color: #9aa1a9; font-size: 24rpx; font-weight: 400; line-height: 1.4; }
+
+.ss-targets { display: flex; align-items: flex-start; gap: 12rpx; margin-top: 24rpx; }
+.ss-target.ss-target { display: flex; flex-direction: column; align-items: center; gap: 12rpx; flex: 1 1 0; width: auto !important; min-width: 0 !important; margin: 0; padding: 6rpx 0 4rpx; border: 0; border-radius: 20rpx; background: transparent; line-height: 1.2; }
+.ss-target.ss-target::after { border: 0; }
+.ss-target.ss-target:active { background: #f7f8f9; }
+.ss-target-icon { display: flex; align-items: center; justify-content: center; width: 100rpx; height: 100rpx; border-radius: 50%; background: #f4f5f6; }
+.ss-target-name { color: #3d444c; font-size: 24rpx; font-weight: 500; line-height: 1.3; white-space: nowrap; }
+
+.ss-hint { display: block; margin-top: 26rpx; padding: 20rpx 22rpx; border-radius: 18rpx; background: #f7f8f9; color: #7d858d; font-size: 23rpx; font-weight: 400; line-height: 1.5; }
+
+.ss-kb-list { max-height: 460rpx; margin-top: 18rpx; }
+.ss-kb.ss-kb { display: flex; align-items: center; gap: 18rpx; width: auto !important; min-width: 0 !important; margin: 0 0 12rpx; padding: 20rpx 22rpx; border: 0; border-radius: 20rpx; background: #f7f8f9; text-align: left; }
+.ss-kb.ss-kb::after { border: 0; }
+.ss-kb.ss-kb:active { background: #eef0f2; }
+.ss-kb-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 56rpx; width: 56rpx; height: 56rpx; border-radius: 18rpx; background: #fff; }
+.ss-kb-name { flex: 1 1 auto; min-width: 0; overflow: hidden; color: #14171b; font-size: 29rpx; font-weight: 600; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.ss-kb-meta { flex: 0 0 auto; color: #9aa1a9; font-size: 23rpx; line-height: 1.35; }
+.ss-hint-line { padding: 60rpx 0; color: #a8adb3; font-size: 25rpx; text-align: center; }
+.ss-back.ss-back { display: block; width: auto !important; min-width: 0 !important; margin: 20rpx auto 0; padding: 16rpx 34rpx; border: 0; border-radius: 999rpx; background: #f4f5f6; color: #5c646c; font-size: 26rpx; font-weight: 500; line-height: 1.3; }
+.ss-back.ss-back::after { border: 0; }

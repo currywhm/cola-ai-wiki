@@ -1,0 +1,36 @@
+/* 登录页按参考稿：浅灰页面、纯白顶栏、品牌标识、黑色微信登录按钮和协议勾选。 */
+.login-page { width:100%; max-width:750rpx; min-height:100vh; margin:0 auto; overflow:hidden; background:#f7f7f7; font-family:"PingFang SC","Helvetica Neue",sans-serif; }
+.login-body { display:flex; flex-direction:column; min-height:calc(100vh - 88px); padding:0 46rpx calc(54rpx + env(safe-area-inset-bottom)); box-sizing:border-box; }
+.login-brand { display:flex; flex-direction:column; align-items:center; padding-top:228rpx; }
+.login-logo { width:150rpx; height:150rpx; border-radius:34rpx; background:#fff; }
+.login-brand-name { display:block; margin-top:32rpx; color:#111; font-size:56rpx; font-weight:760; line-height:1.25; letter-spacing:0; }
+.login-actions { margin-top:auto; }
+.agreement-consent { display:flex; align-items:flex-start; width:100%; gap:14rpx; margin-top:22rpx; padding-bottom:210rpx; color:#969696; font-size:27rpx; line-height:1.55; box-sizing:border-box; }
+.agreement-consent:active { opacity:.82; }
+.agreement-check { display:flex; align-items:center; justify-content:center; flex:0 0 32rpx; width:32rpx; height:32rpx; margin-top:4rpx; }
+.agreement-consent-text { display:block; flex:1 1 0; width:auto; min-width:0; color:#969696; word-break:break-all; }
+.agreement-consent-link { color:#7f7f7f; text-decoration:underline; white-space:normal; }
+button.login-button { display:flex; align-items:center; justify-content:center; gap:18rpx; width:100%; height:96rpx; min-height:96rpx; padding:0 30rpx; border:0; border-radius:22rpx; background:#222; color:#fff; font-size:34rpx; font-weight:650; line-height:1.2; }
+button.login-button::after { border:0; }
+button.login-button[disabled] { opacity:.64; }
+
+/* 未勾选协议时点击微信登录，从底部弹出隐私政策提示。 */
+.agreement-layer { position:fixed; z-index:120; top:0; right:0; bottom:0; left:0; }
+.agreement-mask { position:absolute; top:0; right:0; bottom:0; left:0; background:rgba(0,0,0,.48); }
+.agreement-sheet { position:absolute; right:0; bottom:0; left:0; padding:34rpx 30rpx calc(30rpx + env(safe-area-inset-bottom)); border-radius:30rpx 30rpx 0 0; background:#fff; color:#111; box-sizing:border-box; }
+.agreement-head { display:flex; align-items:center; min-height:58rpx; }
+.agreement-title { flex:1 1 auto; min-width:0; color:#111; font-size:34rpx; font-weight:700; line-height:1.35; }
+button.agreement-close { display:flex; align-items:center; justify-content:center; flex:0 0 58rpx; width:58rpx; height:58rpx; min-height:58rpx; margin:0 0 0 16rpx; padding:0; border:0; border-radius:50%; background:transparent; color:#9ba3aa; }
+button.agreement-close::after { border:0; }
+.agreement-content { display:block; margin-top:32rpx; color:#111; font-size:30rpx; font-weight:500; line-height:1.62; }
+.agreement-copy,.agreement-link { display:inline; font-size:30rpx; line-height:1.62; }
+.agreement-link { color:#1677ff; text-decoration:underline; }
+.agreement-note { display:block; margin-top:30rpx; color:#111; font-size:30rpx; font-weight:500; line-height:1.62; }
+.agreement-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20rpx; margin-top:30rpx; }
+button.agreement-button { display:flex; align-items:center; justify-content:center; width:100%; height:88rpx; min-height:88rpx; margin:0; padding:0 20rpx; border:1rpx solid #e5e5e5; border-radius:14rpx; font-size:31rpx; font-weight:500; line-height:1; }
+button.agreement-button::after { border:0; }
+.agreement-reject { background:#fff; color:#111; }
+.agreement-accept { border-color:#1677ff; background:#1677ff; color:#fff; }
+button.agreement-button[disabled] { opacity:.62; }
+
+@media (max-height:700px) { .login-brand { padding-top:150rpx; } .agreement-consent { padding-bottom:120rpx; } }

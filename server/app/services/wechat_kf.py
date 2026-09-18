@@ -39,15 +39,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 import xml.etree.ElementTree as ET
 
-import httpx
 
 from cryptography.hazmat.primitives import padding as sym_padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from ..config import settings
 from ..db import connect, fetchone
+from .wechat_http import create_wechat_client, wechat_api_url
 
-WECHAT_API_BASE = 'https://api.weixin.qq.com'
 TOKEN_CACHE_KEY = 'kf_access_token'
 # 官方给的 token 有效期 7200 秒，提前 5 分钟换掉，避免边界上刚好过期
 TOKEN_SAFETY_SECONDS = 300
@@ -114,17 +113,17 @@ async def access_token(force: bool = False) -> str:
         cached = await _cached_token()
         if cached:
             return cached
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with create_wechat_client(timeout=15) as client:
         # stable_token 是官方推荐的稳定版：不会被其它业务刷新顶掉，也更容易做多实例
         response = await client.post(
-            f'{WECHAT_API_BASE}/cgi-bin/stable_token',
+            wechat_api_url('/cgi-bin/stable_token'),
             json={'grant_type': 'client_credential', 'appid': settings.wechat_appid, 'secret': settings.wechat_secret, 'force_refresh': bool(force)},
         )
         data = response.json() if response.content else {}
         if not data.get('access_token'):
             # 老账号/灰度账号可能还没有 stable_token，退回普通接口
             response = await client.get(
-                f'{WECHAT_API_BASE}/cgi-bin/token',
+                wechat_api_url('/cgi-bin/token'),
                 params={'grant_type': 'client_credential', 'appid': settings.wechat_appid, 'secret': settings.wechat_secret},
             )
             data = response.json() if response.content else {}
@@ -142,13 +141,13 @@ async def _call(path: str, *, method: str = 'POST', payload: dict | None = None,
     token = await access_token()
     query = dict(params or {})
     query['access_token'] = token
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with create_wechat_client(timeout=30) as client:
         if raw is not None:
-            response = await client.post(f'{WECHAT_API_BASE}{path}', params=query, content=raw, headers={'Content-Type': content_type})
+            response = await client.post(wechat_api_url(path), params=query, content=raw, headers={'Content-Type': content_type})
         elif method == 'GET':
-            response = await client.get(f'{WECHAT_API_BASE}{path}', params=query)
+            response = await client.get(wechat_api_url(path), params=query)
         else:
-            response = await client.post(f'{WECHAT_API_BASE}{path}', params=query, json=payload or {})
+            response = await client.post(wechat_api_url(path), params=query, json=payload or {})
     if response.headers.get('content-type', '').startswith(('image/', 'audio/', 'video/', 'application/octet')):
         # /cgi-bin/media/get 成功时直接回文件字节
         return {'_binary': response.content, '_content_type': response.headers.get('content-type', '')}
@@ -281,9 +280,9 @@ async def typing(openid: str, command: str = 'Typing') -> dict:
 async def upload_temp_media(content: bytes, filename: str, media_type: str = 'image') -> dict:
     token = await access_token()
     files = {'media': (filename or 'upload.bin', content, 'application/octet-stream')}
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with create_wechat_client(timeout=60) as client:
         response = await client.post(
-            f'{WECHAT_API_BASE}/cgi-bin/media/upload',
+            wechat_api_url('/cgi-bin/media/upload'),
             params={'access_token': token, 'type': media_type},
             files=files,
         )

@@ -60,7 +60,9 @@ export function localizeImage(src?: string): Promise<string> {
   if (!/^https?:/i.test(src)) return Promise.resolve(src)
   const hit = cache[src]
   if (hit) return Promise.resolve(hit)
-  // 先试官方接口（线上 HTTPS 域名走这条最快），失败再自己下载
+  // http:// 只出现在本地联调：渲染层已经不支持，getImageInfo 也拿不到，直接走字节下载
+  if (/^http:/i.test(src)) return download(src).then((path) => { if (path) cache[src] = path; return path })
+  // 线上 HTTPS 域名先试官方接口（最快），失败再自己下载
   return new Promise<string>((resolve) => {
     wx.getImageInfo({ src, success: (res: any) => resolve(res.path || ''), fail: () => resolve('') })
   }).then((path) => (path ? path : download(src))).then((path) => {

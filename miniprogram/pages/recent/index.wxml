@@ -10,14 +10,14 @@
       <view wx:if="{{recentKbs.length}}" class="recent-section">
         <view class="recent-section-head">
           <text class="recent-section-title">最近知识库</text>
-          <text class="recent-section-hint">按更新排序</text>
+          <text class="recent-section-hint">按最近使用</text>
         </view>
         <scroll-view class="recent-kb-scroll" scroll-x enhanced show-scrollbar="{{false}}">
           <view class="recent-kb-list">
             <view wx:for="{{recentKbs}}" wx:key="id" class="recent-kb-card" hover-class="recent-kb-card-hover" hover-stay-time="60" bindtap="openKnowledge" data-id="{{item.id}}">
               <view class="recent-kb-icon {{item.tone}}"><ui-icon name="knowledge" size="{{36}}" rpx /></view>
               <text class="recent-kb-name">{{item.name}}</text>
-              <text class="recent-kb-time">更新于 {{item.timeLabel}}</text>
+              <text class="recent-kb-time">{{item.timeLabel}}</text>
             </view>
           </view>
         </scroll-view>
@@ -38,7 +38,7 @@
           </view>
         </view>
         <view wx:elif="{{failed}}" class="recent-empty">暂时无法加载最近记录，请稍后重试</view>
-        <view wx:else class="recent-empty">还没有最近打开的知识，去知识库导入一份资料吧</view>
+        <view wx:else class="recent-empty">暂无最近记录</view>
       </view>
       <view wx:if="{{recentDocs.length}}" class="recent-end">没有更多了</view>
       <view class="recent-bottom-space"></view>

@@ -88,7 +88,7 @@ export function saveArtifact(item: ArtifactView) {
 export function openArtifact(item: ArtifactView) {
   const suffix = String(item.suffix || item.type || '').replace(/^\./, '').toLowerCase()
   if (item.kind === 'text') {
-    wx.navigateTo({ url: `/pages/artifact/index?id=${encodeURIComponent(item.id)}&name=${encodeURIComponent(item.name)}` })
+    wx.navigateTo({ url: `/package-features/pages/artifact/index?id=${encodeURIComponent(item.id)}&name=${encodeURIComponent(item.name)}` })
     return
   }
   busy('正在打开文件', downloadArtifact(item.id)).then(async (filePath) => {

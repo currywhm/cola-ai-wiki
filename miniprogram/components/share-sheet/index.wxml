@@ -1,0 +1,46 @@
+<view wx:if="{{visible}}" class="ss-layer">
+  <view class="ss-mask" bindtap="close"></view>
+  <view class="ss-panel" catchtap="noop">
+    <view class="ss-head">
+      <text class="ss-title">{{stage === 'knowledge' ? '存到知识库' : '分享到'}}</text>
+      <button class="ss-close" bindtap="close" aria-label="关闭"><ui-icon name="close" size="{{26}}" rpx /></button>
+    </view>
+
+    <view wx:if="{{stage === 'targets'}}" class="ss-body">
+      <text class="ss-count">已选 {{messageCount}} 条内容 · {{fileCount}} 个文件</text>
+      <view class="ss-targets">
+        <button class="ss-target" open-type="share" bindtap="onWechat" aria-label="分享到微信好友">
+          <view class="ss-target-icon"><ui-icon name="wechat" size="{{54}}" rpx /></view>
+          <text class="ss-target-name">微信好友</text>
+        </button>
+        <button class="ss-target" data-target="qq" bindtap="onCopy" aria-label="复制内容发到 QQ">
+          <view class="ss-target-icon"><ui-icon name="qq" size="{{54}}" rpx /></view>
+          <text class="ss-target-name">QQ</text>
+        </button>
+        <button class="ss-target" data-target="dingtalk" bindtap="onCopy" aria-label="复制内容发到钉钉">
+          <view class="ss-target-icon"><ui-icon name="dingtalk" size="{{54}}" rpx /></view>
+          <text class="ss-target-name">钉钉</text>
+        </button>
+        <button class="ss-target" bindtap="openKnowledge" aria-label="存到知识库">
+          <view class="ss-target-icon"><ui-icon name="knowledge-pick" size="{{54}}" rpx /></view>
+          <text class="ss-target-name">存到知识库</text>
+        </button>
+      </view>
+      <text class="ss-hint">{{hint}}</text>
+    </view>
+
+    <view wx:else class="ss-body">
+      <text class="ss-count">选一个知识库，勾选的内容与文件都会存进去</text>
+      <scroll-view class="ss-kb-list" scroll-y enhanced show-scrollbar="{{false}}">
+        <button wx:for="{{knowledges}}" wx:key="id" class="ss-kb" data-id="{{item.id}}" data-name="{{item.name}}" bindtap="pickKnowledge" aria-label="存到 {{item.name}}">
+          <view class="ss-kb-icon"><ui-icon name="knowledge-pick" size="{{40}}" rpx /></view>
+          <text class="ss-kb-name">{{item.name}}</text>
+          <text class="ss-kb-meta">{{item.document_count}} 份文档</text>
+        </button>
+        <view wx:if="{{knowledgeLoading}}" class="ss-hint-line">正在读取知识库…</view>
+        <view wx:elif="{{!knowledges.length}}" class="ss-hint-line">还没有知识库，先去知识库页新建一个</view>
+      </scroll-view>
+      <button class="ss-back" bindtap="back">返回上一步</button>
+    </view>
+  </view>
+</view>

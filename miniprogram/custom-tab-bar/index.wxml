@@ -1,7 +1,7 @@
 <view wx:if="{{!hidden}}" class="tab-bar" style="padding-bottom:{{safeBottom}}px;">
   <view class="tab-item {{selected === 0 ? 'active' : ''}}" hover-class="tab-item-hover" hover-stay-time="80" bindtap="switchTab" data-index="0" data-path="/pages/ask/index">
     <image class="tab-icon" src="/assets/icons/tabs/{{selected === 0 ? 'ask-active' : 'ask'}}.svg" mode="aspectFit" />
-    <text class="tab-label">问AI</text>
+    <text class="tab-label">聊天</text>
   </view>
   <view class="tab-item {{selected === 1 ? 'active' : ''}}" hover-class="tab-item-hover" hover-stay-time="80" bindtap="switchTab" data-index="1" data-path="/pages/chat/index">
     <image class="tab-icon" src="/assets/icons/tabs/{{selected === 1 ? 'kb-active' : 'kb'}}.svg" mode="aspectFit" />

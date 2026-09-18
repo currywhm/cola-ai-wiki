@@ -1,17 +1,21 @@
+/* 组件 wxss 不允许标签选择器（旧写法 button.hd-xxx 会报 “Some selectors are not allowed in component wxss”），
+   但微信基础库对 <button> 的默认样式是 wx-button[class]（特异性 0,1,1），单类选择器压不住，
+   会表现为「按钮没边框、文字居中、padding/宽度丢失」。
+   因此这里把按钮类名连写两遍（如 .hd-new.hd-new）把特异性提到 0,2,0，等价于原来的 button.hd-new。 */
 .hd-layer { position: fixed; z-index: 200; top: 0; right: 0; bottom: 0; left: 0; }
 .hd-mask { position: absolute; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0, 0, 0, .32); }
 .hd-panel { position: absolute; top: 0; bottom: 0; left: 0; display: flex; flex-direction: column; width: 74%; max-width: 620rpx; box-sizing: border-box; padding: 0 40rpx calc(40rpx + env(safe-area-inset-bottom)); background: #fff; box-shadow: 8rpx 0 40rpx rgba(15, 20, 28, .14); animation: hd-in .22s ease-out; }
 @keyframes hd-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
 .hd-head { display: flex; align-items: flex-end; justify-content: space-between; height: 118rpx; }
 .hd-title { color: #14171b; font-size: 40rpx; font-weight: 700; line-height: 1.2; letter-spacing: -.4rpx; }
-button.hd-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 72rpx; width: 72rpx; min-width: 72rpx; height: 72rpx; min-height: 72rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; }
-button.hd-icon:active { background: #f2f2f2; }
-button.hd-icon::after, button.hd-new::after, button.hd-item::after, button.hd-search-clear::after { border: 0; }
+.hd-icon.hd-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 72rpx; width: 72rpx; min-width: 72rpx; height: 72rpx; min-height: 72rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; }
+.hd-icon.hd-icon:active { background: #f2f2f2; }
+.hd-icon.hd-icon::after, .hd-new.hd-new::after, .hd-item.hd-item::after, .hd-search-clear.hd-search-clear::after { border: 0; }
 .hd-search { display: flex; align-items: center; gap: 16rpx; height: 84rpx; margin-top: 18rpx; padding: 0 24rpx; border-radius: 18rpx; background: #f5f5f5; }
 .hd-search-input { flex: 1 1 auto; min-width: 0; color: #1f1f1f; font-size: 28rpx; }
-button.hd-search-clear { display: flex; align-items: center; justify-content: center; flex: 0 0 40rpx; width: 40rpx; min-width: 40rpx; height: 40rpx; min-height: 40rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; opacity: .55; }
-button.hd-new { display: flex; align-items: center; justify-content: center; gap: 14rpx; width: 100%; min-height: 96rpx; margin: 30rpx 0 6rpx; padding: 0; border: 1rpx solid #ececec; border-radius: 999rpx; background: #fff; color: #14171b; font-size: 31rpx; font-weight: 600; line-height: 1.3; }
-button.hd-new:active { background: #f7f7f7; }
+.hd-search-clear.hd-search-clear { display: flex; align-items: center; justify-content: center; flex: 0 0 40rpx; width: 40rpx; min-width: 40rpx; height: 40rpx; min-height: 40rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; opacity: .55; }
+.hd-new.hd-new { display: flex; align-items: center; justify-content: center; gap: 14rpx; width: 100%; min-height: 96rpx; margin: 30rpx 0 6rpx; padding: 0; border: 1rpx solid #ececec; border-radius: 999rpx; background: #fff; color: #14171b; font-size: 31rpx; font-weight: 600; line-height: 1.3; }
+.hd-new.hd-new:active { background: #f7f7f7; }
 .hd-list { flex: 1 1 auto; min-height: 0; }
 .hd-group { display: block; margin: 26rpx 0 4rpx; color: #a4a9ae; font-size: 26rpx; line-height: 1.4; }
 /* 每一行：右侧藏「置顶 / 删除」操作区，行体左滑后整体平移露出 */
@@ -19,20 +23,20 @@ button.hd-new:active { background: #f7f7f7; }
 /* line-height/font-size 归零：行高与行体完全重合，不让操作区在行体下露出 1px 细边（看上去像表格线） */
 .hd-row { position: relative; display: block; overflow: hidden; border: 0 none; border-radius: 0; background: #fff; box-shadow: none; font-size: 0; line-height: 0; }
 /* 抽屉内所有按钮禁用伪元素描边（微信默认 button::after 会画一圈细边框） */
-.hd-panel button::before, .hd-panel button::after { display: none; content: none; border: 0 none; box-shadow: none; }
+.hd-icon.hd-icon::before, .hd-icon.hd-icon::after, .hd-new.hd-new::before, .hd-new.hd-new::after, .hd-search-clear.hd-search-clear::before, .hd-search-clear.hd-search-clear::after, .hd-action.hd-action::before, .hd-action.hd-action::after { display: none; content: none; border: 0 none; box-shadow: none; }
 /* 操作区只在左滑后存在：没滑开时完全不渲染，从根上消除“表格线”观感 */
 .hd-actions { position: absolute; z-index: 1; top: 0; right: 0; bottom: 0; display: none; align-items: stretch; width: 240rpx; }
 .hd-row.swiped .hd-actions { display: flex; }
-button.hd-action { display: flex; align-items: center; justify-content: center; flex: 1 1 0; min-width: 0; margin: 0; padding: 0; border: 0; border-radius: 0; font-size: 26rpx; font-weight: 500; line-height: 1.3; }
-button.hd-action::after { border: 0; }
-button.hd-pin { background: #ececec; color: #242424; }
-button.hd-pin.is-on { background: #e0e0e0; color: #6f6f6f; }
-button.hd-del { background: #e64340; color: #fff; }
-button.hd-action:active { opacity: .82; }
+.hd-action.hd-action { display: flex; align-items: center; justify-content: center; flex: 1 1 0; min-width: 0; margin: 0; padding: 0; border: 0; border-radius: 0; font-size: 26rpx; font-weight: 500; line-height: 1.3; }
+.hd-action.hd-action::after { border: 0; }
+.hd-pin.hd-pin { background: #ececec; color: #242424; }
+.hd-pin.hd-pin.is-on { background: #e0e0e0; color: #6f6f6f; }
+.hd-del.hd-del { background: #e64340; color: #fff; }
+.hd-action.hd-action:active { opacity: .82; }
 /* 行体保持直角：既能完整盖住右侧操作区（滑开时不露出碎边），选中态色块又与面板正文等宽 */
-button.hd-item { position: relative; z-index: 2; display: flex; align-items: center; justify-content: flex-start; gap: 10rpx; width: 100%; min-height: 84rpx; margin: 0; padding: 22rpx 0; border: 0 none; border-radius: 0; background: #fff; color: #22262b; font-size: 30rpx; font-weight: 400; line-height: 1.45; text-align: left; box-shadow: none; transition: transform .2s ease, background-color .18s ease; }
-button.hd-item::before, button.hd-item::after { border: 0 none; box-shadow: none; }
+.hd-item.hd-item { position: relative; z-index: 2; display: flex; align-items: center; justify-content: flex-start; gap: 10rpx; width: 100%; min-height: 84rpx; margin: 0; padding: 22rpx 0; border: 0 none; border-radius: 0; background: #fff; color: #22262b; font-size: 30rpx; font-weight: 400; line-height: 1.45; text-align: left; box-shadow: none; transition: transform .2s ease, background-color .18s ease; }
+.hd-item.hd-item::before, .hd-item.hd-item::after { border: 0 none; box-shadow: none; }
 .hd-item-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-button.hd-item:active { background: #f4f4f4; color: #079c5a; }
-button.hd-item.on { background: #f1f7f3; color: #079c5a; font-weight: 600; }
+.hd-item.hd-item:active { background: #f4f4f4; color: #079c5a; }
+.hd-item.hd-item.on { background: #f1f7f3; color: #079c5a; font-weight: 600; }
 .hd-empty { padding: 60rpx 0; color: #a4a9ae; font-size: 27rpx; line-height: 1.6; text-align: center; }

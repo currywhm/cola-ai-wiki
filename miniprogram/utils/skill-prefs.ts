@@ -4,7 +4,7 @@
 // - 用户选了技能就存起来，只要本人没再改，就一直沿用，任何页面都不自动重置；
 // - 本地先落地（进入对话立即可用，不依赖网络），再尽量同步到服务端，换设备/重装后也能恢复；
 // - 服务端返回 null 表示从未设置过，这时才用本地值去播种；返回空数组是用户的真实选择，必须尊重。
-import { getPreferences, savePreferences } from '../services/api'
+import { getPreferences, isLoggedIn, savePreferences } from '../services/api'
 
 const LOCAL_KEY = 'llmwiki_skill_prefs'
 export const MAX_SKILLS = 8
@@ -33,6 +33,8 @@ export function persistSkills(ids: string[]) {
 /** 取回上次的选择：服务端优先，其次本地；服务端从未设置过时把本地值播种上去。 */
 export async function restoreSkills(): Promise<string[]> {
   const local = readLocalSkills()
+  // 游客不需要同步账号级技能，也不能在这里触发登录跳转。
+  if (!isLoggedIn()) return local
   try {
     const remote = await getPreferences()
     if (Array.isArray(remote?.skills)) {

@@ -1,6 +1,14 @@
 /* 与问AI / 问答页同一底色，并留出左右边距，卡片不再顶到屏幕边缘 */
 .mine-page { background:#f5f6f6; padding:0 24rpx calc(100rpx + env(safe-area-inset-bottom)); }
 .mine-content { padding-top:22rpx; }
+.guest-panel { display:flex; flex-direction:column; min-height:calc(100vh - 132rpx - env(safe-area-inset-bottom)); }
+.guest-profile-card { padding-top:34rpx; padding-bottom:34rpx; }
+.guest-avatar { background:#eceeef; color:#a0a6ad; }
+.guest-menu-section { margin-top:26rpx; }
+button.guest-login-button { display:flex; align-items:center; justify-content:center; width:100%; min-height:96rpx; margin:auto 0 0; border:0; border-radius:20rpx; background:#1677ff; color:#fff; font-size:32rpx; font-weight:650; line-height:1; }
+button.guest-login-button::after { border:0; }
+.guest-legal-footer { flex:0 0 auto; padding-top:20rpx; }
+.menu-section button.logout-bar { margin-top:0; border-radius:0; border-bottom:0; }
 .profile-card { padding:30rpx 28rpx 28rpx; border:0; border-radius:22rpx; background:#fff; box-shadow:none; }
 .profile-main { display:flex; align-items:center; min-width:0; gap:16rpx; }
 .profile-avatar { display:flex; align-items:center; justify-content:center; flex:0 0 120rpx; width:120rpx; height:120rpx; overflow:hidden; border:0; border-radius:20rpx; background:#effaf5; }
@@ -72,11 +80,62 @@ button.plan-option { display:flex; flex-direction:column; align-items:center; ju
 .plan-option-note { overflow:hidden; width:100%; color:#8b96a1; font-size:19rpx; font-weight:400; line-height:1.25; text-overflow:ellipsis; white-space:nowrap; }
 button.confirm-pay { display:flex; align-items:center; justify-content:center; gap:10rpx; width:100%; min-height:84rpx; margin-top:24rpx; border-radius:18rpx; background:#07c160; color:#fff; font-size:30rpx; font-weight:700; letter-spacing:-.2rpx; }
 .confirm-pay-price { font-size:30rpx; font-weight:700; }
+/* 账号设置第 1 步：把官方弹窗要说的话先摆在按钮上方，用户知道点下去看到的是什么 */
+.official-notice { margin-top:22rpx; padding:22rpx 24rpx; border-radius:18rpx; background:#f6f8f7; }
+.official-notice-title { display:block; color:#17191d; font-size:26rpx; font-weight:700; line-height:1.4; }
+.official-notice-body { display:block; margin-top:8rpx; color:#6f7a85; font-size:22rpx; line-height:1.6; }
+/* 账号设置第 2 步：昵称整行可点，做成一行设置项的样子——不是输入框，也不用打字 */
+.account-row { display:flex; align-items:center; gap:12rpx; margin-top:26rpx; padding:20rpx 22rpx; border:1rpx solid #edf0f1; border-radius:18rpx; background:#fbfbfa; }
+.account-row-label { flex:0 0 auto; color:#8f98a3; font-size:23rpx; font-weight:500; }
+.account-row-input { flex:1 1 auto; min-width:0; color:#17191d; font-size:29rpx; font-weight:600; line-height:1.5; text-align:right; }
+.account-row-tag { flex:0 0 auto; padding:5rpx 12rpx; border-radius:999rpx; background:#eaf6f0; color:#1c8a5f; font-size:19rpx; font-weight:600; }
+.account-placeholder { color:#b6bec7; font-weight:400; }
+/* 微信官方头像选择：圆头像本身就是按钮，右下角一个小相机角标暗示可以换 */
+button.avatar-picker { position:relative; display:block; width:148rpx; height:148rpx; margin:26rpx auto 0; padding:0; border:0; border-radius:50%; background:transparent; line-height:1; }
+button.avatar-picker::after { border:0; }
+.avatar-picker-image { display:block; width:148rpx; height:148rpx; overflow:hidden; border:1rpx solid #e6ebee; border-radius:50%; background:#f3f5f5; }
+/* 白底小圆角标：不管头像本身是深还是浅，相机图标都能看清 */
+.avatar-picker-badge { position:absolute; right:2rpx; bottom:2rpx; display:flex; align-items:center; justify-content:center; width:52rpx; height:52rpx; border:1rpx solid #e2e8eb; border-radius:50%; background:#fff; box-shadow:0 2rpx 10rpx rgba(18,22,28,.14); }
+.avatar-picker-hint { display:block; margin-top:12rpx; color:#98a2ac; font-size:22rpx; line-height:1.5; text-align:center; }
+.account-note { display:block; margin-top:16rpx; color:#9aa4ae; font-size:21rpx; font-weight:400; line-height:1.5; }
+.account-privacy { margin-top:18rpx; color:#2f7d5a; font-size:22rpx; font-weight:600; line-height:1.5; text-decoration:underline; }
+.account-privacy:active { opacity:0.6; }
+/* 我的页退出登录：参考图 80，先弹底部确认层，再真正清理登录态。 */
+button.logout-bar { display:flex; align-items:center; width:100%; min-height:0; margin-top:20rpx; padding:22rpx 24rpx; border:0; border-radius:18rpx; background:#fff; color:#17191d; font-size:28rpx; font-weight:650; line-height:1.4; text-align:left; }
+.logout-bar-icon { display:flex; align-items:center; justify-content:center; flex:0 0 44rpx; width:44rpx; height:44rpx; margin-right:18rpx; color:#17191d; }
+.logout-bar text { flex:1 1 auto; }
+.logout-layer { position:fixed; z-index:90; top:0; right:0; bottom:0; left:0; }
+.logout-mask { position:absolute; top:0; right:0; bottom:0; left:0; background:rgba(0,0,0,.48); }
+.logout-sheet { position:absolute; right:0; bottom:0; left:0; padding:34rpx 30rpx calc(30rpx + env(safe-area-inset-bottom)); border-radius:30rpx 30rpx 0 0; background:#fff; box-sizing:border-box; }
+.logout-head { display:flex; align-items:center; min-height:58rpx; }
+.logout-title { flex:1 1 auto; color:#111; font-size:34rpx; font-weight:700; line-height:1.35; }
+button.logout-close { display:flex; align-items:center; justify-content:center; flex:0 0 58rpx; width:58rpx; height:58rpx; min-height:58rpx; margin:0; padding:0; border:0; border-radius:50%; background:#f1f2f3; color:#7e858c; }
+button.logout-close::after,.logout-button::after { border:0; }
+.logout-question { display:block; margin-top:30rpx; color:#111; font-size:30rpx; font-weight:500; line-height:1.6; }
+.logout-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20rpx; margin-top:30rpx; }
+button.logout-button { display:flex; align-items:center; justify-content:center; width:100%; height:88rpx; min-height:88rpx; margin:0; padding:0 20rpx; border:1rpx solid #e5e5e5; border-radius:14rpx; font-size:31rpx; font-weight:500; line-height:1; }
+.logout-cancel { background:#fff; color:#111; }
+.logout-confirm { border-color:#ff2442; background:#ff2442; color:#fff; }
+button.logout-button[disabled] { opacity:.62; }
 button.terms-link { min-height:42rpx; margin:10rpx auto 0; color:#8f98a3; font-size:20rpx; font-weight:400; }
+/* 个人中心只保留一组清晰菜单；使用、会员、技巧各自进入独立功能页。 */
+.menu-section { margin-top:20rpx; overflow:hidden; border-radius:20rpx; background:#fff; }
+button.menu-row { display:flex; align-items:center; width:100%; min-height:112rpx; margin:0; padding:20rpx 24rpx; border:0; border-bottom:1rpx solid #f0f1f2; border-radius:0; background:#fff; color:#17191d; text-align:left; }
+button.menu-row:last-child { border-bottom:0; }
+.menu-icon { display:flex; align-items:center; justify-content:center; flex:0 0 52rpx; width:52rpx; height:52rpx; margin-right:18rpx; color:#17191d; }
+.menu-main { flex:1 1 auto; min-width:0; }
+.menu-title { display:block; color:#17191d; font-size:29rpx; font-weight:650; line-height:1.4; }
+.menu-desc { display:block; margin-top:5rpx; overflow:hidden; color:#97a0a8; font-size:22rpx; font-weight:400; line-height:1.45; text-overflow:ellipsis; white-space:nowrap; }
 .service-section { margin-top:24rpx; }
 .shortcut-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:20rpx; margin-top:0; }
 button.shortcut { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:13rpx; min-width:0; min-height:136rpx; padding:16rpx 6rpx 14rpx; border:0; border-radius:18rpx; background:#fff; color:#17191d; font-size:24rpx; font-weight:650; line-height:1.3; text-align:center; }
 .shortcut-icon { display:flex; align-items:center; justify-content:center; flex:0 0 48rpx; width:48rpx; height:48rpx; border-radius:0; background:transparent !important; color:#17191d !important; }
+/* 联系客服：一行卡片式入口，和上面的四个快捷入口同一类白底、同一圆角 */
+button.contact-bar { display:flex; align-items:center; width:100%; min-height:0; margin-top:20rpx; padding:22rpx 24rpx; border:0; border-radius:18rpx; background:#fff; color:#17191d; text-align:left; }
+.contact-bar-icon { display:flex; align-items:center; justify-content:center; flex:0 0 44rpx; width:44rpx; height:44rpx; margin-right:18rpx; color:#17191d; }
+.contact-bar-main { flex:1 1 auto; min-width:0; }
+.contact-bar-title { display:block; color:#17191d; font-size:28rpx; font-weight:650; line-height:1.4; }
+.contact-bar-desc { display:block; margin-top:4rpx; color:#9aa4ae; font-size:21rpx; font-weight:400; line-height:1.5; }
 .section-block { margin-top:60rpx; }
 .section-block .section-heading { margin-bottom:14rpx; }
 .section-link { flex:0 0 auto; color:#079c5a; font-size:21rpx; line-height:1.3; }

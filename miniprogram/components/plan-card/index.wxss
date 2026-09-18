@@ -1,3 +1,7 @@
+/* 组件 wxss 不允许标签选择器（旧写法 button.hd-xxx 会报 “Some selectors are not allowed in component wxss”），
+   但微信基础库对 <button> 的默认样式是 wx-button[class]（特异性 0,1,1），单类选择器压不住，
+   会表现为「按钮没边框、文字居中、padding/宽度丢失」。
+   因此这里把按钮类名连写两遍（如 .hd-new.hd-new）把特异性提到 0,2,0，等价于原来的 button.hd-new。 */
 /* 计划卡片：附着在回答上方的「页内面板」，不加分隔线、不用重底色，
    靠留白与圆角把计划正文和对话正文分开，折叠过程区也不影响它的可见性。 */
 
@@ -16,9 +20,9 @@
 .plan-md { display: block; color: #2c3138; font-size: 28rpx; line-height: 1.68; letter-spacing: -.1rpx; }
 
 .plan-actions { display: flex; align-items: center; justify-content: flex-end; gap: 16rpx; margin-top: 22rpx; }
-button.plan-btn { display: flex; align-items: center; justify-content: center; margin: 0; padding: 0 30rpx; height: 68rpx; min-height: 68rpx; border: 0; border-radius: 34rpx; font-size: 27rpx; font-weight: 500; line-height: 1; }
-button.plan-btn::after { border: 0; }
-button.plan-revise { color: #4a5058; background: #eef0f2; }
-button.plan-revise:active { background: #e4e7ea; }
-button.plan-approve { color: #fff; background: #14171b; }
-button.plan-approve:active { background: #2b3038; }
+.plan-btn.plan-btn { display: flex; align-items: center; justify-content: center; margin: 0; padding: 0 30rpx; height: 68rpx; min-height: 68rpx; border: 0; border-radius: 34rpx; font-size: 27rpx; font-weight: 500; line-height: 1; }
+.plan-btn.plan-btn::after { border: 0; }
+.plan-revise.plan-revise { color: #4a5058; background: #eef0f2; }
+.plan-revise.plan-revise:active { background: #e4e7ea; }
+.plan-approve.plan-approve { color: #fff; background: #14171b; }
+.plan-approve.plan-approve:active { background: #2b3038; }

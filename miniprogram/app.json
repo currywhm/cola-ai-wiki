@@ -1,22 +1,37 @@
 {
   "pages": [
+    "pages/login/index",
     "pages/ask/index",
     "pages/chat/index",
     "pages/recent/index",
-    "pages/mine/index",
-    "pages/qa/index",
-    "pages/folder-chat/index",
-    "pages/share/index",
-    "pages/skill-edit/index",
-    "pages/market/index",
-    "pages/knowledge-detail/index",
-    "pages/document/index",
-    "pages/artifact/index",
-    "pages/search/index",
-    "pages/legal/index",
-    "pages/tips/index",
-    "pages/create/index"
+    "pages/mine/index"
   ],
+  "subPackages": [
+    {
+      "root": "package-features",
+      "pages": [
+        "pages/usage/index",
+        "pages/membership/index",
+        "pages/qa/index",
+        "pages/folder-chat/index",
+        "pages/share/index",
+        "pages/kb-share/index",
+        "pages/skill-edit/index",
+        "pages/market/index",
+        "pages/knowledge-detail/index",
+        "pages/document/index",
+        "pages/artifact/index",
+        "pages/search/index",
+        "pages/legal/index",
+        "pages/tips/index",
+        "pages/create/index"
+      ]
+    }
+  ],
+  "preloadRule": {
+    "pages/chat/index": { "network": "wifi", "packages": ["package-features"] },
+    "pages/mine/index": { "network": "wifi", "packages": ["package-features"] }
+  },
   "window": {
     "navigationStyle": "custom",
     "navigationBarTextStyle": "black",
@@ -32,7 +47,7 @@
     "backgroundColor": "#ffffff",
     "borderStyle": "white",
     "list": [
-      { "pagePath": "pages/ask/index", "text": "问AI" },
+      { "pagePath": "pages/ask/index", "text": "聊天" },
       { "pagePath": "pages/chat/index", "text": "知识库" },
       { "pagePath": "pages/recent/index", "text": "最近" },
       { "pagePath": "pages/mine/index", "text": "我的" }

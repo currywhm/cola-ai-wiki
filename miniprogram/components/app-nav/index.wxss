@@ -1,30 +1,35 @@
+/* 组件 wxss 不允许标签选择器（旧写法 button.hd-xxx 会报 “Some selectors are not allowed in component wxss”），
+   但微信基础库对 <button> 的默认样式是 wx-button[class]（特异性 0,1,1），单类选择器压不住，
+   会表现为「按钮没边框、文字居中、padding/宽度丢失」。
+   因此这里把按钮类名连写两遍（如 .hd-new.hd-new）把特异性提到 0,2,0，等价于原来的 button.hd-new。 */
 .nav-root { display:block; flex-shrink:0; width:100%; }
 .nav-space,.nav-bar { box-sizing:border-box; width:100%; }
 .nav-space { margin-bottom:8rpx; }
+.nav-plain .nav-bar { background:transparent; }
 .nav-bar { position:fixed; left:0; right:0; width:auto; top:0; z-index:30; background:rgba(247,247,247,.98); border-bottom:0; }
 .nav-inner { position:relative; display:flex; align-items:center; padding:0 28rpx; box-sizing:border-box; }
 .nav-brand { display:flex; align-items:center; min-width:0; max-width:100%; gap:10rpx; }
-.nav-button { display:flex; align-items:center; justify-content:center; width:auto; min-width:0; margin:0; padding:0; border:0; background:transparent; color:inherit; font-family:inherit; font-size:inherit; font-weight:inherit; line-height:1.4; text-align:center; }
-.nav-button::after { border:0; }
-.nav-avatar { flex:0 0 60rpx; width:60rpx; height:60rpx; min-height:60rpx; overflow:hidden; border-radius:18rpx; background:#eaf8f1; }
+.nav-button.nav-button { display:flex; align-items:center; justify-content:center; width:auto; min-width:0; margin:0; padding:0; border:0; background:transparent; color:inherit; font-family:inherit; font-size:inherit; font-weight:inherit; line-height:1.4; text-align:center; }
+.nav-button.nav-button::after { border:0; }
+.nav-avatar.nav-avatar { flex:0 0 60rpx; width:60rpx; height:60rpx; min-height:60rpx; overflow:hidden; border-radius:18rpx; background:#eaf8f1; }
 .nav-avatar-image { display:block; width:100%; height:100%; }
-.nav-brand-name { flex:0 0 auto; min-height:64rpx; color:#20242b; font-size:46rpx; font-weight:700; line-height:1; letter-spacing:-.5rpx; }
-.nav-context { display:flex; align-items:center; min-width:0; max-width:230rpx; min-height:48rpx; padding:0 14rpx; gap:5rpx; border-radius:24rpx; background:#f0f2f4; color:#596273; font-size:21rpx; font-weight:500; text-align:left; }
+.nav-brand-name.nav-brand-name { flex:0 0 auto; min-height:64rpx; color:#20242b; font-size:46rpx; font-weight:700; line-height:1; letter-spacing:-.5rpx; }
+.nav-context.nav-context { display:flex; align-items:center; min-width:0; max-width:230rpx; min-height:48rpx; padding:0 14rpx; gap:5rpx; border-radius:24rpx; background:#f0f2f4; color:#596273; font-size:21rpx; font-weight:500; text-align:left; }
 .nav-context-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.nav-menu { flex:0 0 44rpx; width:44rpx; height:54rpx; min-height:54rpx; margin-left:4rpx; color:#20242b; }
-.nav-discover { position:absolute; top:50%; transform:translateY(-50%); width:58rpx; height:58rpx; min-height:58rpx; border-radius:50%; color:#4d596c; }
-.nav-discover:active { background:#edf7f2; color:#07a85c; }
-.nav-back { position:absolute; left:16rpx; top:50%; transform:translateY(-50%); width:64rpx; height:64rpx; min-height:64rpx; border-radius:50%; color:#263247; }
+.nav-menu.nav-menu { flex:0 0 44rpx; width:44rpx; height:54rpx; min-height:54rpx; margin-left:4rpx; color:#20242b; }
+.nav-discover.nav-discover { position:absolute; top:50%; transform:translateY(-50%); width:58rpx; height:58rpx; min-height:58rpx; border-radius:50%; color:#4d596c; }
+.nav-discover.nav-discover:active { background:#edf7f2; color:#07a85c; }
+.nav-back.nav-back { position:absolute; left:16rpx; top:50%; transform:translateY(-50%); width:64rpx; height:64rpx; min-height:64rpx; border-radius:50%; color:#263247; }
 .nav-page-title { position:absolute; left:112rpx; right:112rpx; overflow:hidden; color:#161e2d; font-size:30rpx; font-weight:600; line-height:44rpx; text-align:center; text-overflow:ellipsis; white-space:nowrap; }
 .nav-conversation-title { left:92rpx; right:180rpx; font-size:34rpx; font-weight:700; text-align:left; }
-.nav-action { position:absolute; right:126rpx; width:56rpx; height:56rpx; min-height:56rpx; border:1rpx solid #e3e5e6; border-radius:17rpx; background:#fff; color:#25282e; }
-.nav-back:active { background:#edf1f5; }
+.nav-action.nav-action { position:absolute; right:126rpx; width:56rpx; height:56rpx; min-height:56rpx; border:1rpx solid #e3e5e6; border-radius:17rpx; background:#fff; color:#25282e; }
+.nav-back.nav-back:active { background:#edf1f5; }
 /* 居中标题栏左侧的历史对话入口：与对话页左上角同一枚图标、同一档尺寸。
    基础样式里的 wx-button[class]{width:auto} 优先级高于组件内的单类选择器，
    会把这个 button 压成“跟图标等宽”、热区只剩 41rpx，所以这里用 !important 固定 88rpx 热区，
    再用 left 让图标视觉左边缘落在页面内容栏（44rpx）上。 */
-.nav-history { position:absolute; left:20rpx; top:50%; transform:translateY(-50%); width:88rpx !important; min-width:88rpx !important; height:88rpx; min-height:88rpx; border-radius:50%; color:#263247; }
-.nav-history:active { background:#edf1f5; }
+.nav-history.nav-history { position:absolute; left:20rpx; top:50%; transform:translateY(-50%); width:88rpx !important; min-width:88rpx !important; height:88rpx; min-height:88rpx; border-radius:50%; color:#263247; }
+.nav-history.nav-history:active { background:#edf1f5; }
 .nav-center-title { position:absolute; left:112rpx; right:112rpx; overflow:hidden; color:#161e2d; font-size:34rpx; font-weight:600; line-height:44rpx; text-align:center; text-overflow:ellipsis; white-space:nowrap; }
-.nav-menu-left { position:absolute; left:92rpx; top:50%; transform:translateY(-50%); width:60rpx; height:60rpx; min-height:60rpx; border-radius:50%; color:#263247; }
-.nav-menu-left:active { background:#edf1f5; }
+.nav-menu-left.nav-menu-left { position:absolute; left:92rpx; top:50%; transform:translateY(-50%); width:60rpx; height:60rpx; min-height:60rpx; border-radius:50%; color:#263247; }
+.nav-menu-left.nav-menu-left:active { background:#edf1f5; }

@@ -1,0 +1,109 @@
+<view class="page tips-page">
+  <app-nav title="使用技巧" back />
+
+  <view wx:if="{{loadState === 'loading'}}" class="tips-state">
+    <view class="tips-skeleton tips-skeleton-cover"></view>
+    <view class="tips-skeleton tips-skeleton-line"></view>
+    <view class="tips-skeleton tips-skeleton-line short"></view>
+  </view>
+
+  <view wx:elif="{{loadState === 'error'}}" class="tips-state">
+    <text class="tips-state-title">{{mode === 'index' ? '技巧列表暂时打不开' : '这条技巧暂时打不开'}}</text>
+    <text class="tips-state-desc">网络恢复后可以重试，也可以先回上一页。</text>
+    <button class="tips-retry" bindtap="retry">重新加载</button>
+  </view>
+
+  <block wx:elif="{{mode === 'index'}}">
+    <view class="tips-index-head">
+      <text class="tips-index-title">{{index.title || '使用技巧'}}</text>
+      <text class="tips-index-summary">{{index.intro || '上手指南、提问方法和权益说明。'}}</text>
+    </view>
+
+    <view class="tips-groups">
+      <view class="tips-group" wx:for="{{groups}}" wx:key="id">
+        <text class="tips-group-title">{{item.title}}</text>
+        <button class="tips-list-item" wx:for="{{item.entries}}" wx:for-item="tip" wx:key="id" data-id="{{tip.id}}" bindtap="openTip">
+          <view class="tips-list-thumb">
+            <image wx:if="{{tip.cover}}" class="tips-list-cover" src="{{tip.cover}}" mode="aspectFill" lazy-load />
+            <ui-icon wx:else name="{{tip.icon || 'book'}}" size="{{23}}" />
+          </view>
+          <view class="tips-list-main">
+            <text class="tips-list-name">{{tip.title}}</text>
+            <text class="tips-list-desc">{{tip.summary}}</text>
+            <text class="tips-list-time">{{tip.read_minutes}} 分钟读完</text>
+          </view>
+          <ui-icon name="chevron-right" size="{{15}}" />
+        </button>
+      </view>
+    </view>
+
+    <view wx:if="{{!groups.length}}" class="tips-empty">暂时还没有使用技巧，稍后再来看看。</view>
+  </block>
+
+  <block wx:else>
+    <view class="tips-hero">
+      <image wx:if="{{entry.cover}}" class="tips-hero-cover" src="{{entry.cover}}" mode="aspectFill" lazy-load />
+      <view class="tips-hero-body">
+        <view class="tips-hero-meta">
+          <text class="tips-chip">{{entry.group}}</text>
+          <text class="tips-read">{{entry.read_minutes}} 分钟读完</text>
+        </view>
+        <text class="tips-hero-title">{{entry.title}}</text>
+        <text class="tips-hero-summary">{{entry.summary}}</text>
+      </view>
+    </view>
+
+    <view class="tips-body">
+      <block wx:for="{{blocks}}" wx:key="key">
+        <text wx:if="{{item.type === 'heading'}}" class="tips-h2">{{item.text}}</text>
+
+        <view wx:elif="{{item.type === 'paragraph'}}" class="tips-p">
+          <text wx:for="{{item.runs}}" wx:for-item="run" wx:key="key" class="run-{{run.style}}">{{run.text}}</text>
+        </view>
+
+        <view wx:elif="{{item.type === 'bullet'}}" class="tips-line">
+          <view class="tips-dot"></view>
+          <view class="tips-p tips-line-body">
+            <text wx:for="{{item.runs}}" wx:for-item="run" wx:key="key" class="run-{{run.style}}">{{run.text}}</text>
+          </view>
+        </view>
+
+        <view wx:elif="{{item.type === 'step'}}" class="tips-line">
+          <view class="tips-step">{{item.index}}</view>
+          <view class="tips-p tips-line-body">
+            <text wx:for="{{item.runs}}" wx:for-item="run" wx:key="key" class="run-{{run.style}}">{{run.text}}</text>
+          </view>
+        </view>
+
+        <view wx:elif="{{item.type === 'note'}}" class="tips-note">
+          <view class="tips-note-bar"></view>
+          <view class="tips-p tips-note-body">
+            <text wx:for="{{item.runs}}" wx:for-item="run" wx:key="key" class="run-{{run.style}}">{{run.text}}</text>
+          </view>
+        </view>
+
+        <view wx:elif="{{item.type === 'figure'}}" class="tips-figure">
+          <image wx:if="{{item.src}}" class="tips-figure-img" src="{{item.src}}" mode="widthFix" lazy-load />
+          <text wx:if="{{item.caption}}" class="tips-figure-caption">{{item.caption}}</text>
+        </view>
+      </block>
+    </view>
+
+    <view wx:if="{{related.length}}" class="tips-related">
+      <text class="tips-related-title">继续看</text>
+      <button class="tips-related-item" wx:for="{{related}}" wx:key="id" data-id="{{item.id}}" bindtap="openTip">
+        <view class="tips-related-thumb"><image wx:if="{{item.cover}}" class="tips-related-img" src="{{item.cover}}" mode="aspectFill" lazy-load /></view>
+        <view class="tips-related-main">
+          <text class="tips-related-name">{{item.title}}</text>
+          <text class="tips-related-desc">{{item.summary}}</text>
+        </view>
+        <ui-icon name="chevron-right" size="{{15}}" />
+      </button>
+    </view>
+
+    <view class="tips-footer">
+      <text class="tips-footer-text">内容随版本更新，最新版以后端下发为准。</text>
+      <button class="tips-ask" bindtap="askCola">去问 cola</button>
+    </view>
+  </block>
+</view>

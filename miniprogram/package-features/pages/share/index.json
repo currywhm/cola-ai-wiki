@@ -1,0 +1,6 @@
+{
+  "navigationBarTitleText": "cola知识库",
+  "usingComponents": {
+    "ui-icon": "/components/ui-icon/index"
+  }
+}

@@ -1,0 +1,67 @@
+<view class="page membership-page">
+  <app-nav title="会员服务" back plain />
+
+  <view wx:if="{{loadState === 'loading'}}" class="membership-state">
+    <view class="membership-skeleton membership-skeleton-title"></view>
+    <view class="membership-skeleton membership-skeleton-card"></view>
+    <view class="membership-skeleton membership-skeleton-card"></view>
+  </view>
+
+  <view wx:elif="{{loadState === 'error'}}" class="membership-state">
+    <text class="membership-state-title">会员服务暂时打不开</text>
+    <text class="membership-state-desc">网络恢复后可以重试，或先返回上一页。</text>
+    <button class="membership-retry" bindtap="retry">重新加载</button>
+  </view>
+
+  <block wx:else>
+    <view class="membership-hero">
+      <view class="membership-hero-icon"><ui-icon name="vip" size="{{30}}" /></view>
+      <view class="membership-hero-main">
+        <text class="membership-hero-title">升级会员服务</text>
+        <text class="membership-hero-desc">{{membershipState}} · 不自动续费</text>
+      </view>
+    </view>
+
+    <view class="membership-block">
+      <text class="membership-block-title">选择方案</text>
+      <view class="tier-tabs">
+        <button class="tier-tab {{selectedTier === 'plus' ? 'active' : ''}}" data-tier="plus" bindtap="chooseTier" disabled="{{paying}}">
+          <text class="tier-tab-title">Plus</text>
+          <text class="tier-tab-desc">{{tierDesc.plus}}</text>
+        </button>
+        <button class="tier-tab {{selectedTier === 'pro' ? 'active' : ''}}" data-tier="pro" bindtap="chooseTier" disabled="{{paying}}">
+          <text class="tier-tab-title">Pro</text>
+          <text class="tier-tab-desc">{{tierDesc.pro}}</text>
+        </button>
+      </view>
+      <view class="plan-options">
+        <button wx:for="{{visiblePlans}}" wx:key="id" class="plan-option {{selectedPlan === item.id ? 'selected' : ''}}" data-plan="{{item.id}}" bindtap="choosePlan" disabled="{{paying}}">
+          <text class="plan-option-label">{{item.label}}</text>
+          <text class="plan-option-price">¥{{item.price}}</text>
+          <text class="plan-option-note">{{item.period}} · {{item.note}}</text>
+        </button>
+      </view>
+    </view>
+
+    <view class="membership-block">
+      <text class="membership-block-title">本档权益</text>
+      <view class="benefit-row">
+        <text class="benefit-label">容量与资料库</text>
+        <text class="benefit-value">{{activeTierDesc}}</text>
+      </view>
+      <view class="benefit-row">
+        <text class="benefit-label">积分与文件</text>
+        <text class="benefit-value">{{activeBenefit}}</text>
+      </view>
+      <button class="plan-terms" bindtap="openPlanTerms">查看会员服务条款与权益说明</button>
+    </view>
+  </block>
+
+  <view wx:if="{{loadState === 'ready'}}" class="checkout-bar">
+    <view class="checkout-main">
+      <text class="checkout-label">应付金额</text>
+      <text class="checkout-price">¥{{selectedPlanPrice}}</text>
+    </view>
+    <button class="checkout-button" bindtap="confirmPay" loading="{{paying}}" disabled="{{paying}}">{{paying ? '处理中' : '微信支付'}}</button>
+  </view>
+</view>

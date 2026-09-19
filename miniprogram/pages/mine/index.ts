@@ -1,4 +1,4 @@
-import { clearAuthSession, getKnowledge, getMe, goLogin, isLoggedIn, logout as apiLogout, updateMe, uploadAvatar, userAvatarUrl } from '../../services/api'
+import { clearAuthSession, deleteAccount, getKnowledge, getMe, goLogin, isLoggedIn, logout as apiLogout, updateMe, uploadAvatar, userAvatarUrl } from '../../services/api'
 import { localizeImage } from '../../services/media'
 import { openPrivacyContract, readPrivacySetting, requestPrivacyAuthorize, warnPrivacyRequired } from '../../services/privacy'
 
@@ -16,6 +16,7 @@ Page({
     trialActive: true, memberActive: false,
     logoutVisible: false,
     loggingOut: false,
+    deletingAccount: false,
     // 账号设置：头像走微信官方「头像选择」（<button open-type="chooseAvatar">），
     // 昵称用 <input type="nickname">：就是一个普通输入框，用户自己输入，也可以用键盘上方的微信昵称建议。
     // 平台不提供静默读取头像昵称的接口（wx.getUserProfile / open-data 都已回收），
@@ -208,5 +209,44 @@ Page({
       this.setData({ logoutVisible: false, loggingOut: false })
       wx.reLaunch({ url: '/pages/login/index' })
     }
+  },
+  // 注销账号：审核要求「删除个人信息」有明确可点的入口，所以不再只走客服。
+  // 服务端是即时硬删（资料、文件、对话、产物、自建技能、客服记录、积分流水一起清），
+  // 因此这里做两步确认，避免误触。
+  openDeleteAccount() {
+    if (!this.requireLogin()) return
+    if (this.data.deletingAccount) return
+    wx.showModal({
+      title: '注销账号',
+      content: '注销后账号、资料库、文件、对话、生成的文件、自建技能、客服记录与积分流水都会被删除，且无法恢复。建议先通过客服导出需要保留的资料。',
+      confirmText: '继续',
+      confirmColor: '#cf4c48',
+      success: (first) => {
+        if (!first.confirm) return
+        wx.showModal({
+          title: '最后确认',
+          content: '删除立即生效且不可恢复，确定要注销吗？',
+          confirmText: '确认注销',
+          confirmColor: '#cf4c48',
+          success: async (second) => {
+            if (!second.confirm) return
+            this.setData({ deletingAccount: true })
+            wx.showLoading({ title: '正在注销', mask: true })
+            try {
+              await deleteAccount()
+              clearAuthSession()
+              wx.hideLoading()
+              wx.showToast({ title: '账号已注销', icon: 'none' })
+              setTimeout(() => wx.reLaunch({ url: '/pages/login/index' }), 800)
+            } catch (error: any) {
+              wx.hideLoading()
+              wx.showToast({ title: (error && error.message) || '注销失败，请稍后重试', icon: 'none' })
+            } finally {
+              this.setData({ deletingAccount: false })
+            }
+          },
+        })
+      },
+    })
   },
 })

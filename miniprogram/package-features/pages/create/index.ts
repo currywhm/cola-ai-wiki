@@ -1,5 +1,5 @@
 import { createKnowledge, uploadKnowledgeAvatar } from '../../../services/api'
-import { ensurePrivacyAuthorized, openPrivacyContract, warnPrivacyRequired } from '../../../services/privacy'
+import { ensurePrivacyAuthorized, isPrivacyScopeError, openPrivacyContract, warnPrivacyRequired } from '../../../services/privacy'
 Page({
   // quotaBlocked：服务端因为会员名额拒绝创建时，页面上多给一个「查看会员服务」的出口，而不是只留一句看不懂的报错。
   data: { name:'', description:'', saving:false, error:'', quotaBlocked:false, from:'', avatarPreview:'' },
@@ -17,6 +17,22 @@ Page({
       const accept = (path: string) => { if (path) this.setData({ avatarPreview: path }) }
       const failed = (error: any) => {
         if (String(error?.errMsg || '').includes('cancel')) return
+        // 「api scope is not declared in the privacy agreement」= 后台《用户隐私保护指引》
+        // 还没勾选「收集你选中的照片或视频信息」，这时微信不会弹官方授权弹窗，
+        // 界面上也不会出现任何授权入口，所以要给一条现在就能走通的路：从微信文件里选图。
+        if (isPrivacyScopeError(error)) {
+          wx.showModal({
+            title: '打不开相册',
+            content: '微信没有返回相册权限（可能刚才点了拒绝，也可能小程序的隐私指引还没包含相册）。可以先从微信文件里选一张图片当头像，或点「看指引」了解我们要收集什么。',
+            confirmText: '从微信文件选',
+            cancelText: '看指引',
+            success: (result) => {
+              if (result.confirm) this.chooseAvatarFromFile()
+              else this.openPrivacyGuide()
+            },
+          })
+          return
+        }
         wx.showToast({ title: '需要个人相册权限才能选择知识库头像', icon: 'none' })
       }
       if (typeof media.chooseMedia === 'function') {
@@ -28,6 +44,20 @@ Page({
         return
       }
       wx.chooseImage({ count: 1, sizeType: ['compressed'], sourceType: ['album'], success: (result) => accept(String(result.tempFilePaths?.[0] || '')), fail: failed })
+    })
+  },
+  // 相册权限拿不到时的兜底：微信文件选择是另一个隐私项，通常可用
+  chooseAvatarFromFile() {
+    wx.chooseMessageFile({
+      count: 1, type: 'image',
+      success: (pick) => {
+        const item = pick.tempFiles && pick.tempFiles[0]
+        if (item && item.path) this.setData({ avatarPreview: item.path })
+      },
+      fail: (error: any) => {
+        if (String(error?.errMsg || '').includes('cancel')) return
+        wx.showToast({ title: '没有选到图片，可以稍后在知识库里再设置头像', icon: 'none' })
+      },
     })
   },
   openPrivacyGuide() {

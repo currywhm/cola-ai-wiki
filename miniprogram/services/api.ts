@@ -1,4 +1,4 @@
-import { ensurePrivacyAuthorized } from './privacy'
+import { ensurePrivacyAuthorized, isPrivacyScopeError } from './privacy'
 import { PREVIEW_FILE_TYPES } from '../utils/file-type'
 import { callContainer } from './cloud'
 
@@ -10,7 +10,10 @@ function token() { return appInstance()?.globalData?.token || wx.getStorageSync(
 export function isLoggedIn(): boolean { return !!token() }
 export function goLogin(): void { redirectToLogin() }
 
-export const AGREEMENT_VERSION = '2026-09-17.2'
+// 协议同意版本：合规文档（content/legal）改动后要同步升这里，否则老用户不会重新看到更新后的协议。
+// 与 server/content/legal/manifest.json 的 version 一一对应。
+export const AGREEMENT_VERSION = '2026-09-19.1'
+
 const AGREEMENT_KEY = 'llmwiki_agreements'
 
 export function hasAcceptedAgreements(): boolean {
@@ -529,6 +532,8 @@ type LocalUpload = { path: string; filename: string }
 function pickerError(error: any, source: UploadSource): Error {
   const message = String(error?.errMsg || error?.message || '')
   if (message.includes('cancel')) return Object.assign(new Error('用户取消选择'), { cancelled: true })
+  // 相册/相机的隐私项没在后台申报时，微信不会弹授权弹窗：直接给出能走通的替代入口
+  if (isPrivacyScopeError(error)) return new Error('微信没有返回相册/相机权限：可在右上角「···」→「设置」里检查，或改用「从微信文件选择」')
   if (message.includes('not support') || message.includes('不支持')) {
     const label = source === 'file' ? '微信文件选择' : source === 'album' ? '相册导入' : '拍照扫描'
     return new Error(`当前开发环境不支持${label}，请使用真机预览或升级微信基础库`)

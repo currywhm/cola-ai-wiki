@@ -67,6 +67,14 @@ export function warnPrivacyRequired(action: string) {
   wx.showToast({ title: `同意《小程序用户隐私保护指引》后才能${action}`, icon: 'none', duration: 2600 })
 }
 
+// 区分「用户拒绝」与「指引没申报这个接口」：后者的报错是
+// 「api scope is not declared in the privacy agreement」，此时官方弹窗根本不会出现，
+// 界面上也不会有任何授权入口——必须去小程序后台补申报，所以提示要给出可走的替代路径。
+export function isPrivacyScopeError(error: any): boolean {
+  const message = String((error && (error.errMsg || error.message)) || '')
+  return /privacy|scope is not declared|authorize/i.test(message)
+}
+
 // 打开微信官方的《小程序用户隐私保护指引》页面（名称与内容都来自小程序后台的配置）。
 // 官方弹窗里写的正是这份指引，所以「查看全文」也打开同一份，读到的和同意的是同一个东西。
 // 低版本基础库没有这个接口，返回 false 交给调用方兜底（跳我们自己的页面）。

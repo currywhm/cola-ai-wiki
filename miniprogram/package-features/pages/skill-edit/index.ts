@@ -5,7 +5,7 @@ import { iconPath } from '../../../utils/icons'
 
 // 可选图标：与后端 SKILL_ICONS 白名单保持一致，避免出现前端能选、后端回落的情况
 // 全部选单色线性图标：一套笔画、一个色阶，排在一起不会花
-const ICON_NAMES = ['skill-node', 'knowledge-pick', 'book', 'ppt', 'image', 'sousuo', 'sliders', 'wangluo', 'atom', 'robot', 'liebiao', 'shuju', 'history', 'dui']
+const ICON_NAMES = ['skill-node', 'skill-organize', 'skill-report', 'skill-deck', 'skill-diagram', 'skill-contract', 'skill-meeting', 'skill-data', 'skill-reading', 'skill-research', 'skill-writing', 'knowledge-pick', 'book', 'ppt', 'image', 'sousuo', 'sliders', 'wangluo', 'atom', 'robot', 'liebiao', 'shuju', 'history', 'dui']
 // 后端存的是名字，这里顺手把图片路径算好：格子用 <image> 直接画，不用 14 个 ui-icon 组件
 const ICONS = ICON_NAMES.map((name: string) => ({ name, src: iconPath(name) }))
 

@@ -129,6 +129,15 @@
         <ui-icon name="chevron-right" size="{{16}}" />
       </button>
 
+      <button class="menu-row" bindtap="openDeleteAccount">
+        <view class="menu-icon"><ui-icon name="trash" size="{{22}}" /></view>
+        <view class="menu-main">
+          <text class="menu-title">注销账号</text>
+          <text class="menu-desc">删除账号与全部资料，立即生效且不可恢复</text>
+        </view>
+        <ui-icon name="chevron-right" size="{{16}}" />
+      </button>
+
       <button class="menu-row logout-bar" bindtap="openLogout">
         <view class="menu-icon"><ui-icon name="mine-logout" size="{{23}}" /></view>
         <text class="menu-title">退出登录</text>

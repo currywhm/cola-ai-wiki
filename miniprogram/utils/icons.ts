@@ -125,6 +125,17 @@ export const ICONS: Record<string, IconConfig> = {
   // 选中态：线条变蓝，作为「本轮已启用技能」的唯一提示
   'skill-blue': { file: 'skill-node-blue.svg' },
   'skill-node-blue': { file: 'skill-node-blue.svg' },
+  // 内置技能的专属图标：一个技能一个语义，不再复用通用图标（book/dui/history 那套又土又雷同）
+  'skill-organize': { file: 'skill-organize.svg' },
+  'skill-report': { file: 'skill-report.svg' },
+  'skill-deck': { file: 'skill-deck.svg' },
+  'skill-diagram': { file: 'skill-diagram.svg' },
+  'skill-contract': { file: 'skill-contract.svg' },
+  'skill-meeting': { file: 'skill-meeting.svg' },
+  'skill-data': { file: 'skill-data.svg' },
+  'skill-reading': { file: 'skill-reading.svg' },
+  'skill-research': { file: 'skill-research.svg' },
+  'skill-writing': { file: 'skill-writing.svg' },
   'knowledge-pick': { file: 'knowledge-pick.svg' },
   'model-depth': { file: 'model-depth.svg' },
   'agent-mode': { file: 'agent-mode.svg' },

@@ -135,6 +135,9 @@ button.qa-prompt::after { border: 0; }
 .qa-source-file { display: block; color: #485465; font-size: 25rpx; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qa-source-page { display: block; margin-top: 2rpx; color: #9aa3ad; font-size: 21rpx; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qa-answer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12rpx; margin-top: 16rpx; padding-top: 14rpx; border-top: 1rpx solid #eceff0; }
+/* AI 生成内容标识：每条回答固定露出，满足生成合成内容的显式标识要求 */
+.qa-ai-note { display: block; margin-top: 14rpx; color: #9aa3ad; font-size: 22rpx; line-height: 1.5; }
+
 /*
   生成的文件（工具产物）：一行一张卡片，左侧类型图标、中间名称与体积、右侧保存。
   点卡片直接预览（图片 / 文档走微信原生预览，文本走站内预览页）；

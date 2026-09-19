@@ -182,6 +182,7 @@
               </view>
             </view>
           </view>
+          <text wx:if="{{item.content && !item.local}}" class="qa-ai-note">内容由 AI 生成，请自行核实重要信息</text>
           <view wx:if="{{item.content && !item.local}}" class="qa-answer-actions">
             <button class="qa-action" bindtap="copyAnswer" data-content="{{item.content}}" aria-label="复制回答"><ui-icon name="copy" size="{{18}}" />复制</button>
             <button class="qa-action" open-type="share" data-id="{{item.id}}" aria-label="分享给微信好友"><ui-icon name="share" size="{{18}}" />分享</button>
@@ -339,7 +340,7 @@
       <view class="upload-grid">
         <button class="upload-option" bindtap="chooseUploadSource" data-source="knowledge">
           <view class="upload-option-icon upload-knowledge-icon"><ui-icon name="knowledge" size="{{33}}" /></view>
-          <text>个人知识库</text>
+          <text>新建知识库</text>
         </button>
         <button class="upload-option" bindtap="chooseUploadSource" data-source="file">
           <view class="upload-option-icon"><ui-icon name="wechat-file" size="{{33}}" /></view>

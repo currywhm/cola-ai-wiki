@@ -7,6 +7,8 @@
  *  · 分享文案按 问 / 答 标注，勾了多条时依然读得懂是谁问的、答的是什么。
  */
 
+import { markdownToText } from './markdown'
+
 export const PICK_MSG_PREFIX = 'msg:'
 export const PICK_FILE_PREFIX = 'file:'
 
@@ -63,8 +65,9 @@ function oneLine(text: string, limit: number): string {
   return flat.slice(0, limit - 1) + '…'
 }
 
-/** 把勾选的消息与文件收敛成一次分享所需的东西。 */
-export function collectSelection(messages: any[], keys: string[], knowledgeName: string): PickSelection {
+/** 把勾选的消息与文件收敛成一次分享所需的东西。
+ *  plain=true 时把正文转成渲染后的纯文本（复制到剪贴板用），分享卡片仍用 Markdown 源文本。 */
+export function collectSelection(messages: any[], keys: string[], knowledgeName: string, options: { plain?: boolean } = {}): PickSelection {
   const picked = keys || []
   const list = messages || []
   const blocks: string[] = []
@@ -78,7 +81,8 @@ export function collectSelection(messages: any[], keys: string[], knowledgeName:
     if (canPickMessage(message) && isPicked(picked, messageKey(message.id))) {
       messageCount += 1
       const label = message.role === 'user' ? '问' : '答'
-      blocks.push(`【${label}】\n${String(message.content || '').trim()}`)
+      const raw = String(message.content || '').trim()
+      blocks.push(`【${label}】\n${options.plain ? (markdownToText(raw) || raw) : raw}`)
       const list2 = message.sources || []
       for (let cursor = 0; cursor < list2.length; cursor += 1) sources.push(list2[cursor])
     }

@@ -24,9 +24,9 @@ export function initialPickData() {
   }
 }
 
-function selectionOf(page: any): PickSelection {
+function selectionOf(page: any, options: { plain?: boolean } = {}): PickSelection {
   const data = page.data || {}
-  return collectSelection(data.messages || [], data.pickedKeys || [], data.knowledgeName || '')
+  return collectSelection(data.messages || [], data.pickedKeys || [], data.knowledgeName || '', options)
 }
 
 /** 长按只对能分享的内容生效：开场白、本地提示、正在生成的空回答都不进多选。 */
@@ -137,7 +137,8 @@ export function closeSheet(page: any): void {
 
 /** QQ / 钉钉只能复制内容：微信不允许小程序直接跳转别的 App，这一点在提示里说清楚。 */
 export function copyFor(page: any, target: string): void {
-  const selection = selectionOf(page)
+  // 复制到剪贴板用渲染后的纯文本：与回答下方的「复制」保持一致，粘贴出来不带 Markdown 标记
+  const selection = selectionOf(page, { plain: true })
   if (!selection.count) return
   if (!selection.messageCount) {
     wx.showToast({ title: `只有文件，${target === 'qq' ? 'QQ' : '钉钉'}收不到，改用微信或存到知识库`, icon: 'none', duration: 2600 })

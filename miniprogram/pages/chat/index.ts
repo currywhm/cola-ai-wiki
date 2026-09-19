@@ -664,7 +664,7 @@ Page({
     if (this.data.pickMode) pickPage.exit(this)
     // 用户主动返回目录后，本次页面存续期内不再自动拉回复会话
     ;(this as any).userLeftConversation = true
-    this.setData({ conversationId: '', conversationActive: false, messages: [], input: '', sending: false, modePickerVisible: false, modelPickerVisible:false, lastMessageId:'' })
+    this.setData({ conversationId: '', conversationActive: false, messages: [], input: '', sending: false, modePickerVisible: false, modelPickerVisible:false, lastMessageId:'', scrollTop: 0 })
     resetTail(this)
     this.syncCanSend()
   },

@@ -532,10 +532,17 @@ Page({
       wx.showToast({ title: pinned ? '已置顶' : '已取消置顶', icon: 'none' })
     }).catch(() => wx.showToast({ title: '操作失败，请稍后重试', icon: 'none' }))
   },
+  // 复制回答：只带消息 id 回查正文——正文上万字，走 dataset 会被截断（文件卡同理只带 id）
   copyAnswer(e: any) {
-    const content = String(e.currentTarget.dataset.content || '')
-    if (!content) return
-    wx.setClipboardData({ data: content, success: () => wx.showToast({ title: '回答已复制', icon: 'success' }) })
+    const id = String((e.currentTarget.dataset || {}).id || '')
+    const message = (this.data.messages as any[]).find((item) => item && item.id === id)
+    const content = String((message && message.content) || '').trim()
+    if (!content) { wx.showToast({ title: '这条回答还没有内容', icon: 'none' }); return }
+    wx.setClipboardData({
+      data: content,
+      success: () => wx.showToast({ title: '回答已复制', icon: 'success' }),
+      fail: () => wx.showToast({ title: '复制失败，请重试', icon: 'none' }),
+    })
   },
   // 分享给微信好友：点「分享」直接拉起转发面板，卡片里带这条回答的分享页
   onShareAppMessage(e: any): any {

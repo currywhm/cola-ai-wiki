@@ -74,7 +74,7 @@ curl http://127.0.0.1:8765/ready
 
 ```text
 APP_ENV=production             APP_NAME=cola知识库
-PORT=80                        UPLOAD_DIR=/app/uploads
+PORT=8000                      UPLOAD_DIR=/app/uploads
 CONTENT_DIR=/app/content       CORS_ORIGINS=*
 STORAGE_BACKEND=cos            COS_PREFIX=cola
 WECHAT_API_BASE=https://api.weixin.qq.com
@@ -108,7 +108,7 @@ LEGAL_CONTACT_EMAIL=联系邮箱
 LEGAL_ICP_NUMBER=ICP备案号
 ```
 
-`Bucket` / `Region` 是云托管官方对象存储示例的变量名；已有的 `COS_BUCKET` / `COS_REGION` 仍然兼容。容器默认监听端口为 `80`，与微信云托管当前服务的健康检查端口保持一致；如平台明确要求其他端口，可用 `PORT` 覆盖。
+`Bucket` / `Region` 是云托管官方对象存储示例的变量名；已有的 `COS_BUCKET` / `COS_REGION` 仍然兼容。容器默认监听端口为 **8000**（与 `docker-compose.yml` 的容器端口、以及云托管服务的健康检查端口一致）；容器以非 root 用户运行（uid 10001），绑不了 80 这类特权端口，所以服务设置的端口必须与镜像一致，或由平台注入 `PORT` 覆盖。
 
 ### 小程序走容器通道后的两条约定
 

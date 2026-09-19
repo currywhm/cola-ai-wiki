@@ -18,7 +18,7 @@ USER api
 ENV PYTHONUNBUFFERED=1
 ENV APP_ENV=production \
     APP_NAME=cola知识库 \
-    PORT=80 \
+    PORT=8000 \
     UPLOAD_DIR=/app/uploads \
     CONTENT_DIR=/app/content \
     CORS_ORIGINS=* \
@@ -41,6 +41,6 @@ ENV APP_ENV=production \
     HARNESS_IDLE_SECONDS=1800 \
     HARNESS_QUICK_REASONING_EFFORT=low \
     HARNESS_DEEP_REASONING_EFFORT=high
-EXPOSE 80
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT','80') + '/ready', timeout=3)"
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-80}"]
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT','8000') + '/ready', timeout=3)"
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

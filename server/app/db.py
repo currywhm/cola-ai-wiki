@@ -165,6 +165,8 @@ class MySQLDatabase:
         self._closed = True
         try:
             await self._connection.rollback()
+        except Exception as exc:  # noqa: BLE001 - 退出/超时路径上连接可能正被别的协程占用
+            print(f"[db] 关闭连接前回滚失败（忽略）：{exc}", flush=True)
         finally:
             self._pool.release(self._connection)
             _MYSQL_ACTIVE_CONNECTIONS.discard(self)
@@ -220,10 +222,17 @@ async def _get_mysql_pool():
 
 
 async def close_db_pool() -> None:
-    """Close the shared pool on application shutdown."""
+    """Close the shared pool on application shutdown.
+
+    退出时可能还有后台任务占着同一条连接（巡检、整理、任务轮询都会），逐条兜住异常：
+    关连接失败不该让「应用关闭」以 traceback 收场——容器已经在退出了。
+    """
     global _MYSQL_POOL
     for database in tuple(_MYSQL_ACTIVE_CONNECTIONS):
-        await database.close()
+        try:
+            await database.close()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[db] 退出时关闭连接失败（忽略）：{exc}", flush=True)
     if _MYSQL_POOL is not None:
         _MYSQL_POOL.close()
         await _MYSQL_POOL.wait_closed()

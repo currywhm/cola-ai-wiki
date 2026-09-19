@@ -76,7 +76,9 @@ PRO_STORAGE_BYTES = 30 * 1024 * 1024 * 1024
 FREE_CREDITS_AFTER_TRIAL = 150
 
 MEMBERSHIP_LIMITS = {
-    'free': {'label': '免费试用', 'knowledge_bases': 2, 'storage_bytes': FREE_STORAGE_BYTES, 'monthly_credits': 600, 'max_file_bytes': 50 * 1024 * 1024, 'skills': 1},
+    # 知识库配额只算「自己新建的」：系统默认的「微信用户的知识库」、共享收件箱与订阅镜像都不占名额，
+    # 所以免费试用说的是「除默认库外还能再建 1 个」。
+    'free': {'label': '免费试用', 'knowledge_bases': 1, 'storage_bytes': FREE_STORAGE_BYTES, 'monthly_credits': 600, 'max_file_bytes': 50 * 1024 * 1024, 'skills': 1},
     'plus': {'label': 'Plus 会员', 'knowledge_bases': 10, 'storage_bytes': PLUS_STORAGE_BYTES, 'monthly_credits': 3000, 'max_file_bytes': 100 * 1024 * 1024, 'skills': 5},
     'pro': {'label': 'Pro 会员', 'knowledge_bases': 50, 'storage_bytes': PRO_STORAGE_BYTES, 'monthly_credits': 15000, 'max_file_bytes': 300 * 1024 * 1024, 'skills': 10},
 }
@@ -128,8 +130,13 @@ def human_size(value: int) -> str:
 
 
 def period_start_iso() -> str:
-    """本自然月起点（UTC）：积分额度和原来的问答次数一样按月归零，不结转。"""
-    return datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    """本自然月起点（北京时间）：积分额度和原来的问答次数一样按月归零，不结转。
+
+    用户理解的「每月 1 日」是北京时间 1 日 0 点；若按 UTC 算月，额度要到 1 日上午 8 点才恢复，
+    与《数据管理》里写明的口径不符，所以这里固定用东八区。
+    """
+    beijing = datetime.now(timezone(timedelta(hours=8))).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return beijing.astimezone(timezone.utc).isoformat()
 
 
 async def credits_this_month(db, user_id: str) -> int:
@@ -1031,8 +1038,16 @@ async def update_preferences(payload: PreferenceUpdate, user_id: str = Depends(c
 
 @app.delete("/api/me")
 async def delete_me(user_id: str = Depends(current_user)) -> dict:
+    """注销账号：把与该用户关联的数据全部删除。
+
+    注销后不能再留下可识别到个人的记录，所以除 documents/knowledge_bases（数据库外键级联）之外，
+    这里还要显式清掉：生成的产物与其文件、自建技能与其技能包、客服会话与消息、计费流水。
+    依法需要留存的只有网络访问日志（由平台侧留存），其余一律删除，与《数据管理》里的说明一致。
+    """
     db = await connect()
     files = await fetchall(db, "SELECT storage_path FROM documents WHERE user_id=?", (user_id,))
+    artifacts = await fetchall(db, "SELECT storage_path FROM artifacts WHERE user_id=?", (user_id,))
+    skills = await fetchall(db, "SELECT harness FROM skills WHERE user_id=? AND COALESCE(harness,'')<>''", (user_id,))
     knowledge_avatars = await fetchall(db, "SELECT avatar FROM knowledge_bases WHERE user_id=? AND status='active' AND COALESCE(mirror_of,'')='' AND COALESCE(avatar,'')<>''", (user_id,))
     owned_subscriptions = await fetchall(db, 'SELECT s.user_id,s.mirror_knowledge_id FROM knowledge_subscriptions s JOIN knowledge_bases k ON k.id=s.source_knowledge_id WHERE k.user_id=?', (user_id,))
     for item in owned_subscriptions:
@@ -1042,16 +1057,27 @@ async def delete_me(user_id: str = Depends(current_user)) -> dict:
     for item in subscribed_sources:
         await refresh_subscriber_count(db, str(item['source_knowledge_id']))
     await db.execute("DELETE FROM chunks_fts WHERE chunk_id IN (SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.user_id=?)", (user_id,))
+    await db.execute("DELETE FROM artifacts WHERE user_id=?", (user_id,))
+    await db.execute("DELETE FROM skills WHERE user_id=?", (user_id,))
+    await db.execute("DELETE FROM skill_likes WHERE user_id=?", (user_id,))
+    await db.execute("DELETE FROM skill_favorites WHERE user_id=?", (user_id,))
+    await db.execute("DELETE FROM usage_logs WHERE user_id=?", (user_id,))
+    await db.execute("DELETE FROM kf_messages WHERE user_id=?", (user_id,))
+    await db.execute("DELETE FROM kf_sessions WHERE user_id=?", (user_id,))
     await db.execute("DELETE FROM users WHERE id=?", (user_id,))
     await db.commit()
-    for row in files:
+    for row in [*files, *artifacts]:
         await unlink_if_unreferenced(db, str(row['storage_path'] or ''))
     await db.close()
+    # 技能包是落在磁盘上的目录，删库里的行不够，要连文件一起清（和「删除技能」走同一份实现）
+    for row in skills:
+        skill_build.remove_package(user_id, str(row['harness'] or ''))
     for _suffix, ref in _avatar_refs(user_id):
         await storage.delete(ref)
     for row in knowledge_avatars:
         await storage.delete(str(row['avatar'] or ''))
     return {"ok": True}
+
 
 
 @app.get('/api/pay/plans')
@@ -4044,7 +4070,11 @@ async def revoke_knowledge_share(token: str, user_id: str = Depends(current_user
 # ---- 技能：技能广场（所有人可用）与我的技能（用户级隔离）----
 
 # 与前端技能编辑页的可选图标一致；保留早期用过的图标名，避免旧技能在编辑时被改写
-SKILL_ICONS = {'skill-node', 'knowledge-pick', 'book', 'ppt', 'image', 'sousuo', 'sliders', 'wangluo', 'atom', 'robot', 'liebiao', 'shuju', 'history', 'dui', 'dengpao', 'tag'}
+SKILL_ICONS = {'skill-node', 'knowledge-pick', 'book', 'ppt', 'image', 'sousuo', 'sliders', 'wangluo', 'atom', 'robot', 'liebiao', 'shuju', 'history', 'dui', 'dengpao', 'tag',
+               # 内置技能用的专属图标（每个技能一个语义，前端 utils/icons.ts 里有同名映射）
+               'skill-organize', 'skill-report', 'skill-deck', 'skill-diagram', 'skill-contract',
+               'skill-meeting', 'skill-data', 'skill-reading', 'skill-research', 'skill-writing'}
+
 SKILL_NAME_MAX = 30
 # 技能配额不再写死在这里：跟随会员档位（MEMBERSHIP_LIMITS[*]['skills']）
 

@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "version": "2026.09.18.1",
+  "version": "2026.09.19.1",
   "title": "服务说明",
   "subtitle": "与本小程序同时生效",
-  "updated_at": "2026-09-18",
+  "updated_at": "2026-09-19",
   "intro": "关于 cola 知识库、数据管理、隐私安全、隐私保护指引、AI 隐私政策、服务协议、软件许可与会员条款。",
   "groups": [
     {
@@ -18,8 +18,8 @@
           "cover": "",
           "body": "entries/01-about.md",
           "read_minutes": 3,
-          "updated_at": "2026年9月17日",
-          "effective_at": "2026年9月17日"
+          "updated_at": "2026年9月19日",
+          "effective_at": "2026年9月19日"
         },
         {
           "id": "data",
@@ -29,8 +29,8 @@
           "cover": "",
           "body": "entries/02-data.md",
           "read_minutes": 5,
-          "updated_at": "2026年9月18日",
-          "effective_at": "2026年9月18日"
+          "updated_at": "2026年9月19日",
+          "effective_at": "2026年9月19日"
         }
       ]
     },
@@ -46,8 +46,8 @@
           "cover": "",
           "body": "entries/03-privacy.md",
           "read_minutes": 4,
-          "updated_at": "2026年9月18日",
-          "effective_at": "2026年9月18日"
+          "updated_at": "2026年9月19日",
+          "effective_at": "2026年9月19日"
         },
         {
           "id": "guide",
@@ -57,8 +57,8 @@
           "cover": "",
           "body": "entries/04-guide.md",
           "read_minutes": 8,
-          "updated_at": "2026年9月18日",
-          "effective_at": "2026年9月18日"
+          "updated_at": "2026年9月19日",
+          "effective_at": "2026年9月19日"
         },
         {
           "id": "ai-privacy",
@@ -68,8 +68,8 @@
           "cover": "",
           "body": "entries/08-ai-privacy.md",
           "read_minutes": 7,
-          "updated_at": "2026年9月18日",
-          "effective_at": "2026年9月18日"
+          "updated_at": "2026年9月19日",
+          "effective_at": "2026年9月19日"
         }
       ]
     },
@@ -85,8 +85,8 @@
           "cover": "",
           "body": "entries/05-terms.md",
           "read_minutes": 8,
-          "updated_at": "2026年9月18日",
-          "effective_at": "2026年9月18日"
+          "updated_at": "2026年9月19日",
+          "effective_at": "2026年9月19日"
         },
         {
           "id": "license",
@@ -107,8 +107,8 @@
           "cover": "",
           "body": "entries/07-plan.md",
           "read_minutes": 5,
-          "updated_at": "2026年9月18日",
-          "effective_at": "2026年9月18日"
+          "updated_at": "2026年9月19日",
+          "effective_at": "2026年9月19日"
         }
       ]
     }

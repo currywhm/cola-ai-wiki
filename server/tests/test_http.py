@@ -152,17 +152,16 @@ class HTTPTests(unittest.TestCase):
         created = self.client.post('/api/knowledge', headers=self.headers, json={'name': '项目资料'})
         self.assertEqual(created.status_code, 200, created.text)
 
+        # 免费试用只允许在默认库之外再建 1 个：第 2 个就该被挡下，并明确告诉用户上限
         second_created = self.client.post('/api/knowledge', headers=self.headers, json={'name': '第二个资料库'})
-        self.assertEqual(second_created.status_code, 200, second_created.text)
+        self.assertEqual(second_created.status_code, 403, second_created.text)
+        self.assertIn('最多创建 1 个知识库', second_created.json()['detail'])
         usage = self.client.get('/api/me', headers=self.headers).json()['usage']
-        self.assertEqual(usage['knowledge_bases'], 2)
-
-        rejected = self.client.post('/api/knowledge', headers=self.headers, json={'name': '第三个资料库'})
-        self.assertEqual(rejected.status_code, 403, rejected.text)
+        self.assertEqual(usage['knowledge_bases'], 1)
 
         second = self.client.get('/api/knowledge', headers=self.headers)
         self.assertEqual(second.status_code, 200, second.text)
-        self.assertEqual([item['name'] for item in second.json()], ['微信用户的知识库', '第二个资料库', '项目资料'])
+        self.assertEqual([item['name'] for item in second.json()], ['微信用户的知识库', '项目资料'])
 
     def test_knowledge_avatar_upload_and_read(self):
         kb = self.kb()

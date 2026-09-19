@@ -1,5 +1,5 @@
 page {
-  /* 设计令牌：全站唯一的字阶、墨色、圆角、间距来源；改这里即改全站 */
+  /* 设计令牌：全站唯一的字阶、墨色、圆角来源；间距按 8/16/24/32/48rpx 取 */
   --bg:#f4f6f4; --surface:#ffffff; --surface-soft:#f4f6f4; --surface-sink:#ecefec;
   --line:#e7eae7; --line-soft:#eef1ee;
   --ink-1:#1b211e; --ink-2:#4c554f; --ink-3:#6d756e; --ink-4:#8f978f;
@@ -7,7 +7,6 @@ page {
   --info:#2f6fdd; --info-soft:#eef3fd;
   --danger:#cf4a45; --danger-soft:#fceceb;
   --r-sm:12rpx; --r-md:16rpx; --r-lg:20rpx; --r-xl:28rpx; --r-pill:999rpx;
-  --sp-1:8rpx; --sp-2:16rpx; --sp-3:24rpx; --sp-4:32rpx; --sp-6:48rpx;
   --t-hero:40rpx; --t-h1:36rpx; --t-h2:34rpx; --t-body:32rpx; --t-lead:28rpx;
   --t-row:26rpx; --t-meta:24rpx; --t-micro:22rpx;
   background:var(--bg);

@@ -983,6 +983,7 @@ def _run_turn(prompt: str, session_id: str, model: str, profile: str, effort: st
             f'catalog={len(state.catalog)} loaded={sorted(state.skills)}',
             flush=True,
         )
+    print(f'[harness] turn finish={getattr(result, "finish_reason", None) or "-"} session={session_id}', flush=True)
     return result, usage_from_events(getattr(result, 'events', None))
 
 
@@ -1119,6 +1120,9 @@ async def _stream_turn(
         if final and not any(piece and (piece in final or final in piece) for piece in streamed):
             for index in range(0, len(final), 24):
                 yield {'kind': 'text', 'text': final[index:index + 24]}
+        if not final and not any(piece.strip() for piece in streamed):
+            reason = str(getattr(result, 'finish_reason', '') or '').strip() or 'unknown'
+            raise RuntimeError(f'Harness 本轮没有产出正文（finish_reason={reason}），请重试')
         if with_usage and usage:
             yield {'kind': 'usage', 'usage': sum_usage([usage])}
         break

@@ -94,6 +94,17 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
+    def wait_document(self, document_id, timeout=30):
+        """解析与整理都在后台跑（容器通道单次调用装不下）：等到终态再断言。"""
+        deadline = time.time() + timeout
+        detail = {}
+        while time.time() < deadline:
+            detail = self.client.get(f'/api/documents/{document_id}', headers=self.headers).json()
+            if detail.get('status') in ('completed', 'failed'):
+                return detail
+            time.sleep(0.1)
+        return detail
+
     def test_content_tips_are_served_from_database(self):
         """使用技巧：源文件在 content/ 目录，服务启动时导入数据库，接口只读库。"""
         manifest = json.loads((ROOT / 'content' / 'tips' / 'manifest.json').read_text(encoding='utf-8'))
@@ -135,16 +146,23 @@ class HTTPTests(unittest.TestCase):
         items = first.json()
         self.assertEqual(items[0]['name'], '微信用户的知识库')
         self.assertEqual(len(items), 1)
+        usage = self.client.get('/api/me', headers=self.headers).json()['usage']
+        self.assertEqual(usage['knowledge_bases'], 0)
 
         created = self.client.post('/api/knowledge', headers=self.headers, json={'name': '项目资料'})
         self.assertEqual(created.status_code, 200, created.text)
 
-        rejected = self.client.post('/api/knowledge', headers=self.headers, json={'name': '第二个资料库'})
+        second_created = self.client.post('/api/knowledge', headers=self.headers, json={'name': '第二个资料库'})
+        self.assertEqual(second_created.status_code, 200, second_created.text)
+        usage = self.client.get('/api/me', headers=self.headers).json()['usage']
+        self.assertEqual(usage['knowledge_bases'], 2)
+
+        rejected = self.client.post('/api/knowledge', headers=self.headers, json={'name': '第三个资料库'})
         self.assertEqual(rejected.status_code, 403, rejected.text)
 
         second = self.client.get('/api/knowledge', headers=self.headers)
         self.assertEqual(second.status_code, 200, second.text)
-        self.assertEqual([item['name'] for item in second.json()], ['微信用户的知识库', '项目资料'])
+        self.assertEqual([item['name'] for item in second.json()], ['微信用户的知识库', '第二个资料库', '项目资料'])
 
     def test_knowledge_avatar_upload_and_read(self):
         kb = self.kb()
@@ -163,13 +181,15 @@ class HTTPTests(unittest.TestCase):
     def test_document_search_retry_delete(self):
         kb = self.kb()
         doc = self.upload(kb)
-        self.assertEqual(doc['status'], 'completed')
+        self.assertEqual(doc['status'], 'processing')
+        self.assertEqual(self.wait_document(doc['id'])['status'], 'completed')
         found = self.client.get('/api/search', headers=self.headers, params={'knowledge_id': kb, 'q': '中文'}).json()
         self.assertEqual(found[0]['document_id'], doc['id'])
         for term in ['ABC-2026', '"', 'foo OR', '内容？', '(hello):']:
             self.assertEqual(self.client.get('/api/search', headers=self.headers, params={'knowledge_id': kb, 'q': term}).status_code, 200)
         self.assertIn('合同', self.client.get(f'/api/documents/{doc["id"]}/download', headers=self.headers).text)
-        self.assertEqual(self.client.post(f'/api/documents/{doc["id"]}/retry', headers=self.headers).json()['status'], 'completed')
+        self.assertEqual(self.client.post(f'/api/documents/{doc["id"]}/retry', headers=self.headers).json()['status'], 'processing')
+        self.assertEqual(self.wait_document(doc['id'])['status'], 'completed')
         self.assertEqual(self.client.delete(f'/api/documents/{doc["id"]}', headers=self.headers).status_code, 200)
         detail = self.client.get(f'/api/knowledge/{kb}', headers=self.headers).json()
         self.assertEqual(detail['documents'], [])
@@ -202,14 +222,16 @@ class HTTPTests(unittest.TestCase):
 
     def test_upload_returns_organization_state(self):
         kb = self.kb(); doc = self.upload(kb, content='项目预算为一百万元。交付时间是六月。')
-        self.assertEqual(doc['organize_status'], 'processing')
-        deadline = time.time() + 5
+        # 解析与整理都在后台执行，上传接口只回报「已受理」
+        self.assertEqual(doc['status'], 'processing')
+        deadline = time.time() + 20
         detail = None
         while time.time() < deadline:
             detail = self.client.get(f'/api/documents/{doc["id"]}', headers=self.headers).json()
             if detail.get('organize_status') == 'completed':
                 break
             time.sleep(0.1)
+        self.assertEqual(detail['status'], 'completed')
         self.assertEqual(detail['organize_status'], 'completed')
         self.assertTrue(detail['summary'])
         self.assertTrue(detail['key_points'])
@@ -219,11 +241,12 @@ class HTTPTests(unittest.TestCase):
         docx = Document(); docx.add_paragraph('合同有效期三年')
         output = io.BytesIO(); docx.save(output)
         doc = self.upload(kb, '合同.docx', output.getvalue())
-        self.assertEqual(doc['status'], 'completed')
+        self.assertEqual(self.wait_document(doc['id'])['status'], 'completed')
         self.assertIn('三年', self.client.get(f'/api/documents/{doc["id"]}', headers=self.headers).json()['extracted_text'])
         broken = self.upload(kb, '损坏.pdf', b'not a PDF')
-        self.assertEqual(broken['status'], 'failed')
-        self.assertEqual(self.client.post(f'/api/documents/{broken["id"]}/retry', headers=self.headers).json()['status'], 'failed')
+        self.assertEqual(self.wait_document(broken['id'])['status'], 'failed')
+        self.assertEqual(self.client.post(f'/api/documents/{broken["id"]}/retry', headers=self.headers).json()['status'], 'processing')
+        self.assertEqual(self.wait_document(broken['id'])['status'], 'failed')
         self.assertEqual(self.client.post(f'/api/knowledge/{kb}/documents', headers=self.headers, files={'file': ('a.exe', b'bad')}).status_code, 415)
 
     def test_image_upload_preserves_client_filename(self):
@@ -236,7 +259,77 @@ class HTTPTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['filename'], '扫描资料.jpg')
-        self.assertEqual(response.json()['status'], 'completed')
+        # 这条用例只关心文件名：图片正文靠 OCR，本机 tesseract 不可用时会落到 failed
+        self.assertIn(self.wait_document(response.json()['id'])['status'], ('completed', 'failed'))
+
+
+    def wait_job(self, response, headers=None, timeout=30):
+        """排队接口：拿到 job_id 就等任务终态，返回任务视图（含 status/result/error）。"""
+        payload = response.json()
+        request_headers = headers or self.headers
+        if not payload.get('pending'):
+            return {'status': 'sync', 'result': payload}
+        deadline = time.time() + timeout
+        job = {}
+        while time.time() < deadline:
+            job = self.client.get(f'/api/jobs/{payload["job_id"]}', headers=request_headers).json()
+            if job.get('status') in ('done', 'error', 'interrupted'):
+                return job
+            time.sleep(0.05)
+        return job
+
+    def test_asset_resolution_and_direct_upload_contract(self):
+        """小程序拿不到文件字节：分辨率接口与直传凭证的契约必须稳定。"""
+        kb = self.kb()
+        doc = self.upload(kb)
+        self.assertEqual(self.wait_document(doc['id'])['status'], 'completed')
+
+        # 本地存储模式没有对象存储直传能力：如实回报 local，客户端据此提示
+        slot = self.client.post('/api/uploads/direct', headers=self.headers,
+                                json={'kind': 'document', 'knowledge_id': kb, 'filename': '新资料.txt'})
+        self.assertEqual(slot.status_code, 200, slot.text)
+        self.assertEqual(slot.json()['mode'], 'local')
+
+        # 私有文档必须带登录态才能解析
+        path = f'/api/documents/{doc["id"]}/download'
+        anonymous = self.client.post('/api/assets/resolve', json={'paths': [path]}).json()
+        self.assertEqual(anonymous['items'][path]['error'], '请先登录')
+        owned = self.client.post('/api/assets/resolve', headers=self.headers, json={'paths': [path]}).json()
+        self.assertEqual(owned['items'][path]['mode'], 'local')
+
+        # 不认识的路径不解析，避免变成任意对象读取器
+        unknown = self.client.post('/api/assets/resolve', headers=self.headers, json={'paths': ['/etc/passwd']}).json()
+        self.assertIn('error', unknown['items']['/etc/passwd'])
+
+    def test_suggestions_run_as_polled_job(self):
+        kb = self.kb()
+        doc = self.upload(kb, content='项目预算为一百万元。交付时间是六月。')
+        self.assertEqual(self.wait_document(doc['id'])['status'], 'completed')
+
+        first = self.client.get(f'/api/knowledge/{kb}/suggestions', headers=self.headers).json()
+        job = None
+        if first.get('pending'):
+            job_id = first['job_id']
+            _, other = self.fixture_user()
+            try:
+                self.assertEqual(self.client.get(f'/api/jobs/{job_id}', headers=other).status_code, 404)
+            finally:
+                self.client.delete('/api/me', headers=other)
+            for _ in range(200):
+                job = self.client.get(f'/api/jobs/{job_id}', headers=self.headers).json()
+                if job['status'] in ('done', 'error'):
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(job)
+            self.assertEqual(job['status'], 'done', job)
+            self.assertTrue(job['result']['questions'])
+        else:
+            self.assertTrue(first['questions'])
+
+        # 第二次命中缓存：不再排队，直接给结果
+        again = self.client.get(f'/api/knowledge/{kb}/suggestions', headers=self.headers).json()
+        self.assertTrue(again['questions'])
+        self.assertFalse(again.get('pending'))
 
     def test_stream_and_knowledge_deletion(self):
         kb = self.kb(); doc = self.upload(kb)
@@ -297,23 +390,27 @@ class HTTPTests(unittest.TestCase):
 
             claimed = self.client.post(f'/api/shares/{share_id}/claim', headers=receiver_headers)
             self.assertEqual(claimed.status_code, 200, claimed.text)
-            self.assertFalse(claimed.json()['already'])
-            self.assertTrue(claimed.json()['documents'])
-            claimed_again = self.client.post(f'/api/shares/{share_id}/claim', headers=receiver_headers)
-            self.assertTrue(claimed_again.json()['already'])
+            claimed_job = self.wait_job(claimed, receiver_headers)
+            self.assertEqual(claimed_job['status'], 'done', claimed_job)
+            self.assertFalse(claimed_job['result']['already'])
+            self.assertTrue(claimed_job['result']['documents'])
+            claimed_again = self.wait_job(self.client.post(f'/api/shares/{share_id}/claim', headers=receiver_headers), receiver_headers)
+            self.assertEqual(claimed_again['status'], 'done', claimed_again)
+            self.assertTrue(claimed_again['result']['already'])
 
             receiver_kb = next(
                 item['id'] for item in self.client.get('/api/knowledge', headers=receiver_headers).json()
                 if item['name'] == '微信用户的知识库'
             )
-            to_kb = self.client.post('/api/shares/to-knowledge', headers=receiver_headers, json={
+            to_kb = self.wait_job(self.client.post('/api/shares/to-knowledge', headers=receiver_headers, json={
                 'knowledge_id': receiver_kb,
                 'title': '分享转存',
                 'content': '分享转存内容：蓝色海豚。',
                 'artifact_ids': [],
-            })
-            self.assertEqual(to_kb.status_code, 200, to_kb.text)
-            self.assertTrue(to_kb.json()['saved'])
+            }), receiver_headers)
+            self.assertEqual(to_kb['status'], 'done', to_kb)
+            self.assertTrue(to_kb['result']['saved'])
+
 
             invite = self.client.post(f'/api/knowledge/{source_id}/share', headers=owner_headers)
             self.assertEqual(invite.status_code, 200, invite.text)
@@ -358,12 +455,13 @@ class HTTPTests(unittest.TestCase):
         created = self.client.post('/api/knowledge', headers=self.headers, json={'name': 'AI 学习资料', 'description': '人工智能和大模型知识整理'})
         self.assertEqual(created.status_code, 200, created.text)
         source_id = created.json()['id']
-        self.upload(source_id, content='人工智能、机器学习、大模型与数据库基础知识。')
+        seed = self.upload(source_id, content='人工智能、机器学习、大模型与数据库基础知识。')
+        self.assertEqual(self.wait_document(seed['id'])['status'], 'completed')
 
-        published = self.client.post(f'/api/knowledge/{source_id}/publish', headers=self.headers, json={'published': True, 'acknowledged': True})
-        self.assertEqual(published.status_code, 200, published.text)
-        self.assertEqual(published.json()['category'], '科技')
-        self.assertEqual(published.json()['reviewed_documents'], 1)
+        published = self.wait_job(self.client.post(f'/api/knowledge/{source_id}/publish', headers=self.headers, json={'published': True, 'acknowledged': True}))
+        self.assertEqual(published['status'], 'done', published)
+        self.assertEqual(published['result']['category'], '科技')
+        self.assertEqual(published['result']['reviewed_documents'], 1)
 
         detail = self.client.get(f'/api/knowledge/{source_id}', headers=self.headers).json()['knowledge']
         self.assertTrue(detail['published'])
@@ -402,26 +500,30 @@ class HTTPTests(unittest.TestCase):
         created = self.client.post('/api/knowledge', headers=self.headers, json={'name': '涉密资料', 'description': '国家秘密文件整理'})
         self.assertEqual(created.status_code, 200, created.text)
         knowledge_id = created.json()['id']
-        self.upload(knowledge_id, content='这里是国家秘密和绝密文件，禁止公开。')
+        risky = self.upload(knowledge_id, content='这里是国家秘密和绝密文件，禁止公开。')
+        self.assertEqual(self.wait_document(risky['id'])['status'], 'completed')
 
-        rejected = self.client.post(f'/api/knowledge/{knowledge_id}/publish', headers=self.headers, json={'published': True, 'acknowledged': True})
-        self.assertEqual(rejected.status_code, 403, rejected.text)
-        self.assertIn('国家秘密', rejected.json()['detail'])
+        rejected = self.wait_job(self.client.post(f'/api/knowledge/{knowledge_id}/publish', headers=self.headers, json={'published': True, 'acknowledged': True}))
+        self.assertEqual(rejected['status'], 'error', rejected)
+        self.assertIn('国家秘密', rejected['error'])
         self.assertFalse(any(item['id'] == knowledge_id for item in self.client.get('/api/market', headers=self.headers).json()))
 
     def test_new_risky_document_unpublishes_a_public_knowledge(self):
         created = self.client.post('/api/knowledge', headers=self.headers, json={'name': '公开项目资料', 'description': '项目管理知识'})
         self.assertEqual(created.status_code, 200, created.text)
         knowledge_id = created.json()['id']
-        self.upload(knowledge_id, content='项目管理流程、团队协作和风险控制。')
-        published = self.client.post(f'/api/knowledge/{knowledge_id}/publish', headers=self.headers, json={'published': True, 'acknowledged': True})
-        self.assertEqual(published.status_code, 200, published.text)
+        seed = self.upload(knowledge_id, content='项目管理流程、团队协作和风险控制。')
+        self.assertEqual(self.wait_document(seed['id'])['status'], 'completed')
+        published = self.wait_job(self.client.post(f'/api/knowledge/{knowledge_id}/publish', headers=self.headers, json={'published': True, 'acknowledged': True}))
+        self.assertEqual(published['status'], 'done', published)
 
+        # 合规检查在后台解析时执行：等它跑完，公开库应当已被自动下架
         risky = self.upload(knowledge_id, '风险资料.txt', content='国家秘密绝密资料。')
-        self.assertIn('国家秘密', risky['moderation_message'])
+        self.assertEqual(self.wait_document(risky['id'])['status'], 'completed')
         detail = self.client.get(f'/api/knowledge/{knowledge_id}', headers=self.headers).json()['knowledge']
         self.assertFalse(detail['published'])
         self.assertFalse(any(item['id'] == knowledge_id for item in self.client.get('/api/market', headers=self.headers).json()))
+
 
     def test_market_subscription_lifecycle(self):
         owner_id, owner_headers = self.fixture_user()

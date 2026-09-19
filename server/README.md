@@ -110,6 +110,16 @@ LEGAL_ICP_NUMBER=ICP备案号
 
 `Bucket` / `Region` 是云托管官方对象存储示例的变量名；已有的 `COS_BUCKET` / `COS_REGION` 仍然兼容。容器默认监听端口为 `80`，与微信云托管当前服务的健康检查端口保持一致；如平台明确要求其他端口，可用 `PORT` 覆盖。
 
+### 小程序走容器通道后的两条约定
+
+小程序端只通过 `wx.cloud.callContainer` 访问本服务（不配服务器域名、不经过公网）。该通道有官方硬限制——单次调用 **15s**、请求体 **100KiB**、返回包 **1000KiB**——所以后端有两条必须遵守的约定：
+
+- **文件不进容器**：上传走 `POST /api/uploads/direct` 拿一次性直传凭证（COS POST Object，policy 里锁死对象 key 与体积上限），客户端直传后用 `/complete` 回执登记；下载走 `POST /api/assets/resolve` 换短时效预签名地址。体积与配额一律以服务端 `head_object` 读到的真实值为准，不信客户端上报。小程序后台只需把对象存储桶域名配进 uploadFile / downloadFile 服务器域名。
+- **耗时动作排队**：解析（含 OCR）、模型生成、合规扫描、harness 造技能、分享收件等都超过 15s，统一写进 `jobs` 表后台执行，客户端轮询 `GET /api/jobs/{id}`（`kind` 取 `kb_suggestions` / `kb_publish` / `skill_enhance` / `skill_build` / `share_import`）；文档上传与重新解析沿用资料行的 `status/progress` 轮询；对话过程由 `GET /api/chat/runs/{id}` 轮询快照（`revision` 变化即增量渲染），不再使用 SSE。进程重启时未完成的任务会被标记为 `interrupted`，前端提示重试。
+- **历史回放瘦身**：`GET /api/conversations/{id}` 默认只回最近 100 条消息（`limit` 1~300），并去掉历史过程区里的 `tool_input` / `tool_output` / `tool_meta` / `tool_result_meta`——这几项是单条消息里最大的部分，去掉才能守住 1MiB 的返回包上限；当轮的实时过程仍带完整明细。
+
+建议在服务设置里把最小副本数设为 1：缩容到 0 后的冷启动可能超过 15s，会让第一次请求失败。虚拟支付通知与客服消息推送是微信服务器主动回调，仍需保持公网访问可用。
+
 4. 确认服务已关闭旧版 SQLite/本地上传卷依赖。新版本首次启动会创建 MySQL 表；`content/tips` 与 `content/legal` 仍会在启动时按指纹导入数据库。已有本地 SQLite 数据不会自动迁移到 MySQL，需要单独做一致性迁移。
 
 MySQL 没有真正使用 FTS5：`chunks_fts` 作为普通 InnoDB 表保存检索元数据，现有检索逻辑按 `chunks.content` 做中文字符串命中评分；COS 文件只在后端解析或下载时临时落到容器磁盘，请求结束后删除。

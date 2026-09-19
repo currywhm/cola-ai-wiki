@@ -10,10 +10,15 @@ Business code must use this module instead of opening storage paths directly.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
+import json
 import mimetypes
 import shutil
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -258,3 +263,95 @@ async def delete(ref: str) -> None:
         await asyncio.to_thread(client.delete_object, Bucket=bucket, Key=key)
     except Exception:
         pass
+
+
+# ---- 客户端直传 / 直下 -------------------------------------------------------
+# 小程序走微信云托管私有协议（callContainer）时，请求体上限 100KiB、单次调用上限
+# 15s，文件字节不可能经容器转发。所以文件走对象存储：
+#   · 上传：服务端按 COS「POST Object」规范签发一次性表单凭证，小程序用
+#     wx.uploadFile 直接传到桶里（该接口不使用 COS 统一签名，签名规则见官方文档 436/14690）；
+#   · 下载：服务端签发短时效预签名 URL，小程序 wx.downloadFile 直接取。
+# 两条路都只经过腾讯云的域名，不需要自建域名与备案。
+
+
+def bucket_url() -> str:
+    """直传表单的提交地址：POST Object 打桶根，对象路径由表单 key 决定。"""
+    return f"https://{settings.cos_bucket_name}.cos.{settings.cos_region_name}.myqcloud.com/"
+
+
+def full_key(key: str) -> str:
+    """业务 key → 桶内完整 key（含 COS_PREFIX）。直传表单与上传回执核对都用它。"""
+    return _full_cos_key(key)
+
+
+def ref_from_full_key(key: str) -> str:
+    """把客户端回执的完整 key 还原成存储引用（客户端不接触 cos:// 形式）。"""
+    return f"cos://{settings.cos_bucket_name}/{_clean_key(key)}"
+
+
+async def object_size(ref: str) -> int:
+    """对象真实体积：上传回执只认服务端读到的值，不信客户端上报。"""
+    if not is_cos_ref(ref):
+        path = _local_path(ref)
+        return path.stat().st_size if path.is_file() else 0
+    bucket, key = _parse_cos_ref(ref)
+    client = await _cos_client()
+    try:
+        head = await asyncio.to_thread(client.head_object, Bucket=bucket, Key=key)
+    except Exception as exc:
+        raise StorageError(f"读取对象信息失败：{exc}") from exc
+    return int(head.get("Content-Length") or 0)
+
+
+async def presigned_get(ref: str, *, expires: int = 900) -> str:
+    """短时效下载地址；本地存储没有这个概念，返回空串由调用方回退到服务端转发。"""
+    if not is_cos_ref(ref):
+        return ""
+    bucket, key = _parse_cos_ref(ref)
+    client = await _cos_client()
+    try:
+        return await asyncio.to_thread(
+            client.get_presigned_url,
+            Method="GET",
+            Bucket=bucket,
+            Key=key,
+            Expired=max(60, int(expires)),
+        )
+    except Exception as exc:
+        raise StorageError(f"生成下载地址失败：{exc}") from exc
+
+
+async def post_form(key: str, *, max_bytes: int, expires: int = 900) -> dict:
+    """签发直传表单凭证（COS POST Object）。
+
+    policy 里锁死对象 key 与体积上限，客户端只能往这一个位置写、
+    且写不了超过配额的文件；凭证本身带失效时间，泄露也无法长期复用。
+    """
+    secret_id, secret_key, token = await _get_cos_credentials()
+    key_time = f"{int(time.time())};{int(time.time()) + max(60, int(expires))}"
+    object_key = _full_cos_key(key)
+    policy = {
+        "expiration": datetime.fromtimestamp(int(key_time.split(";")[1]), timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "conditions": [
+            {"q-sign-algorithm": "sha1"},
+            {"q-ak": secret_id},
+            {"q-sign-time": key_time},
+            {"key": object_key},
+            ["content-length-range", 1, max(1, int(max_bytes))],
+        ],
+    }
+    policy_text = json.dumps(policy, separators=(",", ":"), ensure_ascii=False)
+    sign_key = hmac.new(secret_key.encode("utf-8"), key_time.encode("utf-8"), hashlib.sha1).hexdigest()
+    string_to_sign = hashlib.sha1(policy_text.encode("utf-8")).hexdigest()
+    fields = {
+        "key": object_key,
+        "policy": base64.b64encode(policy_text.encode("utf-8")).decode("ascii"),
+        "q-sign-algorithm": "sha1",
+        "q-ak": secret_id,
+        "q-key-time": key_time,
+        "q-signature": hmac.new(sign_key.encode("utf-8"), string_to_sign.encode("utf-8"), hashlib.sha1).hexdigest(),
+    }
+    if token:
+        fields["x-cos-security-token"] = token
+    return {"url": bucket_url(), "fields": fields, "key": object_key, "expires_at": int(key_time.split(";")[1])}
+

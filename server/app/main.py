@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import json
 import math
@@ -33,7 +34,7 @@ from .db import (
     row_dict,
     take_request_connections,
 )
-from .schemas import ArticleImportRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, PlanReviewRequest, PreferenceUpdate, ProfileUpdate, ShareCreate, ShareToKnowledge, SkillBuildRequest, SkillEnhanceRequest, SkillFlagUpdate, SkillForm, SkillPublishUpdate
+from .schemas import ArticleImportRequest, AssetResolveRequest, ChatRequest, ConversationPinUpdate, DocumentMove, DocumentTagUpdate, FolderCreate, KnowledgeCreate, LoginRequest, PayCreateRequest, PlanReviewRequest, PreferenceUpdate, ProfileUpdate, ShareCreate, ShareToKnowledge, SkillBuildRequest, SkillEnhanceRequest, SkillFlagUpdate, SkillForm, SkillPublishUpdate, UploadCompleteRequest, UploadDirectRequest
 from .schemas import KnowledgePublishUpdate, KnowledgeSubscriptionCreate
 
 from .security import create_token, current_user, current_user_optional, rate_limit
@@ -41,6 +42,7 @@ from .services.documents import ALLOWED_SUFFIXES, extract_text, split_chunks
 from .services import content as content_service
 from .services import knowledge_policy
 from .services import skill_build
+from .services import jobs as jobs_service
 from .services import artifacts as artifact_service
 from .services import storage
 from .services.wechat_article import ArticleFetchError, build_document_html, fetch_wechat_article
@@ -62,7 +64,7 @@ from .services.organizer import organize_document
 from .services.credits import estimate_usage, quote_turn, total_tokens
 from .services.virtual_pay import calc_pay_sig, calc_user_signature, query_order, sign_data, virtual_configured, virtual_product
 
-# 免费试用：注册当天起 30 天倒计时，期间 300MB / 2 个资料库。
+# 免费试用：注册当天起 30 天倒计时，期间 300MB，另可新建 2 个个人知识库。
 # 会员按租期开通（月/季/年）：Plus 10GB / Pro 30GB，另外区别在资料库数量、单文件大小与每月问答额度。
 TRIAL_DAYS = 30
 FREE_STORAGE_BYTES = 300 * 1024 * 1024
@@ -266,6 +268,7 @@ async def lifespan(app: FastAPI):
     await db.execute("UPDATE chat_runs SET status='interrupted',error='服务重启，任务已中断',revision=revision+1,updated_at=?,finished_at=? WHERE status='running'", (stamp, stamp))
     await db.commit()
     await db.close()
+    await jobs_service.mark_interrupted()
     # 使用技巧等内容：源文件在 content/ 目录，运行时统一从数据库读。
     # 首次启动发现库里没有内容时自动导入一次（可重复执行，指纹一致即跳过），
     # 因此部署时既有显式脚本这一步，也不会因为漏跑脚本导致接口 503。
@@ -324,6 +327,11 @@ async def release_request_database_connections(request: Request, call_next):
         await close_request_connections()
         raise
 
+    # 小程序走容器通道时返回包上限 1000KiB：超过就会被截断，这里提前留痕便于上线前扫一遍。
+    length = response.headers.get('content-length') or ''
+    if length.isdigit() and str(request.url.path).startswith('/api/') and int(length) > RESPONSE_SIZE_WARN_BYTES:
+        print(f"[api] 返回包偏大 {length} 字节：{request.url.path}", flush=True)
+
     # StreamingResponse has not consumed its async generator when call_next()
     # returns. Keep this request's connections attached until the last chunk is
     # sent (or the client disconnects), otherwise SSE handlers receive a closed
@@ -347,6 +355,23 @@ async def release_request_database_connections(request: Request, call_next):
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# 任务队列里也要能排「后台的整理任务」：请求之外没有 BackgroundTasks，用协程自己管。
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def schedule_background(coro) -> None:
+    """在请求之外启动后台协程：异常只记日志，不打断外层任务。"""
+    task = asyncio.get_event_loop().create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+
+    def settle(item: asyncio.Task) -> None:
+        _BACKGROUND_TASKS.discard(item)
+        if not item.cancelled() and item.exception():
+            logging.getLogger('app.background').exception('后台任务失败', exc_info=item.exception())
+
+    task.add_done_callback(settle)
 
 
 async def touch_knowledge_used(db, knowledge_id: str) -> None:
@@ -771,10 +796,8 @@ async def logout(user_id: str = Depends(current_user)) -> dict:
 async def me(user_id: str = Depends(current_user)) -> dict:
     db = await connect()
     row = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
-    knowledge_usage = await fetchone(db, "SELECT COUNT(*) AS knowledge_bases FROM knowledge_bases WHERE user_id=? AND status='active'", (user_id,))
-    document_usage = await fetchone(db, "SELECT COUNT(*) AS documents, COALESCE(SUM(file_size),0) AS storage_bytes FROM documents WHERE user_id=? AND status!='deleted'", (user_id,))
-    # 会员额度只看「自己建的」知识库与「自己的」资料：好友共享过来的库不计入配额
-    knowledge_usage = await fetchone(db, "SELECT COUNT(*) AS knowledge_bases FROM knowledge_bases WHERE user_id=? AND status='active' AND COALESCE(mirror_of,'')='' AND name<>?", (user_id, SHARED_KNOWLEDGE_NAME))
+    # 额度只看用户主动新建的个人知识库；默认库、共享收件箱和订阅镜像均不占额度。
+    knowledge_usage = await fetchone(db, "SELECT COUNT(*) AS knowledge_bases FROM knowledge_bases WHERE user_id=? AND status='active' AND COALESCE(mirror_of,'')='' AND name NOT IN (?,?)", (user_id, DEFAULT_KNOWLEDGE_NAME, SHARED_KNOWLEDGE_NAME))
     document_usage = await fetchone(db, "SELECT COUNT(*) AS documents, COALESCE(SUM(d.file_size),0) AS storage_bytes FROM documents d JOIN knowledge_bases k ON k.id=d.knowledge_id WHERE d.user_id=? AND d.status!='deleted' AND COALESCE(k.mirror_of,'')=''", (user_id,))
     credits_used = await credits_this_month(db, user_id)
     skills_used = await owned_skill_count(db, user_id)
@@ -823,6 +846,13 @@ async def update_me(payload: ProfileUpdate, user_id: str = Depends(current_user)
 AVATAR_DIR_NAME = 'avatars'
 AVATAR_MAX_BYTES = 2 * 1024 * 1024
 AVATAR_MEDIA_TYPES = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp'}
+# 直传凭证与预签名地址的有效期：够一次上传/预览用，过期即失效
+UPLOAD_DIRECT_TTL = 900
+ASSET_URL_TTL = 900
+# 数据库里的小图（使用技巧配图）直接内联下发；超过就不下发，避免撑爆容器通道 1MiB 的返回包上限
+CONTENT_ASSET_INLINE_MAX = 768 * 1024
+# 返回包体检线：容器通道上限 1000KiB，超过这条线就写日志，方便上线前定位要瘦身的接口
+RESPONSE_SIZE_WARN_BYTES = 900 * 1024
 
 
 def _avatar_safe_id(user_id: str) -> str:
@@ -1742,58 +1772,42 @@ async def unsubscribe_knowledge(source_knowledge_id: str, user_id: str = Depends
     return {'ok': True, 'removed': True, 'subscribers': subscribers}
 
 
-@app.post('/api/knowledge/{knowledge_id}/publish')
-async def publish_knowledge(knowledge_id: str, payload: KnowledgePublishUpdate, user_id: str = Depends(current_user)) -> dict:
-    """Move a personal knowledge base into or out of the public market."""
-    rate_limit(f'kb-publish:{user_id}', 20, 60, '操作过于频繁，请稍后再试')
+async def publish_knowledge_worker(job_id: str, *, knowledge_id: str, user_id: str) -> dict:
+    """后台做发布前的合规扫描与分类：最多 80 份资料的正文扫描是 CPU 活，不占请求。"""
+    await jobs_service.set_progress(job_id, '正在做内容合规检查…')
     db = await connect()
-    kb = await fetchone(db, "SELECT * FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
-    if not kb:
-        await db.close()
-        raise HTTPException(404, '知识库不存在')
-    if str(kb['mirror_of'] or ''):
-        await db.close()
-        raise HTTPException(403, '共享或订阅知识库不能发布到广场')
-    if str(kb['name'] or '') in (DEFAULT_KNOWLEDGE_NAME, SHARED_KNOWLEDGE_NAME):
-        await db.close()
-        raise HTTPException(403, '系统默认知识库不能发布到广场，请新建个人知识库后再发布')
-    if not payload.published:
-        await db.execute("UPDATE knowledge_bases SET visibility='private',published_at='',updated_at=? WHERE id=? AND user_id=?", (now(), knowledge_id, user_id))
+    try:
+        kb = await fetchone(db, "SELECT * FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
+        if not kb:
+            raise RuntimeError('知识库不存在')
+        documents = await fetchall(
+            db,
+            "SELECT filename,organized_title,summary,extracted_text FROM documents WHERE knowledge_id=? AND status='completed' ORDER BY updated_at DESC LIMIT 80",
+            (knowledge_id,),
+        )
+        if not documents:
+            raise RuntimeError('知识库还没有完成解析的资料，暂时不能发布')
+        review_parts = [str(kb['name'] or ''), str(kb['description'] or '')]
+        for document in documents:
+            review_parts.extend([
+                str(document['organized_title'] or ''),
+                str(document['filename'] or ''),
+                str(document['summary'] or ''),
+                str(document['extracted_text'] or '')[:6000],
+            ])
+        findings = knowledge_policy.review_content(*review_parts)
+        if findings:
+            raise RuntimeError(f'{findings[0].message}请修改或删除相关内容后再发布。')
+        category = knowledge_policy.classify_content(*review_parts)
+        published_at = now()
+        await db.execute(
+            "UPDATE knowledge_bases SET visibility='public',category=?,published_at=?,updated_at=? WHERE id=? AND user_id=? AND status='active'",
+            (category, published_at, published_at, knowledge_id, user_id),
+        )
         await db.commit()
+        count = await fetchone(db, 'SELECT COUNT(*) AS count FROM knowledge_subscriptions WHERE source_knowledge_id=?', (knowledge_id,))
+    finally:
         await db.close()
-        return {'ok': True, 'published': False, 'message': '已从知识库广场下架'}
-    if not payload.acknowledged:
-        await db.close()
-        raise HTTPException(422, '请先确认内容合规声明')
-    documents = await fetchall(
-        db,
-        "SELECT filename,organized_title,summary,extracted_text FROM documents WHERE knowledge_id=? AND status='completed' ORDER BY updated_at DESC LIMIT 80",
-        (knowledge_id,),
-    )
-    if not documents:
-        await db.close()
-        raise HTTPException(422, '知识库还没有完成解析的资料，暂时不能发布')
-    review_parts = [str(kb['name'] or ''), str(kb['description'] or '')]
-    for document in documents:
-        review_parts.extend([
-            str(document['organized_title'] or ''),
-            str(document['filename'] or ''),
-            str(document['summary'] or ''),
-            str(document['extracted_text'] or '')[:6000],
-        ])
-    findings = knowledge_policy.review_content(*review_parts)
-    if findings:
-        await db.close()
-        raise HTTPException(403, f'{findings[0].message}请修改或删除相关内容后再发布。')
-    category = knowledge_policy.classify_content(*review_parts)
-    published_at = now()
-    await db.execute(
-        "UPDATE knowledge_bases SET visibility='public',category=?,published_at=?,updated_at=? WHERE id=? AND user_id=? AND status='active'",
-        (category, published_at, published_at, knowledge_id, user_id),
-    )
-    await db.commit()
-    count = await fetchone(db, 'SELECT COUNT(*) AS count FROM knowledge_subscriptions WHERE source_knowledge_id=?', (knowledge_id,))
-    await db.close()
     return {
         'ok': True,
         'published': True,
@@ -1805,6 +1819,40 @@ async def publish_knowledge(knowledge_id: str, payload: KnowledgePublishUpdate, 
     }
 
 
+@app.post('/api/knowledge/{knowledge_id}/publish')
+async def publish_knowledge(knowledge_id: str, payload: KnowledgePublishUpdate, user_id: str = Depends(current_user)) -> dict:
+    """上架 / 下架知识库广场。
+
+    下架是瞬时动作，当场做完；上架要通读最多 80 份资料的正文做合规检查与分类，
+    可能超过容器通道单次调用上限，所以只做校验后排队，客户端轮询 /api/jobs/{id}。
+    """
+    rate_limit(f'kb-publish:{user_id}', 20, 60, '操作过于频繁，请稍后再试')
+    db = await connect()
+    try:
+        kb = await fetchone(db, "SELECT * FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
+        if not kb:
+            raise HTTPException(404, '知识库不存在')
+        if str(kb['mirror_of'] or ''):
+            raise HTTPException(403, '共享或订阅知识库不能发布到广场')
+        if str(kb['name'] or '') in (DEFAULT_KNOWLEDGE_NAME, SHARED_KNOWLEDGE_NAME):
+            raise HTTPException(403, '系统默认知识库不能发布到广场，请新建个人知识库后再发布')
+        if not payload.published:
+            await db.execute("UPDATE knowledge_bases SET visibility='private',published_at='',updated_at=? WHERE id=? AND user_id=?", (now(), knowledge_id, user_id))
+            await db.commit()
+            return {'ok': True, 'published': False, 'message': '已从知识库广场下架'}
+        if not payload.acknowledged:
+            raise HTTPException(422, '请先确认内容合规声明')
+        ready = await fetchone(db, "SELECT COUNT(*) AS count FROM documents WHERE knowledge_id=? AND status='completed'", (knowledge_id,))
+        if not int((ready['count'] if ready else 0) or 0):
+            raise HTTPException(422, '知识库还没有完成解析的资料，暂时不能发布')
+    finally:
+        await db.close()
+    job_id = await jobs_service.create(user_id, 'kb_publish', {'knowledge_id': knowledge_id})
+    jobs_service.spawn(job_id, lambda jid: publish_knowledge_worker(jid, knowledge_id=knowledge_id, user_id=user_id))
+    return {'pending': True, 'job_id': job_id}
+
+
+
 @app.post("/api/knowledge")
 async def create_knowledge(payload: KnowledgeCreate, user_id: str = Depends(current_user)) -> dict:
     name = payload.name.strip()
@@ -1813,8 +1861,8 @@ async def create_knowledge(payload: KnowledgeCreate, user_id: str = Depends(curr
     db = await connect()
     await ensure_default_knowledge(db, user_id)
     user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
-    # 配额只算自己建的知识库：好友共享过来的镜像、系统建的「共享知识库」收件箱都不占名额
-    count = await fetchone(db, "SELECT COUNT(*) AS count FROM knowledge_bases WHERE user_id=? AND status='active' AND COALESCE(mirror_of,'')='' AND name<>?", (user_id, SHARED_KNOWLEDGE_NAME))
+    # 配额只算用户主动新建的个人知识库；默认库、共享收件箱和订阅镜像都不占名额。
+    count = await fetchone(db, "SELECT COUNT(*) AS count FROM knowledge_bases WHERE user_id=? AND status='active' AND COALESCE(mirror_of,'')='' AND name NOT IN (?,?)", (user_id, DEFAULT_KNOWLEDGE_NAME, SHARED_KNOWLEDGE_NAME))
     limits = limits_for_user(user)
     if not account_state(user, 0)['entitlements']['can_create_knowledge']:
         await db.close(); raise HTTPException(403, "免费试用已结束，开通会员后可继续新建知识库")
@@ -1919,12 +1967,33 @@ async def _generate_suggestions(scope_name: str, samples: list[dict], scope_labe
         return []
 
 
+async def suggestions_worker(job_id: str, *, knowledge_id: str, folder_id: str, fingerprint: str, scope_name: str, rows: list[dict], scope: str) -> dict:
+    """后台生成推荐问题并写缓存：模型调用可能到几十秒，不能占着请求等。"""
+    await jobs_service.set_progress(job_id, '正在生成推荐问题…')
+    questions = await _generate_suggestions(scope_name, rows, '文件夹' if folder_id else '知识库')
+    if not questions:
+        questions = list(SUGGESTION_FALLBACK)
+    payload = json.dumps(questions, ensure_ascii=False)
+    db = await connect()
+    try:
+        if folder_id:
+            await db.execute("INSERT INTO folder_suggestions(knowledge_id,folder_id,fingerprint,questions_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT(knowledge_id,folder_id) DO UPDATE SET fingerprint=excluded.fingerprint,questions_json=excluded.questions_json,created_at=excluded.created_at", (knowledge_id, folder_id, fingerprint, payload, now()))
+        else:
+            await db.execute("INSERT INTO knowledge_suggestions(knowledge_id,fingerprint,questions_json,created_at) VALUES(?,?,?,?) ON CONFLICT(knowledge_id) DO UPDATE SET fingerprint=excluded.fingerprint,questions_json=excluded.questions_json,created_at=excluded.created_at", (knowledge_id, fingerprint, payload, now()))
+        await db.commit()
+    finally:
+        await db.close()
+    return {"questions": questions, "scope": scope}
+
+
 @app.get("/api/knowledge/{knowledge_id}/suggestions")
 async def knowledge_suggestions(knowledge_id: str, folder_id: str = "", user_id: str = Depends(current_user)) -> dict:
     """推荐问题：LLM 按文件清单生成一次，按 数量+最新更新时间 指纹缓存，资料变化自动失效。
 
     传 folder_id 时范围收窄到该文件夹（文件夹会话就该问这个文件夹里的资料）；
     没有任何已完成资料时直接返回空列表，前端不展示无意义的提问提示。
+    命中缓存直接返回；未命中时登记后台任务并回 pending=true，前端轮询任务结果
+    ——模型生成常常超过云托管单次调用 15s 的上限。
     """
     db = await connect()
     kb = await fetchone(db, "SELECT id,name FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
@@ -1957,17 +2026,11 @@ async def knowledge_suggestions(knowledge_id: str, folder_id: str = "", user_id:
     rows = await fetchall(db, f"SELECT filename,summary FROM documents WHERE knowledge_id=? AND status='completed'{scope_sql} ORDER BY updated_at DESC LIMIT 20", scope_params)
     await db.close()
     scope_name = f"{kb['name']} / {folder['name']}" if folder else kb['name']
-    questions = await _generate_suggestions(scope_name, [dict(r) for r in rows], '文件夹' if folder else '知识库')
-    if not questions:
-        questions = list(SUGGESTION_FALLBACK)
-    payload = json.dumps(questions, ensure_ascii=False)
-    db = await connect()
-    if folder:
-        await db.execute("INSERT INTO folder_suggestions(knowledge_id,folder_id,fingerprint,questions_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT(knowledge_id,folder_id) DO UPDATE SET fingerprint=excluded.fingerprint,questions_json=excluded.questions_json,created_at=excluded.created_at", (knowledge_id, folder_id, fingerprint, payload, now()))
-    else:
-        await db.execute("INSERT INTO knowledge_suggestions(knowledge_id,fingerprint,questions_json,created_at) VALUES(?,?,?,?) ON CONFLICT(knowledge_id) DO UPDATE SET fingerprint=excluded.fingerprint,questions_json=excluded.questions_json,created_at=excluded.created_at", (knowledge_id, fingerprint, payload, now()))
-    await db.commit(); await db.close()
-    return {"questions": questions, "scope": "folder" if folder else "knowledge"}
+    scope = "folder" if folder else "knowledge"
+    job_id = await jobs_service.create(user_id, 'kb_suggestions', {'knowledge_id': knowledge_id, 'folder_id': folder_id})
+    jobs_service.spawn(job_id, lambda jid: suggestions_worker(jid, knowledge_id=knowledge_id, folder_id=folder_id, fingerprint=fingerprint, scope_name=scope_name, rows=[dict(r) for r in rows], scope=scope))
+    return {"questions": [], "pending": True, "job_id": job_id, "scope": scope}
+
 
 
 @app.get("/api/knowledge/{knowledge_id}/folders")
@@ -2024,67 +2087,481 @@ async def move_document(document_id: str, payload: DocumentMove, user_id: str = 
     return {"ok": True}
 
 
-@app.post("/api/knowledge/{knowledge_id}/documents")
-async def upload_document(background_tasks: BackgroundTasks, knowledge_id: str, file: UploadFile = File(...), folder_id: str = Form(default=""), x_upload_filename: str | None = Header(default=None), user_id: str = Depends(current_user)) -> dict:
-    db = await connect(); kb = await fetchone(db, "SELECT id FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id)); user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
-    if not kb: await db.close(); raise HTTPException(404, "知识库不存在")
-    await writable_knowledge_or_close(db, knowledge_id, user_id)
-    if folder_id:
-        folder = await fetchone(db, "SELECT id FROM folders WHERE id=? AND user_id=? AND knowledge_id=?", (folder_id, user_id, knowledge_id))
-        if not folder: await db.close(); raise HTTPException(404, "目标文件夹不存在")
-    limits = limits_for_user(user)
-    if not account_state(user, 0)['entitlements']['can_upload']:
-        await db.close(); raise HTTPException(403, "免费试用已结束，开通会员后可继续添加资料")
-    client_name = unquote(x_upload_filename) if x_upload_filename else file.filename
-    safe_name = Path(client_name or "upload").name; document_id = uuid.uuid4().hex
-    suffix = Path(safe_name).suffix.lower()
-    if suffix not in ALLOWED_SUFFIXES:
-        await db.close(); raise HTTPException(415, "暂不支持该文件类型")
-    data = await file.read()
-    if len(data) > limits['max_file_bytes']:
-        await db.close(); raise HTTPException(413, f"单文件不能超过 {human_size(limits['max_file_bytes'])}")
-    if await storage_used_bytes(db, user_id) + len(data) > limits['storage_bytes']:
-        await db.close(); raise HTTPException(413, f"{limits['label']}可用空间 {human_size(limits['storage_bytes'])} 已满，升级会员可继续添加")
+async def index_document(document_id: str) -> dict:
+    """抽取正文 → 分块 → 全文索引 → 合规检查，并把结果写回文档行。
+
+    直传回执、服务端转发上传、重新解析三条路径共用这一份实现，保证同一份资料
+    不管从哪进来，检索、预览、整理的行为完全一致。
+
+    按「后台任务」设计：解析（尤其 OCR）可能远超云托管单次调用 15s 的上限，
+    调用方先把文档行建好再排它，前端靠文档状态轮询看进度。
+    """
+    db = await connect()
+    row = await fetchone(db, "SELECT * FROM documents WHERE id=? AND status!='deleted'", (document_id,))
+    await db.close()
+    if not row:
+        return {"status": "missing"}
+    knowledge_id = str(row["knowledge_id"])
+    filename = str(row["filename"] or "")
+    suffix = str(row["file_type"] or "")
+    db = await connect()
     try:
-        storage_ref = await storage.save_bytes(data, f"uploads/documents/{document_id}_{safe_name}", content_type=file.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream")
-    except storage.StorageError as exc:
-        await db.close(); raise HTTPException(503, "文件存储失败，请稍后重试") from exc
-    timestamp = now()
-    await db.execute("INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (document_id, knowledge_id, user_id, safe_name, suffix, len(data), storage_ref, "processing", 15, folder_id, timestamp, timestamp)); await db.commit(); await db.close()
-    status = "completed"
-    error_message = ""
+        # 重新解析前先清掉旧切片，否则同一份资料会在检索里出现两遍
+        await db.execute("DELETE FROM chunks_fts WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)", (document_id,))
+        await db.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+        await db.execute("UPDATE documents SET status='processing',progress=15,error_message='',updated_at=? WHERE id=?", (now(), document_id))
+        await db.commit()
+    finally:
+        await db.close()
     extracted = ""
     moderation_message = ""
     try:
-        parsed_path = await storage.materialize(storage_ref, suffix=suffix)
+        parsed_path = await storage.materialize(str(row["storage_path"] or ""), suffix=suffix)
         try:
-            text, pages = extract_text(parsed_path, suffix); chunks = split_chunks(text)
+            text, pages = extract_text(parsed_path, suffix)
+            chunks = split_chunks(text)
         finally:
             parsed_path.unlink(missing_ok=True)
         extracted = text
-        db = await connect(); await db.execute("UPDATE documents SET page_count=?,status='embedding',progress=70,extracted_text=?,updated_at=? WHERE id=?", (pages, text, now(), document_id))
-        for index, content in enumerate(chunks):
-            chunk_id = uuid.uuid4().hex; await db.execute("INSERT INTO chunks(id,document_id,knowledge_id,content,page_number,chunk_index,created_at) VALUES(?,?,?,?,?,?,?)", (chunk_id, document_id, knowledge_id, content, min(pages, index + 1), index, now())); await db.execute("INSERT INTO chunks_fts(rowid,content,chunk_id,knowledge_id,filename,page_number) VALUES((SELECT COALESCE(MAX(rowid),0)+1 FROM chunks_fts),?,?,?,?,?)", (content, chunk_id, knowledge_id, safe_name, min(pages, index + 1)))
-        await db.execute("UPDATE documents SET status='completed',progress=100,updated_at=? WHERE id=?", (now(), document_id))
-        await db.execute("UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?", (knowledge_id, now(), knowledge_id))
-        moderation_message = await enforce_published_knowledge_policy(db, knowledge_id, safe_name, text)
-        await db.commit(); await db.close()
+        db = await connect()
+        try:
+            await db.execute("UPDATE documents SET page_count=?,status='embedding',progress=70,extracted_text=?,updated_at=? WHERE id=?", (pages, text, now(), document_id))
+            for index, content in enumerate(chunks):
+                chunk_id = uuid.uuid4().hex
+                page = min(pages, index + 1) if pages else 1
+                await db.execute("INSERT INTO chunks(id,document_id,knowledge_id,content,page_number,chunk_index,created_at) VALUES(?,?,?,?,?,?,?)", (chunk_id, document_id, knowledge_id, content, page, index, now()))
+                await db.execute("INSERT INTO chunks_fts(rowid,content,chunk_id,knowledge_id,filename,page_number) VALUES((SELECT COALESCE(MAX(rowid),0)+1 FROM chunks_fts),?,?,?,?,?)", (content, chunk_id, knowledge_id, filename, page))
+            await db.execute("UPDATE documents SET status='completed',progress=100,updated_at=? WHERE id=?", (now(), document_id))
+            await db.execute("UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?", (knowledge_id, now(), knowledge_id))
+            moderation_message = await enforce_published_knowledge_policy(db, knowledge_id, filename, text)
+            await db.commit()
+        finally:
+            await db.close()
     except Exception as exc:
-        status = "failed"; error_message = str(exc)
-        db = await connect(); await db.execute("UPDATE documents SET status='failed',error_message=?,updated_at=? WHERE id=?", (error_message, now(), document_id)); await db.commit(); await db.close()
+        db = await connect()
+        try:
+            await db.execute("UPDATE documents SET status='failed',progress=0,error_message=?,updated_at=? WHERE id=?", (str(exc), now(), document_id))
+            await db.commit()
+        finally:
+            await db.close()
+        return {"status": "failed", "progress": 0, "error_message": str(exc)}
     # 没有可抽取正文（旧版 Office 格式、无文字图片）时不排整理任务，避免落一条空摘要；
     # 这类文件仍可正常打开原文预览。
-    if status == 'completed' and extracted.strip() and background_tasks is not None:
-        background_tasks.add_task(organize_document, document_id)
-    # organize_status 按实际有没有排整理任务回报：旧版 Office 格式正文为空，不会排整理，
-    # 报 processing 会让调用方一直等一个永远不会到来的摘要。
-    organized = status == 'completed' and bool(extracted.strip())
-    return {"id": document_id, "filename": safe_name, "status": status, "progress": 100 if status == "completed" else 0, "error_message": error_message, "organize_status": 'processing' if organized else 'pending', "moderation_message": moderation_message}
+    organized = bool(extracted.strip())
+    if organized:
+        await organize_document(document_id)
+    return {"status": "completed", "progress": 100, "moderation_message": moderation_message, "organized": organized}
+
+
+async def prepare_document_upload(*, knowledge_id: str, user_id: str, folder_id: str, client_name: str) -> dict:
+    """文档上传的前置校验：库归属、可写、目录、配额、类型白名单。
+
+    直传（小程序）与服务端转发（本地存储 / 测试）两条路共用，口径必须一致。
+    """
+    db = await connect()
+    try:
+        kb = await fetchone(db, "SELECT id FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
+        if not kb:
+            raise HTTPException(404, "知识库不存在")
+        await writable_knowledge(db, knowledge_id, user_id)
+        user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
+        if not user:
+            raise HTTPException(404, "用户不存在")
+        if folder_id:
+            folder = await fetchone(db, "SELECT id FROM folders WHERE id=? AND user_id=? AND knowledge_id=?", (folder_id, user_id, knowledge_id))
+            if not folder:
+                raise HTTPException(404, "目标文件夹不存在")
+        limits = limits_for_user(user)
+        if not account_state(user, 0)['entitlements']['can_upload']:
+            raise HTTPException(403, "免费试用已结束，开通会员后可继续添加资料")
+        safe_name = Path(client_name or "upload").name or "upload"
+        suffix = Path(safe_name).suffix.lower()
+        if suffix not in ALLOWED_SUFFIXES:
+            raise HTTPException(415, "暂不支持该文件类型")
+        return {"document_id": uuid.uuid4().hex, "safe_name": safe_name, "suffix": suffix, "limits": limits}
+    finally:
+        await db.close()
+
+
+async def register_document_row(*, document_id: str, knowledge_id: str, user_id: str, safe_name: str, suffix: str, storage_ref: str, size: int, folder_id: str, status: str, progress: int) -> None:
+    db = await connect()
+    try:
+        timestamp = now()
+        await db.execute(
+            "INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (document_id, knowledge_id, user_id, safe_name, suffix, size, storage_ref, status, progress, folder_id, timestamp, timestamp),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+@app.post("/api/uploads/direct")
+async def uploads_direct(payload: UploadDirectRequest, user_id: str = Depends(current_user)) -> dict:
+    """签发对象存储直传凭证（小程序上传的唯一通道）。
+
+    云托管私有协议单次请求体上限 100KiB，文件字节过不了容器，所以文件由客户端
+    直接写进对象存储。凭证按 COS「POST Object」规则签发，且在 policy 里锁死
+    对象 key 与体积上限——客户端只能写这一个位置、写不了超过配额的体积。
+    """
+    if settings.storage_backend != 'cos':
+        # 本地存储没有直传能力：调用方回退到服务端转发上传
+        return {'mode': 'local'}
+    if payload.kind == 'document':
+        prepared = await prepare_document_upload(knowledge_id=payload.knowledge_id, user_id=user_id, folder_id=payload.folder_id, client_name=payload.filename)
+        document_id = prepared['document_id']; safe_name = prepared['safe_name']; suffix = prepared['suffix']; limits = prepared['limits']
+        db = await connect()
+        try:
+            used = await storage_used_bytes(db, user_id)
+        finally:
+            await db.close()
+        if used >= limits['storage_bytes']:
+            raise HTTPException(413, f"{limits['label']}可用空间 {human_size(limits['storage_bytes'])} 已满，升级会员可继续添加")
+        key = f"uploads/documents/{document_id}_{safe_name}"
+        storage_ref = storage.ref_from_full_key(storage.full_key(key))
+        await register_document_row(document_id=document_id, knowledge_id=payload.knowledge_id, user_id=user_id, safe_name=safe_name, suffix=suffix, storage_ref=storage_ref, size=0, folder_id=payload.folder_id, status='pending_upload', progress=0)
+        try:
+            form = await storage.post_form(key, max_bytes=limits['max_file_bytes'], expires=UPLOAD_DIRECT_TTL)
+        except storage.StorageError as exc:
+            raise HTTPException(503, "对象存储暂不可用，请稍后重试") from exc
+        return {'mode': 'cos', 'document_id': document_id, 'filename': safe_name, 'max_bytes': limits['max_file_bytes'], **form}
+    if payload.kind == 'avatar':
+        suffix = (payload.suffix or Path(payload.filename or '').suffix).lower()
+        if suffix not in AVATAR_MEDIA_TYPES:
+            suffix = '.jpg'
+        safe_id = _avatar_safe_id(user_id)
+        if not safe_id:
+            raise HTTPException(422, '用户信息不完整')
+        try:
+            form = await storage.post_form(f'{AVATAR_DIR_NAME}/{safe_id}{suffix}', max_bytes=AVATAR_MAX_BYTES, expires=UPLOAD_DIRECT_TTL)
+        except storage.StorageError as exc:
+            raise HTTPException(503, "对象存储暂不可用，请稍后重试") from exc
+        return {'mode': 'cos', 'suffix': suffix, 'max_bytes': AVATAR_MAX_BYTES, **form}
+    if payload.kind != 'knowledge-avatar':
+        raise HTTPException(422, 'kind 只支持 document / avatar / knowledge-avatar')
+    knowledge_id = payload.knowledge_id.strip()
+    db = await connect()
+    kb = await fetchone(db, "SELECT id,mirror_of FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
+    await db.close()
+    if not kb:
+        raise HTTPException(404, '知识库不存在')
+    if str(kb['mirror_of'] or ''):
+        raise HTTPException(403, '共享或订阅知识库不能单独更换头像')
+    suffix = (payload.suffix or Path(payload.filename or '').suffix).lower()
+    if suffix not in AVATAR_MEDIA_TYPES:
+        suffix = '.jpg'
+    safe_id = _knowledge_avatar_safe_id(knowledge_id)
+    if not safe_id:
+        raise HTTPException(422, '知识库信息不完整')
+    key = f'{KNOWLEDGE_AVATAR_DIR_NAME}/{safe_id}-{uuid.uuid4().hex[:10]}{suffix}'
+    try:
+        form = await storage.post_form(key, max_bytes=AVATAR_MAX_BYTES, expires=UPLOAD_DIRECT_TTL)
+    except storage.StorageError as exc:
+        raise HTTPException(503, "对象存储暂不可用，请稍后重试") from exc
+    return {'mode': 'cos', 'suffix': suffix, 'max_bytes': AVATAR_MAX_BYTES, **form}
+
+
+@app.post('/api/knowledge/{knowledge_id}/documents/{document_id}/complete')
+async def complete_document_upload(background_tasks: BackgroundTasks, knowledge_id: str, document_id: str, payload: UploadCompleteRequest, user_id: str = Depends(current_user)) -> dict:
+    """直传回执：核对对象、按真实体积复核配额，然后排后台解析。
+
+    体积与配额都以服务端读到的对象信息为准，客户端上报的任何数字都不采信。
+    """
+    db = await connect()
+    row = await fetchone(db, "SELECT * FROM documents WHERE id=? AND user_id=? AND knowledge_id=? AND status!='deleted'", (document_id, user_id, knowledge_id))
+    if not row:
+        await db.close(); raise HTTPException(404, '文档不存在')
+    storage_ref = str(row['storage_path'] or '')
+    if payload.key and storage.ref_from_full_key(payload.key) != storage_ref:
+        await db.close(); raise HTTPException(409, '上传对象与登记的文档不一致')
+    user = await fetchone(db, "SELECT * FROM users WHERE id=?", (user_id,))
+    limits = limits_for_user(user)
+    try:
+        size = await storage.object_size(storage_ref)
+    except storage.StorageError as exc:
+        await db.close(); raise HTTPException(404, '上传的文件不存在或已失效') from exc
+    if size <= 0:
+        await db.close(); raise HTTPException(422, '上传的文件为空')
+    if size > limits['max_file_bytes']:
+        await db.close()
+        await storage.delete(storage_ref)
+        raise HTTPException(413, f"单文件不能超过 {human_size(limits['max_file_bytes'])}")
+    if await storage_used_bytes(db, user_id) + size > limits['storage_bytes']:
+        await db.close()
+        await storage.delete(storage_ref)
+        raise HTTPException(413, f"{limits['label']}可用空间 {human_size(limits['storage_bytes'])} 已满，升级会员可继续添加")
+    await db.execute("UPDATE documents SET file_size=?,status='processing',progress=15,updated_at=? WHERE id=?", (size, now(), document_id))
+    await db.commit()
+    await db.close()
+    background_tasks.add_task(index_document, document_id)
+    return {"id": document_id, "filename": str(row['filename'] or ''), "status": "processing", "progress": 15, "error_message": "", "organize_status": 'pending', "moderation_message": ""}
+
+
+@app.post('/api/me/avatar/complete')
+async def complete_avatar_upload(payload: UploadCompleteRequest, user_id: str = Depends(current_user)) -> dict:
+    """头像直传回执：核对对象后写回用户资料，并删掉旧格式的遗留文件。"""
+    suffix = Path(payload.key or '').suffix.lower()
+    safe_id = _avatar_safe_id(user_id)
+    if not payload.key or suffix not in AVATAR_MEDIA_TYPES or not safe_id or storage.full_key(f'{AVATAR_DIR_NAME}/{safe_id}{suffix}') != payload.key:
+        raise HTTPException(409, '上传对象与头像不一致')
+    ref = storage.ref_from_full_key(payload.key)
+    try:
+        size = await storage.object_size(ref)
+    except storage.StorageError as exc:
+        raise HTTPException(404, '上传的文件不存在或已失效') from exc
+    if size <= 0 or size > AVATAR_MAX_BYTES:
+        await storage.delete(ref)
+        raise HTTPException(413, '头像不能超过 2MB')
+    avatar_url = f'/api/avatars/{user_id}?v={int(time.time())}'
+    db = await connect()
+    await db.execute("UPDATE users SET avatar=?, updated_at=? WHERE id=? AND status='active'", (avatar_url, now(), user_id))
+    await db.commit(); await db.close()
+    for stale_suffix, stale_ref in _avatar_refs(user_id):
+        if stale_suffix != suffix:
+            await storage.delete(stale_ref)
+    return {'avatar': avatar_url}
+
+
+@app.post('/api/knowledge/{knowledge_id}/avatar/complete')
+async def complete_knowledge_avatar_upload(knowledge_id: str, payload: UploadCompleteRequest, user_id: str = Depends(current_user)) -> dict:
+    """知识库头像直传回执：写回新对象并删掉上一版。"""
+    db = await connect()
+    kb = await fetchone(db, "SELECT id,avatar,mirror_of FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
+    if not kb:
+        await db.close(); raise HTTPException(404, '知识库不存在')
+    if str(kb['mirror_of'] or ''):
+        await db.close(); raise HTTPException(403, '共享或订阅知识库不能单独更换头像')
+    old_ref = str(kb['avatar'] or '')
+    safe_id = _knowledge_avatar_safe_id(knowledge_id)
+    suffix = Path(payload.key or '').suffix.lower()
+    if not payload.key or not safe_id or suffix not in AVATAR_MEDIA_TYPES or not payload.key.startswith(f'{settings.cos_prefix.strip().strip("/")}/{KNOWLEDGE_AVATAR_DIR_NAME}/{safe_id}-'):
+        await db.close(); raise HTTPException(409, '上传对象与知识库头像不一致')
+    ref = storage.ref_from_full_key(payload.key)
+    try:
+        size = await storage.object_size(ref)
+    except storage.StorageError as exc:
+        await db.close(); raise HTTPException(404, '上传的文件不存在或已失效') from exc
+    if size <= 0 or size > AVATAR_MAX_BYTES:
+        await db.close()
+        await storage.delete(ref)
+        raise HTTPException(413, '头像不能超过 2MB')
+    stamp = now()
+    await db.execute('UPDATE knowledge_bases SET avatar=?,updated_at=? WHERE id=? AND user_id=?', (ref, stamp, knowledge_id, user_id))
+    await db.commit(); await db.close()
+    if old_ref and old_ref != ref:
+        await storage.delete(old_ref)
+    return {'avatar': f'/api/knowledge-avatars/{knowledge_id}?v={int(time.time())}'}
+
+
+@app.post("/api/knowledge/{knowledge_id}/documents")
+async def upload_document(background_tasks: BackgroundTasks, knowledge_id: str, file: UploadFile = File(...), folder_id: str = Form(default=""), x_upload_filename: str | None = Header(default=None), user_id: str = Depends(current_user)) -> dict:
+    """服务端转发式上传：本地存储模式与测试用。
+
+    小程序在云托管下走对象存储直传（/api/uploads/direct）：容器通道的请求体
+    上限 100KiB，文件字节不可能经这里转发。
+    """
+    prepared = await prepare_document_upload(knowledge_id=knowledge_id, user_id=user_id, folder_id=folder_id, client_name=unquote(x_upload_filename) if x_upload_filename else (file.filename or ''))
+    document_id = prepared['document_id']; safe_name = prepared['safe_name']; suffix = prepared['suffix']; limits = prepared['limits']
+    data = await file.read()
+    if len(data) > limits['max_file_bytes']:
+        raise HTTPException(413, f"单文件不能超过 {human_size(limits['max_file_bytes'])}")
+    db = await connect()
+    try:
+        if await storage_used_bytes(db, user_id) + len(data) > limits['storage_bytes']:
+            raise HTTPException(413, f"{limits['label']}可用空间 {human_size(limits['storage_bytes'])} 已满，升级会员可继续添加")
+        try:
+            storage_ref = await storage.save_bytes(data, f"uploads/documents/{document_id}_{safe_name}", content_type=file.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream")
+        except storage.StorageError as exc:
+            raise HTTPException(503, "文件存储失败，请稍后重试") from exc
+        timestamp = now()
+        await db.execute("INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (document_id, knowledge_id, user_id, safe_name, suffix, len(data), storage_ref, "processing", 15, folder_id, timestamp, timestamp))
+        await db.commit()
+    finally:
+        await db.close()
+    background_tasks.add_task(index_document, document_id)
+    return {"id": document_id, "filename": safe_name, "status": "processing", "progress": 15, "error_message": "", "organize_status": 'pending', "moderation_message": ""}
+
+
+async def _storage_asset(ref: str, *, filename: str = '', media_type: str = 'application/octet-stream') -> dict:
+    """对象存储资源 → 短时效直链；本地存储没有直链概念，如实回报让调用方决定回退。"""
+    if not ref:
+        raise HTTPException(404, '资源不存在')
+    url = await storage.presigned_get(ref, expires=ASSET_URL_TTL)
+    if not url:
+        return {'mode': 'local', 'filename': filename, 'mime': media_type}
+    return {'mode': 'cos', 'url': url, 'filename': filename, 'mime': media_type}
+
+
+async def _resolve_asset(path: str, user_id: str | None) -> dict:
+    """把一条后端资源路径换成客户端能直接取用的形式。
+
+    权限口径与原接口逐条对齐：公开资源（头像 / 配图 / 分享文件）匿名可解析，
+    文档与产物必须带登录态且只能解析自己的。这里只换交付方式，不换可见范围。
+    """
+    if path.startswith('/api/content/assets/'):
+        asset = await content_service.asset(Path(path[len('/api/content/assets/'):]).name)
+        if not asset:
+            raise HTTPException(404, '资源不存在')
+        if len(asset['bytes']) > CONTENT_ASSET_INLINE_MAX:
+            raise HTTPException(413, '配图过大，暂不支持下发')
+        return {'mode': 'inline', 'mime': asset['mime'], 'base64': base64.b64encode(asset['bytes']).decode('ascii')}
+    if path.startswith('/api/article-assets/'):
+        parts = path[len('/api/article-assets/'):].split('/')
+        if len(parts) != 2 or not parts[0].isalnum():
+            raise HTTPException(404, '资源不存在')
+        name = Path(parts[1]).name
+        return await _storage_asset(storage.reference(f'article_assets/{parts[0]}/{name}'), filename=name, media_type=mimetypes.guess_type(name)[0] or 'application/octet-stream')
+    if path.startswith('/api/avatars/'):
+        for suffix, ref in _avatar_refs(path[len('/api/avatars/'):]):
+            try:
+                if await storage.exists(ref):
+                    return await _storage_asset(ref, media_type=AVATAR_MEDIA_TYPES[suffix])
+            except storage.StorageError:
+                continue
+        raise HTTPException(404, '头像不存在')
+    if path.startswith('/api/knowledge-avatars/'):
+        knowledge_id = path[len('/api/knowledge-avatars/'):]
+        db = await connect()
+        row = await fetchone(db, 'SELECT avatar FROM knowledge_bases WHERE id=? AND status=?', (knowledge_id, 'active'))
+        await db.close()
+        ref = str(row['avatar'] or '') if row else ''
+        if not ref:
+            raise HTTPException(404, '知识库头像不存在')
+        return await _storage_asset(ref, media_type=mimetypes.guess_type(ref)[0] or 'image/jpeg')
+    if path.startswith('/api/documents/') and path.endswith('/download'):
+        if not user_id:
+            raise HTTPException(401, '请先登录')
+        document_id = path[len('/api/documents/'):-len('/download')]
+        db = await connect()
+        row = await fetchone(db, "SELECT storage_path,filename FROM documents WHERE id=? AND user_id=? AND status!='deleted'", (document_id, user_id))
+        await db.close()
+        if not row:
+            raise HTTPException(404, '文档不存在')
+        name = str(row['filename'] or '')
+        return await _storage_asset(str(row['storage_path'] or ''), filename=name, media_type=mimetypes.guess_type(name)[0] or 'application/octet-stream')
+    if path.startswith('/api/artifacts/') and path.endswith('/download'):
+        if not user_id:
+            raise HTTPException(401, '请先登录')
+        artifact_id = path[len('/api/artifacts/'):-len('/download')]
+        db = await connect()
+        row = await artifact_service.owned(db, artifact_id, user_id)
+        await db.close()
+        if not row:
+            raise HTTPException(404, '文件不存在')
+        return await _storage_asset(artifact_service.stored_ref(row), filename=str(row['filename']), media_type=str(row['mime'] or 'application/octet-stream'))
+    if path.startswith('/api/shares/') and '/files/' in path:
+        share_id, _, raw_index = path[len('/api/shares/'):].partition('/files/')
+        if not valid_share_id(share_id) or not raw_index.isdigit() or int(raw_index) > 32:
+            raise HTTPException(404, '文件不存在或已失效')
+        db = await connect()
+        card = await fetchone(db, 'SELECT user_id,files_json FROM share_cards WHERE id=?', (share_id,))
+        if not card:
+            await db.close(); raise HTTPException(404, '文件不存在或已失效')
+        files = decode_sources(card['files_json'])
+        index = int(raw_index)
+        if index >= len(files):
+            await db.close(); raise HTTPException(404, '文件不存在或已失效')
+        row = await fetchone(db, 'SELECT id,filename,mime,storage_path FROM artifacts WHERE id=? AND user_id=?', (str(files[index].get('artifact_id') or ''), card['user_id']))
+        await db.close()
+        if not row:
+            raise HTTPException(404, '文件不存在或已失效')
+        return await _storage_asset(str(row['storage_path'] or ''), filename=str(row['filename']), media_type=str(row['mime'] or 'application/octet-stream'))
+    raise HTTPException(404, '不支持的资源路径')
+
+
+@app.post('/api/assets/resolve')
+async def resolve_assets(payload: AssetResolveRequest, user_id: str | None = Depends(current_user_optional)) -> dict:
+    """批量解析资源路径：小程序走容器通道时用它换预签名地址或内联字节。
+
+    一次能解析多条，图片列表因此只需要一个来回；单条失败不影响其余条目。
+    """
+    items: dict[str, dict] = {}
+    for raw in payload.paths[:32]:
+        original = str(raw or '')
+        path = original.split('?', 1)[0].split('#', 1)[0]
+        if not path:
+            continue
+        try:
+            items[original] = await _resolve_asset(path, user_id)
+        except HTTPException as exc:
+            items[original] = {'error': str(exc.detail)}
+    return {'items': items}
+
+
+@app.get('/api/jobs/{job_id}')
+async def job_status(job_id: str, user_id: str = Depends(current_user)) -> dict:
+    """长任务进度：客户端轮询它，替代一个可能超过云托管 15s 上限的同步请求。"""
+    row = await jobs_service.load(job_id)
+    if not row or str(row['user_id']) != user_id:
+        raise HTTPException(404, '任务不存在')
+    return jobs_service.view(row)
+
+
+async def process_article_import(document_id: str, *, user_id: str, url: str, limits: dict) -> None:
+    """后台抓取公众号文章：正文配图要逐张下载，耗时不可控，不能占着请求等。
+
+    失败原因写回文档行，前端在资料列表里看到的就是同一套错误提示。
+    """
+    assets_dir = settings.upload_path / "article_assets" / document_id
+
+    async def fail(message: str) -> None:
+        shutil.rmtree(assets_dir, ignore_errors=True)
+        db = await connect()
+        try:
+            await db.execute("UPDATE documents SET status='failed',progress=0,error_message=?,updated_at=? WHERE id=?", (message, now(), document_id))
+            await db.commit()
+        finally:
+            await db.close()
+
+    db = await connect()
+    try:
+        await db.execute("UPDATE documents SET status='processing',progress=10,updated_at=? WHERE id=?", (now(), document_id))
+        await db.commit()
+    finally:
+        await db.close()
+    try:
+        article = await fetch_wechat_article(url, assets_dir, f"/api/article-assets/{document_id}")
+    except ArticleFetchError as exc:
+        await fail(str(exc))
+        return
+    full_html = build_document_html(article["title"], article["account"], article["html"], url.strip())
+    safe_name = f"{article['title'].replace('/', '_')[:60]}.html"
+    html_data = full_html.encode('utf-8')
+    asset_files = [path for path in assets_dir.iterdir() if path.is_file()] if assets_dir.is_dir() else []
+    file_size = len(html_data) + sum(path.stat().st_size for path in asset_files)
+    db = await connect()
+    try:
+        over_quota = await storage_used_bytes(db, user_id) + file_size > limits['storage_bytes']
+    finally:
+        await db.close()
+    if over_quota:
+        await fail(f"{limits['label']}可用空间 {human_size(limits['storage_bytes'])} 已满，升级会员可继续添加")
+        return
+    try:
+        for asset_path in asset_files:
+            await storage.save_file(asset_path, f"article_assets/{document_id}/{asset_path.name}", content_type=mimetypes.guess_type(asset_path.name)[0] or 'application/octet-stream')
+        storage_ref = await storage.save_bytes(html_data, f"uploads/documents/{document_id}_{safe_name}", content_type='text/html; charset=utf-8')
+    except storage.StorageError:
+        await fail("文章资源存储失败，请稍后重试")
+        return
+    finally:
+        shutil.rmtree(assets_dir, ignore_errors=True)
+    db = await connect()
+    try:
+        await db.execute("UPDATE documents SET filename=?,file_type='.html',file_size=?,storage_path=?,updated_at=? WHERE id=?", (safe_name, file_size, storage_ref, now(), document_id))
+        await db.commit()
+    finally:
+        await db.close()
+    await index_document(document_id)
 
 
 @app.post("/api/knowledge/{knowledge_id}/import-article")
 async def import_article(payload: ArticleImportRequest, background_tasks: BackgroundTasks, knowledge_id: str, user_id: str = Depends(current_user)) -> dict:
-    """导入微信公众号文章：抓取正文（含图片），存为 HTML 文档并切片入库。"""
+    """导入微信公众号文章：先登记一条 processing 的资料，再后台抓取入库。
+
+    抓取要下载正文里的每张配图，整体耗时经常超过云托管单次调用的 15s 上限，
+    所以这里只做校验与登记，进度由前端看资料状态轮询。
+    """
     rate_limit(f"import:{user_id}", 10, 60, "导入太频繁了，请稍后再试")
     db = await connect()
     kb = await fetchone(db, "SELECT id FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
@@ -2099,50 +2576,12 @@ async def import_article(payload: ArticleImportRequest, background_tasks: Backgr
     if not account_state(user, 0)['entitlements']['can_upload']:
         await db.close(); raise HTTPException(403, "免费试用已结束，开通会员后可继续添加资料")
     document_id = uuid.uuid4().hex
-    assets_dir = settings.upload_path / "article_assets" / document_id
-    try:
-        article = await fetch_wechat_article(payload.url, assets_dir, f"/api/article-assets/{document_id}")
-    except ArticleFetchError as exc:
-        await db.close(); raise HTTPException(422, str(exc)) from exc
-    full_html = build_document_html(article["title"], article["account"], article["html"], payload.url.strip())
-    safe_name = f"{article['title'].replace('/', '_')[:60]}.html"
-    html_data = full_html.encode('utf-8')
-    asset_files = [path for path in assets_dir.iterdir() if path.is_file()]
-    file_size = len(html_data) + sum(path.stat().st_size for path in asset_files)
-    if await storage_used_bytes(db, user_id) + file_size > limits['storage_bytes']:
-        shutil.rmtree(assets_dir, ignore_errors=True)
-        await db.close(); raise HTTPException(413, f"{limits['label']}可用空间 {human_size(limits['storage_bytes'])} 已满，升级会员可继续添加")
-    try:
-        for asset_path in asset_files:
-            await storage.save_file(asset_path, f"article_assets/{document_id}/{asset_path.name}", content_type=mimetypes.guess_type(asset_path.name)[0] or 'application/octet-stream')
-        storage_ref = await storage.save_bytes(html_data, f"uploads/documents/{document_id}_{safe_name}", content_type='text/html; charset=utf-8')
-    except storage.StorageError as exc:
-        await db.close(); raise HTTPException(503, "文章资源存储失败，请稍后重试") from exc
-    finally:
-        shutil.rmtree(assets_dir, ignore_errors=True)
-    timestamp = now()
-    await db.execute("INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (document_id, knowledge_id, user_id, safe_name, ".html", file_size, storage_ref, "processing", 15, payload.folder_id, timestamp, timestamp))
+    title = payload.url.strip()[:60]
+    await db.execute("INSERT INTO documents(id,knowledge_id,user_id,filename,file_type,file_size,storage_path,status,progress,folder_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (document_id, knowledge_id, user_id, title, ".html", 0, "", "processing", 10, payload.folder_id, now(), now()))
     await db.commit(); await db.close()
-    status = "completed"; error_message = ""
-    moderation_message = ""
-    try:
-        chunks = split_chunks(article["text"])
-        db = await connect()
-        await db.execute("UPDATE documents SET page_count=1,status='embedding',progress=70,extracted_text=?,updated_at=? WHERE id=?", (article["text"], now(), document_id))
-        for index, content in enumerate(chunks):
-            chunk_id = uuid.uuid4().hex
-            await db.execute("INSERT INTO chunks(id,document_id,knowledge_id,content,page_number,chunk_index,created_at) VALUES(?,?,?,?,?,?,?)", (chunk_id, document_id, knowledge_id, content, 1, index, now()))
-            await db.execute("INSERT INTO chunks_fts(rowid,content,chunk_id,knowledge_id,filename,page_number) VALUES((SELECT COALESCE(MAX(rowid),0)+1 FROM chunks_fts),?,?,?,?,?)", (content, chunk_id, knowledge_id, safe_name, 1))
-        await db.execute("UPDATE documents SET status='completed',progress=100,updated_at=? WHERE id=?", (now(), document_id))
-        await db.execute("UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?", (knowledge_id, now(), knowledge_id))
-        moderation_message = await enforce_published_knowledge_policy(db, knowledge_id, safe_name, article["text"])
-        await db.commit(); await db.close()
-    except Exception as exc:
-        status = "failed"; error_message = str(exc)
-        db = await connect(); await db.execute("UPDATE documents SET status='failed',error_message=?,updated_at=? WHERE id=?", (error_message, now(), document_id)); await db.commit(); await db.close()
-    if status == 'completed' and background_tasks is not None:
-        background_tasks.add_task(organize_document, document_id)
-    return {"id": document_id, "filename": safe_name, "title": article["title"], "account": article["account"], "image_count": article["image_count"], "status": status, "progress": 100 if status == "completed" else 0, "error_message": error_message, "organize_status": 'processing' if status == 'completed' else 'pending', "moderation_message": moderation_message}
+    background_tasks.add_task(process_article_import, document_id, user_id=user_id, url=payload.url, limits=limits)
+    return {"id": document_id, "filename": title, "title": title, "account": "", "image_count": 0, "status": "processing", "progress": 10, "error_message": "", "organize_status": 'pending', "moderation_message": ""}
+
 
 
 @app.get("/api/article-assets/{document_id}/{filename}")
@@ -2230,39 +2669,17 @@ async def content_asset(filename: str) -> Response:
 
 @app.post("/api/documents/{document_id}/retry")
 async def retry_document(document_id: str, background_tasks: BackgroundTasks, user_id: str = Depends(current_user)) -> dict:
+    """重新解析：解析耗时不可控，只登记状态、排后台任务，前端看文档状态轮询。"""
     db = await connect(); row = await fetchone(db, "SELECT * FROM documents WHERE id=? AND user_id=? AND status!='deleted'", (document_id, user_id))
     if not row:
         await db.close(); raise HTTPException(404, "文档不存在")
     await writable_knowledge_or_close(db, str(row["knowledge_id"]), user_id)
-    storage_ref = str(row["storage_path"] or ''); suffix = str(row["file_type"] or '')
-    try:
-        path = await storage.materialize(storage_ref, suffix=suffix)
-    except storage.StorageError as exc:
-        await db.close(); raise HTTPException(404, "原文文件不存在，无法重新解析") from exc
-    await db.execute("DELETE FROM chunks_fts WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)", (document_id,))
-    await db.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
-    await db.execute("UPDATE documents SET status='processing',progress=15,error_message='',updated_at=? WHERE id=?", (now(), document_id)); await db.commit(); await db.close()
-    moderation_message = ""
-    try:
-        try:
-            text, pages = extract_text(path, suffix); chunks = split_chunks(text)
-        finally:
-            path.unlink(missing_ok=True)
-        db = await connect(); await db.execute("UPDATE documents SET page_count=?,status='embedding',progress=70,extracted_text=?,updated_at=? WHERE id=?", (pages, text, now(), document_id))
-        for index, content in enumerate(chunks):
-            chunk_id = uuid.uuid4().hex; page = min(pages, index + 1)
-            await db.execute("INSERT INTO chunks(id,document_id,knowledge_id,content,page_number,chunk_index,created_at) VALUES(?,?,?,?,?,?,?)", (chunk_id, document_id, row["knowledge_id"], content, page, index, now()))
-            await db.execute("INSERT INTO chunks_fts(rowid,content,chunk_id,knowledge_id,filename,page_number) VALUES((SELECT COALESCE(MAX(rowid),0)+1 FROM chunks_fts),?,?,?,?,?)", (content, chunk_id, row["knowledge_id"], row["filename"], page))
-        await db.execute("UPDATE documents SET status='completed',progress=100,updated_at=? WHERE id=?", (now(), document_id))
-        await db.execute("UPDATE knowledge_bases SET document_count=(SELECT COUNT(*) FROM documents WHERE knowledge_id=? AND status!='deleted'),updated_at=? WHERE id=?", (row["knowledge_id"], now(), row["knowledge_id"]))
-        moderation_message = await enforce_published_knowledge_policy(db, str(row["knowledge_id"]), str(row["filename"] or ''), text)
-        await db.commit(); await db.close()
-        if text.strip():
-            background_tasks.add_task(organize_document, document_id)
-        return {"id": document_id, "status": "completed", "progress": 100, "organize_status": "processing", "moderation_message": moderation_message}
-    except Exception as exc:
-        db = await connect(); await db.execute("UPDATE documents SET status='failed',progress=0,error_message=?,updated_at=? WHERE id=?", (str(exc), now(), document_id)); await db.commit(); await db.close()
-        return {"id": document_id, "status": "failed", "progress": 0, "error_message": str(exc)}
+    if not await storage.exists(str(row["storage_path"] or '')):
+        await db.close(); raise HTTPException(404, "原文文件不存在，无法重新解析")
+    await db.execute("UPDATE documents SET status='processing',progress=15,error_message='',updated_at=? WHERE id=?", (now(), document_id))
+    await db.commit(); await db.close()
+    background_tasks.add_task(index_document, document_id)
+    return {"id": document_id, "status": "processing", "progress": 15, "organize_status": "pending", "moderation_message": ""}
 
 
 @app.delete("/api/documents/{document_id}")
@@ -2974,28 +3391,52 @@ async def delete_conversation(conversation_id: str, user_id: str = Depends(curre
     return {'ok': True}
 
 
+# 历史回放只要时间线骨架：工具入参/输出单条可达几 KB～几十 KB，是整段历史里最大的一块，
+# 去掉它们才能把返回包压进容器通道 1MiB 的上限；当轮的实时过程仍然带完整明细。
+HISTORY_TRACE_DROP_FIELDS = ('tool_input', 'tool_output', 'tool_meta', 'tool_result_meta')
+HISTORY_MESSAGE_LIMIT = 100
+
+
+def history_trace(raw: Any) -> list[dict]:
+    try:
+        parsed = json.loads(raw or '[]')
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [
+        {key: value for key, value in item.items() if key not in HISTORY_TRACE_DROP_FIELDS}
+        for item in parsed
+        if isinstance(item, dict)
+    ]
+
+
 @app.get("/api/conversations/{conversation_id}")
-async def conversation_detail(conversation_id: str, user_id: str = Depends(current_user)) -> list[dict]:
-    db = await connect(); rows = await fetchall(db, "SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.conversation_id=? AND c.user_id=? ORDER BY m.created_at", (conversation_id, user_id)); await db.close()
+async def conversation_detail(conversation_id: str, limit: int = Query(default=HISTORY_MESSAGE_LIMIT, ge=1, le=300), user_id: str = Depends(current_user)) -> list[dict]:
+    """历史对话回放：默认回最近 100 条消息，够翻回最近几轮，也不至于把返回包撑爆。"""
+    db = await connect()
+    rows = await fetchall(
+        db,
+        "SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.conversation_id=? AND c.user_id=? ORDER BY m.created_at DESC LIMIT ?",
+        (conversation_id, user_id, limit),
+    )
+    await db.close()
     # 一并回放过程区（思考 / 步骤 / 工具 / 技能 / 子智能体）与耗时：不返回这些字段，
     # 前端重新进入对话时就只剩正文了。
     messages = []
-    for row in rows:
+    for row in reversed(rows):
         view = row_dict(row)
-        try:
-            trace = json.loads(view.get("trace_json") or "[]")
-        except json.JSONDecodeError:
-            trace = []
         messages.append({
             **view,
             "sources": decode_sources(row["sources_json"]),
-            "trace": trace if isinstance(trace, list) else [],
+            "trace": history_trace(view.get("trace_json")),
             "reason": view.get("reason") or "",
             # 工具产物（生成的文件）与过程区一样回放：重进对话时文件卡还在，可以继续预览/下载
             "artifacts": [item for item in artifact_service.decode(view.get("artifacts_json")) if isinstance(item, dict)],
             "duration_ms": int(view.get("duration_ms") or 0),
         })
     return messages
+
 
 
 @app.post('/api/shares')
@@ -3159,95 +3600,122 @@ async def register_knowledge_document(db: Any, *, knowledge_id: str, user_id: st
     return document_id, bool(text.strip())
 
 
-@app.post('/api/shares/to-knowledge')
-async def share_to_knowledge(payload: ShareToKnowledge, background_tasks: BackgroundTasks, user_id: str = Depends(current_user)) -> dict:
-    """把对话里勾选的内容与文件存进指定知识库。
+async def share_to_knowledge_worker(job_id: str, *, knowledge_id: str, user_id: str, title: str, content: str, artifact_ids: list[str], folder_id: str) -> dict:
+    """把选中的正文与文件落进知识库。
 
-    正文按 Markdown 文档入库（可检索、可被 AI 整理），勾选的产物复制一份进知识库，
-    对话里的原件不动。空间与权益走和上传同一套口径：空间不够就明说哪些没存进去，
-    不做静默丢文件。
+    每个文件都要复制 + 抽取正文（可能含 OCR），整体耗时不可控，所以放在任务里跑。
     """
-    rate_limit(f"share-kb:{user_id}", 60, 60, '保存过于频繁，请稍后再试')
-    title = re.sub(r'[\\/:*?"<>|]', ' ', (payload.title or '').strip())[:60].strip() or '对话内容'
-    content = (payload.content or '').strip()
-    if not content and not payload.artifact_ids:
-        raise HTTPException(400, '没有选中可保存的内容')
+    await jobs_service.set_progress(job_id, '正在写入知识库…')
     db = await connect()
-    kb = await fetchone(db, "SELECT id,name FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (payload.knowledge_id, user_id))
-    if not kb:
-        await db.close(); raise HTTPException(404, '知识库不存在')
-    folder_id = payload.folder_id or ''
-    if folder_id:
-        folder = await fetchone(db, 'SELECT id FROM folders WHERE id=? AND user_id=? AND knowledge_id=?', (folder_id, user_id, payload.knowledge_id))
-        if not folder:
-            await db.close(); raise HTTPException(404, '目标文件夹不存在')
-    user = await fetchone(db, 'SELECT * FROM users WHERE id=?', (user_id,))
-    limits = limits_for_user(user)
-    if not account_state(user, 0)['entitlements']['can_upload']:
-        await db.close(); raise HTTPException(403, '免费试用已结束，开通会员后可继续添加资料')
-    room = limits['storage_bytes'] - await storage_used_bytes(db, user_id)
-    if room <= 0:
-        await db.close(); raise HTTPException(413, f"{limits['label']}可用空间已满，升级会员可继续添加")
-
-    async def store(storage_ref: str, name: str, size: int) -> str:
-        """登记成知识库文档：分块 + 全文索引 + 计数，和上传走同一份实现。"""
-        document_id, has_text = await register_knowledge_document(
-            db, knowledge_id=payload.knowledge_id, user_id=user_id,
-            storage_ref=storage_ref, name=name, size=size, folder_id=folder_id,
-        )
-        if has_text:
-            # 有正文才排整理任务：空正文排了也是一条空摘要
-            to_organize.append(document_id)
-        return document_id
-
-    saved: list[dict] = []
-    skipped: list[str] = []
     to_organize: list[str] = []
-    if content:
-        name = f'{title}.md'
-        document_id = uuid.uuid4().hex
-        body = f'# {title}\n\n{content}\n'
-        data = body.encode('utf-8')
-        if len(data) > room:
-            await db.close(); raise HTTPException(413, f"{limits['label']}可用空间不足，先清理或升级会员")
-        storage_ref = await storage.save_bytes(data, f'uploads/documents/{document_id}_{name}', content_type='text/markdown; charset=utf-8')
-        room -= len(data)
-        await store(storage_ref, name, len(data))
-        saved.append({'name': name, 'kind': 'text'})
+    try:
+        kb = await fetchone(db, "SELECT id,name FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (knowledge_id, user_id))
+        if not kb:
+            raise RuntimeError('知识库不存在')
+        user = await fetchone(db, 'SELECT * FROM users WHERE id=?', (user_id,))
+        limits = limits_for_user(user)
+        room = limits['storage_bytes'] - await storage_used_bytes(db, user_id)
+        if room <= 0:
+            raise RuntimeError(f"{limits['label']}可用空间已满，升级会员可继续添加")
 
-    for artifact_id in payload.artifact_ids:
-        row = await fetchone(db, 'SELECT * FROM artifacts WHERE id=? AND user_id=?', (artifact_id, user_id))
-        if not row:
-            continue
-        source_ref = artifact_service.stored_ref(row)
-        name = Path(str(row['filename'] or '文件')).name[:120] or '文件'
-        if not await storage.exists(source_ref):
-            skipped.append(name)
-            continue
-        size = int(row['file_size'] or 0)
-        if size > room:
-            skipped.append(name)
-            continue
-        document_id = uuid.uuid4().hex
-        try:
-            destination_ref = await storage.copy_ref(source_ref, f'uploads/documents/{document_id}_{name}')
-        except storage.StorageError:
-            skipped.append(name)
-            continue
-        room -= size
-        await store(destination_ref, name, size)
-        saved.append({'name': name, 'kind': 'file'})
+        saved: list[dict] = []
+        skipped: list[str] = []
 
-    await db.commit(); await db.close()
+        async def store(storage_ref: str, name: str, size: int) -> str:
+            """登记成知识库文档：分块 + 全文索引 + 计数，和上传走同一份实现。"""
+            document_id, has_text = await register_knowledge_document(
+                db, knowledge_id=knowledge_id, user_id=user_id,
+                storage_ref=storage_ref, name=name, size=size, folder_id=folder_id,
+            )
+            if has_text:
+                # 有正文才排整理任务：空正文排了也是一条空摘要
+                to_organize.append(document_id)
+            return document_id
+
+        if content:
+            name = f'{title}.md'
+            document_id = uuid.uuid4().hex
+            body = f'# {title}\n\n{content}\n'
+            data = body.encode('utf-8')
+            if len(data) > room:
+                raise RuntimeError(f"{limits['label']}可用空间不足，先清理或升级会员")
+            storage_ref = await storage.save_bytes(data, f'uploads/documents/{document_id}_{name}', content_type='text/markdown; charset=utf-8')
+            room -= len(data)
+            await store(storage_ref, name, len(data))
+            saved.append({'name': name, 'kind': 'text'})
+
+        for artifact_id in artifact_ids:
+            row = await fetchone(db, 'SELECT * FROM artifacts WHERE id=? AND user_id=?', (artifact_id, user_id))
+            if not row:
+                continue
+            source_ref = artifact_service.stored_ref(row)
+            name = Path(str(row['filename'] or '文件')).name[:120] or '文件'
+            if not await storage.exists(source_ref):
+                skipped.append(name)
+                continue
+            size = int(row['file_size'] or 0)
+            if size > room:
+                skipped.append(name)
+                continue
+            document_id = uuid.uuid4().hex
+            try:
+                destination_ref = await storage.copy_ref(source_ref, f'uploads/documents/{document_id}_{name}')
+            except storage.StorageError:
+                skipped.append(name)
+                continue
+            room -= size
+            await store(destination_ref, name, size)
+            saved.append({'name': name, 'kind': 'file'})
+
+        await db.commit()
+    finally:
+        await db.close()
     for document_id in to_organize:
-        background_tasks.add_task(organize_document, document_id)
+        schedule_background(organize_document(document_id))
     return {
-        'knowledge_id': payload.knowledge_id,
+        'knowledge_id': knowledge_id,
         'knowledge_name': kb['name'],
         'saved': saved,
         'skipped': skipped,
         'message': f'已存入「{kb["name"]}」' + (f'，{len(skipped)} 个文件因空间不足未存入' if skipped else ''),
     }
+
+
+@app.post('/api/shares/to-knowledge')
+async def share_to_knowledge(payload: ShareToKnowledge, user_id: str = Depends(current_user)) -> dict:
+    """把对话里勾选的内容与文件存进指定知识库。
+
+    正文按 Markdown 文档入库（可检索、可被 AI 整理），勾选的产物复制一份进知识库，
+    对话里的原件不动。文件要逐个抽取正文，可能超过容器通道单次调用上限，
+    所以只做校验后排队，客户端轮询 /api/jobs/{id} 拿 saved / skipped。
+    """
+    rate_limit(f"share-kb:{user_id}", 60, 60, '保存过于频繁，请稍后再试')
+    title = re.sub(r'[\\/:*?"<>|]', ' ', (payload.title or '').strip())[:60].strip() or '对话内容'
+    content = (payload.content or '').strip()
+    folder_id = payload.folder_id or ''
+    if not content and not payload.artifact_ids:
+        raise HTTPException(400, '没有选中可保存的内容')
+    db = await connect()
+    try:
+        kb = await fetchone(db, "SELECT id,name FROM knowledge_bases WHERE id=? AND user_id=? AND status='active'", (payload.knowledge_id, user_id))
+        if not kb:
+            raise HTTPException(404, '知识库不存在')
+        if folder_id:
+            folder = await fetchone(db, 'SELECT id FROM folders WHERE id=? AND user_id=? AND knowledge_id=?', (folder_id, user_id, payload.knowledge_id))
+            if not folder:
+                raise HTTPException(404, '目标文件夹不存在')
+        user = await fetchone(db, 'SELECT * FROM users WHERE id=?', (user_id,))
+        if not account_state(user, 0)['entitlements']['can_upload']:
+            raise HTTPException(403, '免费试用已结束，开通会员后可继续添加资料')
+    finally:
+        await db.close()
+    job_id = await jobs_service.create(user_id, 'share_import', {'knowledge_id': payload.knowledge_id, 'files': len(payload.artifact_ids)})
+    jobs_service.spawn(job_id, lambda jid: share_to_knowledge_worker(
+        jid, knowledge_id=payload.knowledge_id, user_id=user_id, title=title,
+        content=content, artifact_ids=list(payload.artifact_ids), folder_id=folder_id,
+    ))
+    return {'pending': True, 'job_id': job_id}
+
 
 
 # 好友点开分享卡片后落地的那个知识库：固定名字、每个用户只有一个。
@@ -3283,124 +3751,145 @@ async def ensure_shared_folder(db: Any, user_id: str, knowledge_id: str) -> str:
     return folder_id
 
 
-@app.post('/api/shares/{share_id}/claim')
-async def claim_share(share_id: str, background_tasks: BackgroundTasks, user_id: str = Depends(current_user)) -> dict:
-    """把好友分享给你的内容收进你的「共享知识库」。
-
-    分享页对好友是公开的，但「收进来」是收件人的动作，所以这一步要登录（小程序里就是微信登录）。
-    同一张卡片谁来点就收进谁的共享知识库，彼此不串。
+async def claim_share_worker(job_id: str, *, share_id: str, user_id: str) -> dict:
+    """把好友分享的内容收进「共享知识库」。
 
     分流规则：
       · 卡片带文件 → 复制一份进「共享知识库 / 分享的文件」，拷不动的记在 skipped 里，不静默丢；
       · 卡片带正文 → 正文落成一篇 Markdown 放在共享知识库根目录，能被检索、能被继续追问。
     收件记录落在 share_claims：同一个人重复点开同一张卡片不会重复入库。
+    文件要复制 + 抽取正文，可能超过容器通道单次调用上限，所以整段放在任务里跑。
+    """
+    await jobs_service.set_progress(job_id, '正在收取分享内容…')
+    db = await connect()
+    to_organize: list[str] = []
+    try:
+        card = await fetchone(db, 'SELECT id,user_id,title,knowledge_name,question,answer,sources_json,files_json FROM share_cards WHERE id=?', (share_id,))
+        if not card:
+            raise RuntimeError('分享内容不存在或已失效')
+
+        shared = await ensure_shared_knowledge(db, user_id)
+        knowledge_id = str(shared['id'])
+        knowledge_name = str(shared['name'])
+
+        claimed = await fetchone(db, 'SELECT knowledge_id,folder_id,documents_json FROM share_claims WHERE share_id=? AND user_id=?', (share_id, user_id))
+        if claimed:
+            documents = decode_sources(claimed['documents_json'])
+            return {'knowledge_id': str(claimed['knowledge_id']), 'knowledge_name': knowledge_name, 'folder_id': str(claimed['folder_id'] or ''), 'documents': documents, 'skipped': [], 'already': True, 'message': f'这条分享已经在你的「{knowledge_name}」里了'}
+
+        files = decode_sources(card['files_json'])
+        answer = str(card['answer'] or '').strip()
+        question = str(card['question'] or '').strip()
+        if not answer and not files:
+            raise RuntimeError('这条分享没有可收取的内容')
+
+        user = await fetchone(db, 'SELECT * FROM users WHERE id=?', (user_id,))
+        limits = limits_for_user(user)
+        if not account_state(user, 0)['entitlements']['can_upload']:
+            raise RuntimeError('免费试用已结束，开通会员后可继续收下分享内容')
+        room = limits['storage_bytes'] - await storage_used_bytes(db, user_id)
+        if room <= 0:
+            raise RuntimeError(f"{limits['label']}可用空间已满，升级会员后可继续收下分享内容")
+
+        folder_id = ''
+        saved: list[dict] = []
+        skipped: list[str] = []
+
+        # 正文：一句话也能当一篇资料存下来，好友后续可以直接在这篇上追问
+        if answer:
+            raw_title = str(card['title'] or question or '分享的内容')
+            title = re.sub(r'[\\/:*?"<>|]', ' ', raw_title).strip()[:60] or '分享的内容'
+            name = f'{title}.md'
+            body = f'# {title}\n\n'
+            if question:
+                body += f'**好友的提问**\n\n{question}\n\n'
+            body += answer + '\n'
+            sources = decode_sources(card['sources_json'])
+            if sources:
+                lines = []
+                for index, item in enumerate(sources):
+                    label = str(item.get('filename') or item.get('url') or '出处')
+                    page = int(item.get('page_number') or 0)
+                    lines.append(f'{index + 1}. {label}' + (f'（第 {page} 页）' if page else ''))
+                body += '\n\n---\n\n**参考出处**\n\n' + '\n'.join(lines) + '\n'
+            data = body.encode('utf-8')
+            if len(data) > room:
+                raise RuntimeError(f"{limits['label']}可用空间不足，先清理或升级会员")
+            document_id = uuid.uuid4().hex
+            storage_ref = await storage.save_bytes(data, f'uploads/documents/{document_id}_{name}', content_type='text/markdown; charset=utf-8')
+            room -= len(data)
+            registered, has_text = await register_knowledge_document(
+                db, knowledge_id=knowledge_id, user_id=user_id, storage_ref=storage_ref, name=name, size=len(data),
+            )
+            if has_text:
+                to_organize.append(registered)
+            saved.append({'name': name, 'kind': 'text', 'document_id': registered})
+
+        # 文件：拷一份到收件人的空间里，原件仍在分享者名下，两边互不影响
+        for item in files:
+            artifact_id = str(item.get('artifact_id') or '')
+            row = await fetchone(db, 'SELECT id,filename,file_size,storage_path FROM artifacts WHERE id=? AND user_id=?', (artifact_id, card['user_id']))
+            if not row:
+                skipped.append(str(item.get('name') or '文件')); continue
+            source_ref = str(row['storage_path'] or '')
+            name = Path(str(row['filename'] or item.get('name') or '文件')).name[:120] or '文件'
+            if not await storage.exists(source_ref):
+                skipped.append(name); continue
+            size = int(row['file_size'] or 0)
+            if size > room:
+                skipped.append(name); continue
+            if not folder_id:
+                folder_id = await ensure_shared_folder(db, user_id, knowledge_id)
+            document_id = uuid.uuid4().hex
+            try:
+                destination_ref = await storage.copy_ref(source_ref, f'uploads/documents/{document_id}_{name}')
+            except storage.StorageError:
+                skipped.append(name); continue
+            room -= size
+            registered, has_text = await register_knowledge_document(
+                db, knowledge_id=knowledge_id, user_id=user_id, storage_ref=destination_ref, name=name, size=size, folder_id=folder_id,
+            )
+            if has_text:
+                to_organize.append(registered)
+            saved.append({'name': name, 'kind': 'file', 'document_id': registered})
+
+        await db.execute(
+            'INSERT OR REPLACE INTO share_claims(share_id,user_id,knowledge_id,folder_id,documents_json,created_at) VALUES(?,?,?,?,?,?)',
+            (share_id, user_id, knowledge_id, folder_id, json.dumps(saved, ensure_ascii=False), now()),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+    for document_id in to_organize:
+        schedule_background(organize_document(document_id))
+    if not saved:
+        return {'knowledge_id': knowledge_id, 'knowledge_name': knowledge_name, 'folder_id': folder_id, 'documents': [], 'skipped': skipped, 'already': False, 'message': '分享内容没能存下来，请稍后重试'}
+    tail = f'，{len(skipped)} 个文件因空间不足未存入' if skipped else ''
+    return {'knowledge_id': knowledge_id, 'knowledge_name': knowledge_name, 'folder_id': folder_id, 'documents': saved, 'skipped': skipped, 'already': False, 'message': f'已收进「{knowledge_name}」{tail}'}
+
+
+@app.post('/api/shares/{share_id}/claim')
+async def claim_share(share_id: str, user_id: str = Depends(current_user)) -> dict:
+    """把好友分享给你的内容收进「共享知识库」。
+
+    分享页对好友是公开的，但「收进来」是收件人的动作，所以这一步要登录（小程序里就是微信登录）。
+    同一张卡片谁来点就收进谁的共享知识库，彼此不串。内容多时要复制文件并抽取正文，
+    可能超过容器通道单次调用上限，所以只做校验后排队，客户端轮询 /api/jobs/{id}。
     """
     if not valid_share_id(share_id):
         raise HTTPException(404, '分享内容不存在或已失效')
     rate_limit(f"share-claim:{user_id}", 60, 60, '收件过于频繁，请稍后再试')
     db = await connect()
-    card = await fetchone(db, 'SELECT id,user_id,title,knowledge_name,question,answer,sources_json,files_json FROM share_cards WHERE id=?', (share_id,))
-    if not card:
-        await db.close(); raise HTTPException(404, '分享内容不存在或已失效')
-
-    shared = await ensure_shared_knowledge(db, user_id)
-    knowledge_id = str(shared['id'])
-    knowledge_name = str(shared['name'])
-
-    claimed = await fetchone(db, 'SELECT knowledge_id,folder_id,documents_json FROM share_claims WHERE share_id=? AND user_id=?', (share_id, user_id))
-    if claimed:
-        documents = decode_sources(claimed['documents_json'])
+    try:
+        card = await fetchone(db, 'SELECT id FROM share_cards WHERE id=?', (share_id,))
+        if not card:
+            raise HTTPException(404, '分享内容不存在或已失效')
+    finally:
         await db.close()
-        return {'knowledge_id': str(claimed['knowledge_id']), 'knowledge_name': knowledge_name, 'folder_id': str(claimed['folder_id'] or ''), 'documents': documents, 'skipped': [], 'already': True, 'message': f'这条分享已经在你的「{knowledge_name}」里了'}
+    job_id = await jobs_service.create(user_id, 'share_import', {'share_id': share_id})
+    jobs_service.spawn(job_id, lambda jid: claim_share_worker(jid, share_id=share_id, user_id=user_id))
+    return {'pending': True, 'job_id': job_id}
 
-    files = decode_sources(card['files_json'])
-    answer = str(card['answer'] or '').strip()
-    question = str(card['question'] or '').strip()
-    if not answer and not files:
-        await db.close(); raise HTTPException(400, '这条分享没有可收取的内容')
-
-    user = await fetchone(db, 'SELECT * FROM users WHERE id=?', (user_id,))
-    limits = limits_for_user(user)
-    if not account_state(user, 0)['entitlements']['can_upload']:
-        await db.close(); raise HTTPException(403, '免费试用已结束，开通会员后可继续收下分享内容')
-    room = limits['storage_bytes'] - await storage_used_bytes(db, user_id)
-    if room <= 0:
-        await db.close(); raise HTTPException(413, f"{limits['label']}可用空间已满，升级会员后可继续收下分享内容")
-
-    folder_id = ''
-    saved: list[dict] = []
-    skipped: list[str] = []
-    to_organize: list[str] = []
-
-    # 正文：一句话也能当一篇资料存下来，好友后续可以直接在这篇上追问
-    if answer:
-        raw_title = str(card['title'] or question or '分享的内容')
-        title = re.sub(r'[\\/:*?"<>|]', ' ', raw_title).strip()[:60] or '分享的内容'
-        name = f'{title}.md'
-        body = f'# {title}\n\n'
-        if question:
-            body += f'**好友的提问**\n\n{question}\n\n'
-        body += answer + '\n'
-        sources = decode_sources(card['sources_json'])
-        if sources:
-            lines = []
-            for index, item in enumerate(sources):
-                label = str(item.get('filename') or item.get('url') or '出处')
-                page = int(item.get('page_number') or 0)
-                lines.append(f'{index + 1}. {label}' + (f'（第 {page} 页）' if page else ''))
-            body += '\n\n---\n\n**参考出处**\n\n' + '\n'.join(lines) + '\n'
-        data = body.encode('utf-8')
-        if len(data) > room:
-            await db.close(); raise HTTPException(413, f"{limits['label']}可用空间不足，先清理或升级会员")
-        document_id = uuid.uuid4().hex
-        storage_ref = await storage.save_bytes(data, f'uploads/documents/{document_id}_{name}', content_type='text/markdown; charset=utf-8')
-        room -= len(data)
-        registered, has_text = await register_knowledge_document(
-            db, knowledge_id=knowledge_id, user_id=user_id, storage_ref=storage_ref, name=name, size=len(data),
-        )
-        if has_text:
-            to_organize.append(registered)
-        saved.append({'name': name, 'kind': 'text', 'document_id': registered})
-
-    # 文件：拷一份到收件人的空间里，原件仍在分享者名下，两边互不影响
-    for item in files:
-        artifact_id = str(item.get('artifact_id') or '')
-        row = await fetchone(db, 'SELECT id,filename,file_size,storage_path FROM artifacts WHERE id=? AND user_id=?', (artifact_id, card['user_id']))
-        if not row:
-            skipped.append(str(item.get('name') or '文件')); continue
-        source_ref = str(row['storage_path'] or '')
-        name = Path(str(row['filename'] or item.get('name') or '文件')).name[:120] or '文件'
-        if not await storage.exists(source_ref):
-            skipped.append(name); continue
-        size = int(row['file_size'] or 0)
-        if size > room:
-            skipped.append(name); continue
-        if not folder_id:
-            folder_id = await ensure_shared_folder(db, user_id, knowledge_id)
-        document_id = uuid.uuid4().hex
-        try:
-            destination_ref = await storage.copy_ref(source_ref, f'uploads/documents/{document_id}_{name}')
-        except storage.StorageError:
-            skipped.append(name); continue
-        room -= size
-        registered, has_text = await register_knowledge_document(
-            db, knowledge_id=knowledge_id, user_id=user_id, storage_ref=destination_ref, name=name, size=size, folder_id=folder_id,
-        )
-        if has_text:
-            to_organize.append(registered)
-        saved.append({'name': name, 'kind': 'file', 'document_id': registered})
-
-    await db.execute(
-        'INSERT OR REPLACE INTO share_claims(share_id,user_id,knowledge_id,folder_id,documents_json,created_at) VALUES(?,?,?,?,?,?)',
-        (share_id, user_id, knowledge_id, folder_id, json.dumps(saved, ensure_ascii=False), now()),
-    )
-    await db.commit(); await db.close()
-    for document_id in to_organize:
-        background_tasks.add_task(organize_document, document_id)
-    if not saved:
-        return {'knowledge_id': knowledge_id, 'knowledge_name': knowledge_name, 'folder_id': folder_id, 'documents': [], 'skipped': skipped, 'already': False, 'message': '分享内容没能存下来，请稍后重试'}
-    tail = f'，{len(skipped)} 个文件因空间不足未存入' if skipped else ''
-    return {'knowledge_id': knowledge_id, 'knowledge_name': knowledge_name, 'folder_id': folder_id, 'documents': saved, 'skipped': skipped, 'already': False, 'message': f'已收进「{knowledge_name}」{tail}'}
 
 
 # ---- 知识库邀请：把「整个资料库」分享给微信好友 ----
@@ -3832,27 +4321,19 @@ SKILL_PROMPT_TEMPLATE = (
 )
 
 
-@app.post('/api/skills/enhance')
-async def enhance_skill_prompt(payload: SkillEnhanceRequest, user_id: str = Depends(current_user)) -> dict:
-    """增强提示词：把随手写的一句话按技能模板改写成可执行的技能指令。
+async def enhance_skill_worker(job_id: str, text: str, name: str) -> dict:
+    """后台跑一次改写：模型调用可能到几十秒，超出容器通道单次调用上限。
 
-    走直连模型通道而不是 harness：这是一次纯文本改写，秒级返回即可，
-    没必要为它付运行时冷启动的成本。
+    走直连模型通道而不是 harness：这是一次纯文本改写，没必要为它付运行时冷启动的成本。
     """
-    rate_limit(f"skill-enhance:{user_id}", 20, 600, '增强提示词过于频繁，请稍后再试')
-    text = (payload.instruction or '').strip()
-    if not text:
-        raise HTTPException(400, '先写一句技能要求，再点增强提示词')
     from .services.llm import provider_config
-    config = provider_config('')
-    if not config:
-        raise HTTPException(503, '模型尚未配置，暂时无法增强提示词')
-    base_url, api_key, model = config
+    base_url, api_key, model = provider_config('')
     root = base_url.rstrip('/')
     endpoint = f"{root}/chat/completions" if root.endswith('/v1') else f"{root}/v1/chat/completions"
-    subject = f'技能名称：{payload.name.strip()}\n' if (payload.name or '').strip() else ''
+    subject = f'技能名称：{name}\n' if name else ''
+    await jobs_service.set_progress(job_id, '正在改写提示词…')
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(40, connect=10)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(90, connect=10)) as client:
             response = await client.post(endpoint, headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}, json={
                 'model': model, 'temperature': 0.4, 'max_tokens': 900,
                 'messages': [
@@ -3864,18 +4345,99 @@ async def enhance_skill_prompt(payload: SkillEnhanceRequest, user_id: str = Depe
             enhanced = str(response.json()['choices'][0]['message']['content'] or '').strip()
     except Exception as exc:
         print(f'[skill] 增强提示词失败：{exc}', flush=True)
-        raise HTTPException(503, '增强提示词暂时不可用，请稍后重试') from exc
+        raise RuntimeError('增强提示词暂时不可用，请稍后重试') from exc
     if not enhanced:
-        raise HTTPException(503, '增强提示词暂时不可用，请稍后重试')
+        raise RuntimeError('增强提示词暂时不可用，请稍后重试')
     return {'instruction': enhanced[:4000]}
 
 
-@app.post('/api/skills/build')
-async def build_skill(payload: SkillBuildRequest, user_id: str = Depends(current_user)) -> StreamingResponse:
-    """新建技能：让 harness 加载 skill-creator，按用户要求生成并安装技能包。
+@app.post('/api/skills/enhance')
+async def enhance_skill_prompt(payload: SkillEnhanceRequest, user_id: str = Depends(current_user)) -> dict:
+    """增强提示词：登记后台任务，客户端轮询 /api/jobs/{id} 取结果。
 
-    生成技能要跑完整一轮 agent（思考 → 写文件 → 自检），耗时以十秒计，所以过程用
-    SSE 推给前端：``stage``（当前在做什么）、``skill``（成品）、``error``。
+    模型改写经常要几十秒，远超云托管单次调用上限，不能同步等。
+    """
+    rate_limit(f"skill-enhance:{user_id}", 20, 600, '增强提示词过于频繁，请稍后再试')
+    text = (payload.instruction or '').strip()
+    if not text:
+        raise HTTPException(400, '先写一句技能要求，再点增强提示词')
+    from .services.llm import provider_config
+    if not provider_config(''):
+        raise HTTPException(503, '模型尚未配置，暂时无法增强提示词')
+    name = (payload.name or '').strip()
+    job_id = await jobs_service.create(user_id, 'skill_enhance', {'name': name[:30]})
+    jobs_service.spawn(job_id, lambda jid: enhance_skill_worker(jid, text, name))
+    return {'job_id': job_id}
+
+
+async def build_skill_worker(job_id: str, *, payload: SkillBuildRequest, form: dict, slug: str, instruction: str, user_id: str) -> dict:
+    """后台跑一轮 skill-creator：思考 → 写文件 → 自检 → 安装技能包。
+
+    过程阶段写进任务进度，成品写进任务结果，客户端轮询 /api/jobs/{id}。
+    """
+    await jobs_service.set_progress(job_id, '正在准备制作技能…')
+    try:
+        async for event in stream_raw_prompt(
+            skill_build.build_prompt(instruction, payload.name, payload.summary, slug),
+            f'skillbuild-{slug}', settings.harness_model,
+            thinking='deep', user_id=user_id,
+            skills=[{
+                'id': 'builtin-skill-creator',
+                'harness': skill_build.BUILTIN_SKILL_SLUG,
+                'prompt': '',
+                'label': skill_build.BUILTIN_SKILL_LABEL,
+            }],
+        ):
+            if event.get('kind') == 'trace':
+                label = skill_build.stage_label(event.get('item') or {})
+                if label:
+                    await jobs_service.set_progress(job_id, label)
+        await jobs_service.set_progress(job_id, '正在安装技能包…')
+        source = skill_build.workspace_build_dir(user_id, slug)
+        degraded = not (source / skill_build.SKILL_FILE).is_file()
+        if degraded:
+            # 模型没写出技能包（抖动/超时）：用用户填的内容合成一份结构合规的 SKILL.md，
+            # 不让用户白填一遍表单。前端会拿到 degraded=true，可以提示重新生成。
+            skill_build.synthesize_package(user_id, slug, payload.name, payload.summary, instruction)
+        info = skill_build.install_package(user_id, slug, source)
+        meta = info.get('meta') or {}
+        # frontmatter 的 name 现在固定是技能 slug（kebab-case 英文，运行时靠它加载），
+        # 展示名只能用用户填的 / 表单里的中文名，不能拿 frontmatter 的 name 兜底。
+        name = (form['name'] or '').strip()[:SKILL_NAME_MAX] or '我的技能'
+        summary = (form['summary'] or (meta.get('description') or '').strip())[:80]
+        body = skill_build.read_package_text(user_id, slug)
+        skill_id = f"sk-{uuid.uuid4().hex[:12]}"
+        stamp = now()
+        store = await connect()
+        try:
+            await store.execute(
+                "INSERT INTO skills(id,user_id,name,summary,prompt,icon,developer_wechat,harness,visibility,source,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'private','custom','active',?,?)",
+                (skill_id, user_id, name, summary, body, form['icon'], form['developer_wechat'], slug, stamp, stamp),
+            )
+            await store.commit()
+            row = await fetchone(store, 'SELECT * FROM skills WHERE id=?', (skill_id,))
+        finally:
+            await store.close()
+        # 安装完就把工作区里的构建残留删掉，避免同一份技能留两份文件
+        skill_build.remove_build_dir(user_id, slug)
+        card = skill_payload(row, user_id)
+        card['files'] = skill_build.package_files(user_id, slug)
+        card['package'] = True
+        card['degraded'] = degraded
+        card['note'] = '技能包已生成' if not degraded else '模型没写完技能包，已按你填写的内容生成基础技能'
+        return {'skill': card, 'note': card['note'], 'degraded': degraded}
+    except Exception:
+        # 失败不落库：技能包与构建残留一起清掉，不留半成品文件
+        skill_build.remove_package(user_id, slug)
+        raise
+
+
+@app.post('/api/skills/build')
+async def build_skill(payload: SkillBuildRequest, user_id: str = Depends(current_user)) -> dict:
+    """新建技能：让 harness 加载 skill-creator 生成并安装技能包。
+
+    生成技能要跑完整一轮 agent（思考 → 写文件 → 自检），耗时以分钟计，远超
+    云托管单次调用 15s 上限，所以只登记任务：进度与成品都用 /api/jobs/{id} 轮询。
     """
     rate_limit(f"skill-build:{user_id}", 6, 900, '制作技能过于频繁，请稍后再试')
     instruction = (payload.instruction or '').strip()
@@ -3901,67 +4463,7 @@ async def build_skill(payload: SkillBuildRequest, user_id: str = Depends(current
         icon=payload.icon,
     ))
     slug = skill_build.new_slug()
-    prompt = skill_build.build_prompt(instruction, payload.name, payload.summary, slug)
-    session_id = f'skillbuild-{slug}'
+    job_id = await jobs_service.create(user_id, 'skill_build', {'slug': slug, 'name': form['name']})
+    jobs_service.spawn(job_id, lambda jid: build_skill_worker(jid, payload=payload, form=form, slug=slug, instruction=instruction, user_id=user_id))
+    return {'job_id': job_id}
 
-    async def events():
-        yield f"data: {json.dumps({'type':'stage','label':'正在准备制作技能…'}, ensure_ascii=False)}\n\n"
-        try:
-            async for event in stream_raw_prompt(
-                prompt, session_id, settings.harness_model,
-                thinking='deep', user_id=user_id,
-                skills=[{
-                    'id': 'builtin-skill-creator',
-                    'harness': skill_build.BUILTIN_SKILL_SLUG,
-                    'prompt': '',
-                    'label': skill_build.BUILTIN_SKILL_LABEL,
-                }],
-            ):
-                if event.get('kind') == 'trace':
-                    label = skill_build.stage_label(event.get('item') or {})
-                    if label:
-                        yield f"data: {json.dumps({'type':'stage','label':label}, ensure_ascii=False)}\n\n"
-                    continue
-            yield f"data: {json.dumps({'type':'stage','label':'正在安装技能包…'}, ensure_ascii=False)}\n\n"
-            source = skill_build.workspace_build_dir(user_id, slug)
-            degraded = not (source / skill_build.SKILL_FILE).is_file()
-            if degraded:
-                # 模型没写出技能包（抖动/超时）：用用户填的内容合成一份结构合规的 SKILL.md，
-                # 不让用户白填一遍表单。前端会拿到 degraded=true，可以提示重新生成。
-                skill_build.synthesize_package(user_id, slug, payload.name, payload.summary, instruction)
-            info = skill_build.install_package(user_id, slug, source)
-            meta = info.get('meta') or {}
-            # frontmatter 的 name 现在固定是技能 slug（kebab-case 英文，运行时靠它加载），
-            # 展示名只能用用户填的 / 表单里的中文名，不能拿 frontmatter 的 name 兜底。
-            name = (form['name'] or '').strip()[:SKILL_NAME_MAX] or '我的技能'
-            summary = (form['summary'] or (meta.get('description') or '').strip())[:80]
-            body = skill_build.read_package_text(user_id, slug)
-            skill_id = f"sk-{uuid.uuid4().hex[:12]}"
-            stamp = now()
-            store = await connect()
-            try:
-                await store.execute(
-                    "INSERT INTO skills(id,user_id,name,summary,prompt,icon,developer_wechat,harness,visibility,source,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'private','custom','active',?,?)",
-                    (skill_id, user_id, name, summary, body, form['icon'], form['developer_wechat'], slug, stamp, stamp),
-                )
-                await store.commit()
-                row = await fetchone(store, 'SELECT * FROM skills WHERE id=?', (skill_id,))
-            finally:
-                await store.close()
-            # 安装完就把工作区里的构建残留删掉，避免同一份技能留两份文件
-            skill_build.remove_build_dir(user_id, slug)
-            card = skill_payload(row, user_id)
-            card['files'] = skill_build.package_files(user_id, slug)
-            card['package'] = True
-            card['degraded'] = degraded
-            card['note'] = '技能包已生成' if not degraded else '模型没写完技能包，已按你填写的内容生成基础技能'
-            yield f"data: {json.dumps({'type':'skill','skill':card,'note':card['note'],'degraded':degraded}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'type':'done'}, ensure_ascii=False)}\n\n"
-        except Exception as exc:
-            # 失败不落库：技能包与构建残留一起清掉，不留半成品文件
-            skill_build.remove_package(user_id, slug)
-            message = str(exc).strip() or '技能制作失败，请重试'
-            yield f"data: {json.dumps({'type':'error','message':message}, ensure_ascii=False)}\n\n"
-        return
-
-    return StreamingResponse(events(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})

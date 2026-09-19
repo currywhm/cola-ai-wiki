@@ -293,6 +293,7 @@ CREATE TABLE IF NOT EXISTS wx_tokens (name TEXT PRIMARY KEY, value TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS kf_sessions (openid TEXT PRIMARY KEY, user_id TEXT NOT NULL DEFAULT '', nickname TEXT NOT NULL DEFAULT '', message_count INTEGER NOT NULL DEFAULT 0, unread_count INTEGER NOT NULL DEFAULT 0, last_message_at TEXT NOT NULL DEFAULT '', last_autoreply_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS kf_messages (id TEXT PRIMARY KEY, openid TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT 'user', msg_type TEXT NOT NULL DEFAULT 'text', content TEXT NOT NULL DEFAULT '', media_id TEXT NOT NULL DEFAULT '', kf_account TEXT NOT NULL DEFAULT '', raw_json TEXT NOT NULL DEFAULT '{}', media_path TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'push', created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS kf_outbox (id TEXT PRIMARY KEY, openid TEXT NOT NULL, msg_type TEXT NOT NULL DEFAULT 'text', payload_json TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL DEFAULT 'pending', error TEXT NOT NULL DEFAULT '', kf_account TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, sent_at TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', progress TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL DEFAULT '{}', result_json TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT NOT NULL DEFAULT '');
 """
 
 
@@ -329,6 +330,7 @@ async def _init_sqlite() -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_documents_origin ON documents(origin_document_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_chat_runs_conversation ON chat_runs(conversation_id, status, updated_at)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_chat_runs_user_status ON chat_runs(user_id, status, updated_at)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_status ON jobs(user_id, status, updated_at)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_bases_mirror ON knowledge_bases(mirror_of)")
     await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pay_orders_wx_order_id ON pay_orders(wx_order_id) WHERE wx_order_id != ''")
     await _seed_builtin_skills(db)
@@ -497,6 +499,23 @@ _MYSQL_SCHEMA = (
       CONSTRAINT fk_chat_runs_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
       INDEX idx_chat_runs_conversation (conversation_id, status, updated_at),
       INDEX idx_chat_runs_user_status (user_id, status, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS jobs (
+      id VARCHAR(32) PRIMARY KEY,
+      user_id VARCHAR(32) NOT NULL,
+      kind VARCHAR(32) NOT NULL,
+      status VARCHAR(24) NOT NULL DEFAULT 'queued',
+      progress VARCHAR(255) NOT NULL DEFAULT '',
+      payload_json LONGTEXT NULL,
+      result_json LONGTEXT NULL,
+      error TEXT NULL,
+      created_at VARCHAR(64) NOT NULL,
+      updated_at VARCHAR(64) NOT NULL,
+      finished_at VARCHAR(64) NOT NULL DEFAULT '',
+      CONSTRAINT fk_jobs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      INDEX idx_jobs_user_status (user_id, status, updated_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """

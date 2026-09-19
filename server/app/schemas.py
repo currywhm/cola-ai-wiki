@@ -83,6 +83,28 @@ class DocumentMove(BaseModel):
     folder_id: str = Field(default="", max_length=64)
 
 
+class UploadDirectRequest(BaseModel):
+    """直传凭证申请：kind 决定对象落在哪里、体积上限多少。"""
+
+    kind: str = Field(pattern="^(document|avatar|knowledge-avatar)$")
+    knowledge_id: str = Field(default="", max_length=64)
+    folder_id: str = Field(default="", max_length=64)
+    filename: str = Field(default="", max_length=200)
+    suffix: str = Field(default="", max_length=12)
+
+
+class UploadCompleteRequest(BaseModel):
+    """直传回执：客户端把表单里的完整 key 原样带回，服务端据此核对对象。"""
+
+    key: str = Field(default="", max_length=512)
+
+
+class AssetResolveRequest(BaseModel):
+    """批量解析资源路径：小程序拿到的相对路径换成预签名地址或内联字节。"""
+
+    paths: list[str] = Field(default_factory=list, max_length=32)
+
+
 class ConversationPinUpdate(BaseModel):
     """历史对话的置顶开关：只改当前用户名下的会话。"""
 

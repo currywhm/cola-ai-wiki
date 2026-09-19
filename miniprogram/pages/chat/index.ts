@@ -14,6 +14,7 @@ import { applyLocalized, localizeImages } from '../../services/media'
 import * as pickPage from '../../utils/pick-page'
 import { persistSkills, readLocalSkills, restoreSkills } from '../../utils/skill-prefs'
 import { readKeyboardHeight, repinLatest, shellStyle } from '../../utils/keyboard'
+import { markdownToText } from '../../utils/markdown'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
 // 与后端 CHAT_MODELS 一致的兜底清单；正常运行时会被 /api/models 的返回值覆盖
@@ -735,14 +736,14 @@ Page({
     this.setData({ pinned: !this.data.pinned })
     wx.showToast({ title: this.data.pinned ? '已固定会话' : '已取消固定', icon: 'none' })
   },
-  // 复制回答：只带消息 id 回查正文——正文上万字，走 dataset 会被截断（文件卡同理只带 id）
+  // 复制回答：只取本轮输出的纯文本（与渲染同一套分块，去掉 Markdown 标记），直接进剪贴板
   copyAnswer(e: any) {
     const id = String((e.currentTarget.dataset || {}).id || '')
     const message = (this.data.messages as any[]).find((item) => item && item.id === id)
-    const content = String((message && message.content) || '').trim()
-    if (!content) { wx.showToast({ title: '这条回答还没有内容', icon: 'none' }); return }
+    const raw = String((message && message.content) || '').trim()
+    if (!raw) { wx.showToast({ title: '这条回答还没有内容', icon: 'none' }); return }
     wx.setClipboardData({
-      data: content,
+      data: markdownToText(raw) || raw,
       success: () => wx.showToast({ title: '回答已复制', icon: 'success' }),
       fail: () => wx.showToast({ title: '复制失败，请重试', icon: 'none' }),
     })

@@ -1,3 +1,6 @@
+/* 正文不让系统选中：长按留给小程序的「多选分享」，避免 iOS 选择菜单与页面按钮打架；
+   复制统一走回答下方的「复制」按钮（复制渲染后的纯文本）。 */
+.md-view, .md-view rich-text { user-select: none; -webkit-user-select: none; }
 /* Markdown 正文渲染：与对话线程（thread.wxss）共用同一套字阶与墨色，
    保证同一条回答在会话页、产物页、分享页看起来完全一致。 */
 .md-view { min-width: 0; color: var(--ink-1, #1b211e); font-size: 32rpx; line-height: 1.75; letter-spacing: 0; white-space: normal; word-break: break-word; }

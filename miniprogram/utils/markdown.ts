@@ -299,6 +299,78 @@ export function extractMarkdownLinks(source: string): MarkdownLink[] {
   return links
 }
 
+// 结束后空一行（段落级）：让粘贴出来的纯文本保留段落节奏
+const TEXT_BLOCK_TAGS: Record<string, boolean> = { p: true, blockquote: true, pre: true, table: true, ul: true, ol: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true }
+// 结束后只换行（行级）：表格行、列表项、任务行之间不留空行
+const TEXT_ROW_TAGS: Record<string, boolean> = { div: true, tr: true, li: true }
+
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+/** 渲染用的 HTML → 可粘贴的纯文本：块级标签空行、行级标签换行、列表补标记、单元格两空格分隔。 */
+function blockHtmlToText(html: string): string {
+  const stack: string[] = []
+  let ordered = 0
+  let out = ''
+  const breakLine = () => { if (out && !out.endsWith('\n')) out += '\n' }
+  const breakBlock = () => { breakLine(); if (out && !out.endsWith('\n\n')) out += '\n' }
+  String(html || '').split(/(<[^>]*>)/).forEach((token) => {
+    if (!token) return
+    if (token.charAt(0) !== '<') { out += decodeEntities(token); return }
+    const closing = token.charAt(1) === '/'
+    const name = String((token.match(/^<\/?\s*([a-zA-Z][a-zA-Z0-9]*)/) || [])[1] || '').toLowerCase()
+    if (name === 'br' || name === 'img' || name === 'hr') { breakLine(); return }
+    if (name === 'ul' || name === 'ol') {
+      if (closing) { stack.pop(); breakBlock() } else { stack.push(name); ordered = 0 }
+      return
+    }
+    if (name === 'li') {
+      if (closing) { breakLine(); return }
+      const numbered = stack[stack.length - 1] === 'ol'
+      ordered = numbered ? ordered + 1 : 0
+      breakLine()
+      out += numbered ? `${ordered}. ` : '• '
+      return
+    }
+    if (name === 'td' || name === 'th') { if (closing) out += '  '; return }
+    if (!closing) return
+    if (TEXT_BLOCK_TAGS[name]) breakBlock()
+    else if (TEXT_ROW_TAGS[name]) breakLine()
+  })
+  return out
+}
+
+/**
+ * 复制回答用的纯文本：走与渲染同一套分块，去掉 Markdown 标记、标题井号与表格竖线，
+ * 只留用户实际看到的正文（代码块原样保留）。
+ */
+export function markdownToText(source: string): string {
+  const blocks = renderMarkdownBlocks(source)
+  const parts: string[] = []
+  blocks.forEach((block) => {
+    if (block.type === 'code') {
+      const code = String(block.code || '').trim()
+      if (code) parts.push(code)
+      return
+    }
+    if (block.type === 'image') {
+      const alt = String(block.alt || '').trim()
+      if (alt) parts.push(alt)
+      return
+    }
+    const text = blockHtmlToText(String(block.html || ''))
+    if (text.trim()) parts.push(text)
+  })
+  return parts.join('\n\n').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
 const CODE_KEYWORDS: Record<string, string[]> = {
   bash: ['if', 'then', 'else', 'fi', 'for', 'while', 'do', 'done', 'case', 'esac', 'function', 'export', 'local', 'return', 'echo', 'cd', 'set'],
   shell: ['if', 'then', 'else', 'fi', 'for', 'while', 'do', 'done', 'case', 'esac', 'function', 'export', 'local', 'return', 'echo', 'cd', 'set'],

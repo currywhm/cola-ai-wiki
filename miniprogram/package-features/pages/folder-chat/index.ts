@@ -10,6 +10,7 @@ import { buildSharePayload, homePayload, questionFor } from '../../../utils/shar
 import * as pickPage from '../../../utils/pick-page'
 import { fileTypeLabel } from '../../../utils/file-type'
 import { readKeyboardHeight, repinLatest, shellStyle } from '../../../utils/keyboard'
+import { markdownToText } from '../../../utils/markdown'
 import { ChatRunSnapshot, deleteConversation, followChatRun, getActiveChatRun, getConversation, getConversations, getKnowledgeDetail, getModels, getSuggestions, pinConversation, Source, reviewPlan, stopChatRun, streamChat } from '../../../services/api'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
@@ -532,14 +533,14 @@ Page({
       wx.showToast({ title: pinned ? '已置顶' : '已取消置顶', icon: 'none' })
     }).catch(() => wx.showToast({ title: '操作失败，请稍后重试', icon: 'none' }))
   },
-  // 复制回答：只带消息 id 回查正文——正文上万字，走 dataset 会被截断（文件卡同理只带 id）
+  // 复制回答：只取本轮输出的纯文本（与渲染同一套分块，去掉 Markdown 标记），直接进剪贴板
   copyAnswer(e: any) {
     const id = String((e.currentTarget.dataset || {}).id || '')
     const message = (this.data.messages as any[]).find((item) => item && item.id === id)
-    const content = String((message && message.content) || '').trim()
-    if (!content) { wx.showToast({ title: '这条回答还没有内容', icon: 'none' }); return }
+    const raw = String((message && message.content) || '').trim()
+    if (!raw) { wx.showToast({ title: '这条回答还没有内容', icon: 'none' }); return }
     wx.setClipboardData({
-      data: content,
+      data: markdownToText(raw) || raw,
       success: () => wx.showToast({ title: '回答已复制', icon: 'success' }),
       fail: () => wx.showToast({ title: '复制失败，请重试', icon: 'none' }),
     })

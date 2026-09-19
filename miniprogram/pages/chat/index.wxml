@@ -21,7 +21,7 @@
   <view wx:if="{{!conversationActive && knowledgeDesc}}" class="library-desc">{{knowledgeDesc}}</view>
   <!-- 来源知识库被删掉时，共享库会保留但内容停止同步，这里直说不会让人以为是网络问题 -->
   <view wx:if="{{!conversationActive && knowledgeSourceMissing}}" class="library-desc">来源知识库已被删除，这个共享库已停止同步</view>
-  <scroll-view class="messages" scroll-y scroll-with-animation enhanced show-scrollbar="{{false}}" scroll-into-view="{{lastMessageId}}">
+  <scroll-view class="messages" scroll-y enhanced show-scrollbar="{{false}}" scroll-top="{{scrollTop}}" bindscroll="onThreadScroll">
     <view wx:if="{{loadState === 'error'}}" class="state-panel">
       <view class="state-icon"><ui-icon name="response" size="{{28}}" /></view>
       <text class="state-title">暂时无法连接资料</text>

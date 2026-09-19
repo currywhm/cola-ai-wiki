@@ -962,6 +962,9 @@ def _forward(notification, emit: Callable, state: _TraceState) -> None:
 
 def _run_turn(prompt: str, session_id: str, model: str, profile: str, effort: str,
               user_id: str, emit: Callable, skills: list[dict] | None = None):
+    # 冷启动（首次为该用户拉起运行时）本身要好几秒，先说出来，别让它看着像卡死
+    if _client_key(user_id, model, profile, effort) not in _clients:
+        emit('progress', {'text': '首次使用，正在启动运行时…'}, 0.0)
     entry = _get_client(user_id, model, profile, effort)
     key = _client_key(user_id, model, profile, effort)
     state = _TraceState(session_id, user_workspace(user_id))
@@ -1097,16 +1100,31 @@ async def _stream_turn(
             )
         )
         streamed: list[str] = []
+        heard = False
+        waiting_since = time.monotonic()
+        last_beat = 0.0
         while not task.done() or not queue.empty():
             try:
                 kind, payload, pace = await asyncio.wait_for(queue.get(), timeout=0.2)
             except asyncio.TimeoutError:
+                # 首字之前是唯一没有事件的一段（冷启动 + 模型首字）：每 3 秒把等待时长说出来，
+                # 静止的「正在思考…」会被当成卡死。
+                if not heard and not task.done():
+                    elapsed = time.monotonic() - waiting_since
+                    if elapsed - last_beat >= 3:
+                        last_beat = elapsed
+                        yield {'kind': 'progress', 'text': f'正在思考… {int(elapsed)}s'}
                 continue
+            heard = True
             if kind == 'text':
                 streamed.append(payload.get('text', ''))
             yield {'kind': kind, **payload}
             if pace:
                 await asyncio.sleep(pace)
+            elif queue.qsize() > 4:
+                # 运行时把整段回答一次性推来（或走了兜底补齐）时，按积压量铺开，
+                # 别让几千字"一股脑"砸在屏幕上：积压越多间隔越短，整体控制在两秒内。
+                await asyncio.sleep(min(0.03, max(0.008, 1.5 / queue.qsize())))
         try:
             result, usage = task.result()
         except Exception as exc:
@@ -1118,8 +1136,12 @@ async def _stream_turn(
             raise RuntimeError(f'Harness 执行失败：{exc}') from exc
         final = (result.final_response or '').strip()
         if final and not any(piece and (piece in final or final in piece) for piece in streamed):
-            for index in range(0, len(final), 24):
-                yield {'kind': 'text', 'text': final[index:index + 24]}
+            pieces = [final[index:index + 24] for index in range(0, len(final), 24)]
+            pace = min(0.03, max(0.008, 1.5 / max(1, len(pieces)))) if len(pieces) > 4 else 0.0
+            for piece in pieces:
+                yield {'kind': 'text', 'text': piece}
+                if pace:
+                    await asyncio.sleep(pace)
         if not final and not any(piece.strip() for piece in streamed):
             reason = str(getattr(result, 'finish_reason', '') or '').strip() or 'unknown'
             raise RuntimeError(f'Harness 本轮没有产出正文（finish_reason={reason}），请重试')

@@ -1,5 +1,5 @@
 import { consumeChatTarget } from '../../services/navigation'
-import { addArtifact, appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, markPlanReviewed, runningLabel, settleTrace, togglePlan } from '../../utils/thread'
+import { addArtifact, appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, markPlanReviewed, measureThreadBody, pinTail, pinTailSoon, resetTail, runningProgress, settleTrace, togglePlan, trackTail } from '../../utils/thread'
 // 生成的文件：卡片打开 / 保存到微信都在 utils/artifact 里统一实现，三个会话页共用同一份
 import { openArtifact as openArtifactFile, saveArtifact as saveArtifactFile } from '../../utils/artifact'
 import { fileTypeKind, fileTypeLabel } from '../../utils/file-type'
@@ -27,7 +27,7 @@ let bootSplashShown = true
 
 
 Page({
-  data: { safeBottom: 0, keyboardHeight: 0, shellStyle: '', dirTouchStartX: 0, dirTouchStartY: 0, booting: !bootSplashShown, knowledgeId: '', knowledgeName: '', knowledgeDesc: '', conversationId: '', conversationActive: false, selectedIndex: 0, input: '', canSend: false, sending: false, readyForInput: false, lastMessageId: '', model: 'deepseek-flash', selectedModelKey: 'deepseek-flash', modelLabel: '云枢', modelShortLabel: '云枢', thinkingMode: 'quick' as 'quick' | 'deep', modelOptions: FALLBACK_MODEL_OPTIONS, modelPickerVisible: false, askMode: 'knowledge' as 'knowledge' | 'web', modePickerVisible: false, pinned: false, uploadSheetVisible: false, uploadUsedLabel: '0.00GB', uploadLimitLabel: '300MB', loadState:'loading', knowledge:[] as Knowledge[], filteredKnowledge:[] as Knowledge[], pickerQuery:'', pickerVisible:false, personalExpanded:true, subscriptionsExpanded:true, sharedExpanded:true, documents:[] as any[], documentsLoading:false, documentsError:false, folders:[] as Folder[], documentGroups:[] as any[], visibleDocuments:[] as any[], currentFolderId:'', currentFolderName:'', articleSheetVisible:false, articleUrl:'', articleImporting:false, importMode:false, pendingFileName:'', askLayerVisible:false, askFocus:false, askGreeting:'', suggestions:[] as string[], suggestionsFor:'', suggestionsLoading:false, messages: [] as any[], selectedSkillIds: [] as string[], pickMode:false, pickedKeys:[] as string[], pickedMap:{} as any, pickCount:0, pickTotal:0, pickMessageCount:0, pickFileCount:0, shareSheetVisible:false, shareKnowledges:[] as any[], shareKnowledgeLoading:false, shareHintText:'', shareBusy:false, personalKnowledge:[] as Knowledge[], subscriptionKnowledge:[] as Knowledge[], sharedKnowledge:[] as Knowledge[], filteredShared:[] as Knowledge[], filteredSubscriptions:[] as Knowledge[], knowledgeReadOnly:false, knowledgeShareable:true, knowledgeSourceMissing:false, kbShareVisible:false, kbShareArmed:false, kbSharePath:'', kbShareTitle:'', kbShareToken:'', kbShareDays:7 },
+  data: { safeBottom: 0, keyboardHeight: 0, shellStyle: '', scrollTop: 0, dirTouchStartX: 0, dirTouchStartY: 0, booting: !bootSplashShown, knowledgeId: '', knowledgeName: '', knowledgeDesc: '', conversationId: '', conversationActive: false, selectedIndex: 0, input: '', canSend: false, sending: false, readyForInput: false, lastMessageId: '', model: 'deepseek-flash', selectedModelKey: 'deepseek-flash', modelLabel: '云枢', modelShortLabel: '云枢', thinkingMode: 'quick' as 'quick' | 'deep', modelOptions: FALLBACK_MODEL_OPTIONS, modelPickerVisible: false, askMode: 'knowledge' as 'knowledge' | 'web', modePickerVisible: false, pinned: false, uploadSheetVisible: false, uploadUsedLabel: '0.00GB', uploadLimitLabel: '300MB', loadState:'loading', knowledge:[] as Knowledge[], filteredKnowledge:[] as Knowledge[], pickerQuery:'', pickerVisible:false, personalExpanded:true, subscriptionsExpanded:true, sharedExpanded:true, documents:[] as any[], documentsLoading:false, documentsError:false, folders:[] as Folder[], documentGroups:[] as any[], visibleDocuments:[] as any[], currentFolderId:'', currentFolderName:'', articleSheetVisible:false, articleUrl:'', articleImporting:false, importMode:false, pendingFileName:'', askLayerVisible:false, askFocus:false, askGreeting:'', suggestions:[] as string[], suggestionsFor:'', suggestionsLoading:false, messages: [] as any[], selectedSkillIds: [] as string[], pickMode:false, pickedKeys:[] as string[], pickedMap:{} as any, pickCount:0, pickTotal:0, pickMessageCount:0, pickFileCount:0, shareSheetVisible:false, shareKnowledges:[] as any[], shareKnowledgeLoading:false, shareHintText:'', shareBusy:false, personalKnowledge:[] as Knowledge[], subscriptionKnowledge:[] as Knowledge[], sharedKnowledge:[] as Knowledge[], filteredShared:[] as Knowledge[], filteredSubscriptions:[] as Knowledge[], knowledgeReadOnly:false, knowledgeShareable:true, knowledgeSourceMissing:false, kbShareVisible:false, kbShareArmed:false, kbSharePath:'', kbShareTitle:'', kbShareToken:'', kbShareDays:7 },
   onLoad() {
     // tabBar 为自定义组件：会话态、提问层、进入文件夹后的目录都要隐藏它，
     // 这里统一拦截 setData 同步，避免逐个调用点遗漏
@@ -72,6 +72,7 @@ Page({
     this.measureNav()
     this.syncTabBar()
     this.measureSafeArea()
+    this.measureBody()
     const target = consumeChatTarget()
     if (!isLoggedIn()) {
       this.setData({
@@ -154,6 +155,7 @@ Page({
     if (height === this.data.keyboardHeight) return
     this.setData({ keyboardHeight: height }, () => {
       this.syncShell()
+      this.measureBody()
       if (height > 0) repinLatest(this)
     })
   },
@@ -162,6 +164,9 @@ Page({
     if (!this.data.keyboardHeight) return
     this.setData({ keyboardHeight: 0 }, () => this.syncShell())
   },
+  // 滚动跟随：用户往上翻就暂停，回到底部自动恢复（见 utils/thread 的 pinTail）
+  measureBody() { measureThreadBody(this, '.messages') },
+  onThreadScroll(e: any) { trackTail(this, e) },
   finishBoot() {
     // 启动页已上移到小程序入口（问AI tab）：知识库页不再有首屏加载动画
   },
@@ -660,6 +665,7 @@ Page({
     // 用户主动返回目录后，本次页面存续期内不再自动拉回复会话
     ;(this as any).userLeftConversation = true
     this.setData({ conversationId: '', conversationActive: false, messages: [], input: '', sending: false, modePickerVisible: false, modelPickerVisible:false, lastMessageId:'' })
+    resetTail(this)
     this.syncCanSend()
   },
   // 开场白：先说清「在哪个范围内问答」，再由推荐问题引导第一句提问（本地消息，不写入历史）
@@ -829,7 +835,7 @@ Page({
     this.detachStream()
     getConversation(conversationId).then((messages) => {
       const hydrated = messages.map((m: any) => m.role === 'assistant' ? { ...hydrateAssistant(m), progress: '' } : m)
-      this.setData({ messages: hydrated, lastMessageId: '' })
+      this.setData({ messages: hydrated, lastMessageId: '' }, () => { resetTail(this); pinTailSoon(this) })
       this.resumeActiveRun(conversationId)
     }).catch(() => undefined)
   },
@@ -953,8 +959,10 @@ Page({
       }
     })
   },
-  // 有文件夹时，上传/导入前让用户选择存到根目录还是某个文件夹
+  // 上传/导入的目标位置：已经站在某个文件夹里就直接放进去，不再问一次；
+  // 只有还在知识库根目录、且确实存在文件夹时才让用户选。
   pickTargetFolder(folders: Folder[], action: (folderId: string) => void) {
+    if (this.data.currentFolderId) { action(this.data.currentFolderId); return }
     if (!folders.length) { action(''); return }
     wx.showActionSheet({
       itemList: ['知识库根目录', ...folders.map((f) => f.name)],
@@ -991,7 +999,9 @@ Page({
       try {
         const result = await importArticle(this.data.knowledgeId, url, folderId)
         this.setData({ articleSheetVisible:false, articleImporting:false, articleUrl:'' })
-        wx.showToast({ title: result.status === 'completed' ? `已导入「${result.title}」` : '导入失败，请重试', icon: 'none', duration: 2500 })
+        // 后端先登记 processing 再后台抓取：拿到 id 就是受理成功，标题与正文稍后才落库
+        const accepted = !!(result && result.id)
+        wx.showToast({ title: accepted ? '已开始导入，正在抓取文章…' : '导入失败，请重试', icon: accepted ? 'success' : 'none', duration: 2500 })
         this.load()
       } catch (error: any) {
         this.setData({ articleImporting:false })
@@ -1070,6 +1080,7 @@ Page({
     this.detachStream()
     ;(this as any).userLeftConversation = false
     this.setData({ historyVisible: false, conversationId: id, conversationActive: true, messages: [], sending: false, canSend: false, lastMessageId: '' })
+    resetTail(this)
     this.loadConversation()
   },
   // 左滑出「删除」；会话在服务端，删前必须二次确认
@@ -1133,7 +1144,7 @@ Page({
     const userId = `m${Date.now()}`; const assistantId = `m${Date.now() + 1}`
     // 技能是一段长期设定：发送后保留，只有用户在面板里改动才会变
     const skills = this.data.selectedSkillIds
-    this.setData({ input: '', conversationActive:true, sending: true, canSend: false, messages: [...this.data.messages, { id: userId, role: 'user', content, sources: [] }, assistantMessage(assistantId)], lastMessageId: assistantId })
+    this.setData({ input: '', conversationActive:true, sending: true, canSend: false, messages: [...this.data.messages, { id: userId, role: 'user', content, sources: [] }, assistantMessage(assistantId)], lastMessageId: assistantId }, () => { resetTail(this); pinTail(this) })
     let assistant = ''
     const payload: any = { mode, conversation_id: this.data.conversationId || undefined, content, model: this.data.model, thinking: this.data.thinkingMode }
     // 选中的技能随请求下发（可多选），后端先加载并注入技能再执行任务
@@ -1167,12 +1178,12 @@ Page({
   settleAnswer(id: string) { this.setData({ messages: settleTrace(this.data.messages, id) }) },
   pushTrace(id: string, item: any) {
     const result = appendTrace(this.data.messages, id, item)
-    if (result.changed) this.setData({ messages: result.messages, lastMessageId: id })
+    if (result.changed) { this.setData({ messages: result.messages, lastMessageId: id }); pinTail(this) }
   },
   // 工具产物：agent 本轮生成的文件，后端收好之后随时推来，落在这一轮回答下面
   pushArtifact(id: string, artifact: any) {
     const result = addArtifact(this.data.messages, id, artifact)
-    if (result.changed) this.setData({ messages: result.messages, lastMessageId: id })
+    if (result.changed) { this.setData({ messages: result.messages, lastMessageId: id }); pinTail(this) }
   },
   // 文件卡只带 id：回到本轮消息里取完整产物（实时问答与历史回放走同一条）
   findArtifact(e: any) {
@@ -1219,11 +1230,11 @@ Page({
     const restored = hydrateAssistant({ id, role: 'assistant', content: run.answer || '', sources: run.sources || [], trace: run.trace || [], reason: run.reason || '', artifacts: run.artifacts || [], duration_ms: run.duration_ms || 0 }, { skipHtml: true })
     const running = run.status === 'running'
     // 轮询快照没有 progress 帧：运行文案直接从过程区派生，别让用户一直看「正在思考…」
-    const message = { ...restored, progress: running ? runningLabel(run.trace || []) : '', running, traceTitle: running ? (restored.trace && restored.trace.length ? '正在执行' : '思考中') : restored.traceTitle, traceElapsed: running ? '' : restored.traceElapsed }
+    const message = { ...restored, progress: running ? runningProgress(run.trace || [], run.duration_ms || 0) : '', running, traceTitle: running ? (restored.trace && restored.trace.length ? '正在执行' : '思考中') : restored.traceTitle, traceElapsed: running ? '' : restored.traceElapsed }
 
     const patch: any = { messages: this.data.messages.map((item: any) => item.id === id ? message : item) }
-    if (scroll) patch.lastMessageId = id
     this.setData(patch)
+    if (scroll) pinTail(this)
   },
   resumeActiveRun(conversationId: string) {
     if (!conversationId) return
@@ -1238,7 +1249,7 @@ Page({
         if (at >= 0) messages.splice(at + 1, 0, assistantMessage(assistantId))
         else messages.push(assistantMessage(assistantId))
       }
-      this.setData({ messages, lastMessageId: '', conversationActive: true, sending: true, canSend: false, chatRunId: run.id }, () => this.syncCanSend())
+      this.setData({ messages, lastMessageId: '', conversationActive: true, sending: true, canSend: false, chatRunId: run.id }, () => { this.syncCanSend(); resetTail(this); pinTailSoon(this) })
       this.applyRunSnapshot(assistantId, run, false)
       ;(this as any).cancelStream = followChatRun(run.id, {
         onSnapshot: (snapshot) => {
@@ -1272,7 +1283,7 @@ Page({
     ;(this as any).cancelStream = null
     ;(this as any).chatRunId = ''
   },
-  updateAssistant(id: string, content: string, sources?: Source[]) { const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, content, progress: content ? '' : message.progress, sources: sources ? decorateSources(sources) : message.sources } : message); this.setData({ messages, lastMessageId: id }) },
+  updateAssistant(id: string, content: string, sources?: Source[]) { const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, content, progress: content ? '' : message.progress, sources: sources ? decorateSources(sources) : message.sources } : message); this.setData({ messages, lastMessageId: id }); pinTail(this) },
   updateAssistantProgress(id: string, progress: string) { const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, progress } : message); this.setData({ messages }) },
   // 参考出处默认收起：点标题行才展开文件列表，避免每条回答下面都拖一长串
   toggleSources(e: any) {

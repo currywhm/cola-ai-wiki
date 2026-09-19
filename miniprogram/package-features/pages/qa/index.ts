@@ -1,4 +1,4 @@
-import { addArtifact, appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, markPlanReviewed, runningLabel, settleTrace, togglePlan } from '../../../utils/thread'
+import { addArtifact, appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, markPlanReviewed, measureThreadBody, pinTail, pinTailSoon, resetTail, runningProgress, settleTrace, togglePlan, trackTail } from '../../../utils/thread'
 // 生成的文件：卡片打开 / 保存到微信都在 utils/artifact 里统一实现，三个会话页共用同一份
 import { openArtifact as openArtifactFile, saveArtifact as saveArtifactFile } from '../../../utils/artifact'
 import { ChatRunSnapshot, deleteConversation, followChatRun, getActiveChatRun, getConversation, getConversations, getKnowledge, getModels, pinConversation, Knowledge, Source, reviewPlan, stopChatRun, streamChat } from '../../../services/api'
@@ -18,6 +18,7 @@ Page({
     navHeight: 88,
     keyboardHeight: 0,
     shellStyle: '',
+    scrollTop: 0,
     pickMode: false,
     pickedKeys: [] as string[],
     pickedMap: {} as any,
@@ -70,6 +71,7 @@ Page({
     this.restoreSkillPrefs()
   },
   onShow() { this.measureSafeArea() },
+  onReady() { this.measureBody() },
   onUnload() {
     const cancel = (this as any).cancelStream
     if (cancel) cancel()
@@ -112,6 +114,7 @@ Page({
     if (height === this.data.keyboardHeight) return
     this.setData({ keyboardHeight: height }, () => {
       this.syncShell()
+      this.measureBody()
       if (height > 0) repinLatest(this)
     })
   },
@@ -120,6 +123,9 @@ Page({
     if (!this.data.keyboardHeight) return
     this.setData({ keyboardHeight: 0 }, () => this.syncShell())
   },
+  // 滚动跟随：用户往上翻就暂停，回到底部自动恢复（见 utils/thread 的 pinTail）
+  measureBody() { measureThreadBody(this, '.qa-body') },
+  onThreadScroll(e: any) { trackTail(this, e) },
   loadModels() {
     getModels().then((options) => {
       if (!options || !options.length) return
@@ -290,6 +296,7 @@ Page({
     if (!id) return
     if (this.data.pickMode) pickPage.exit(this)
     this.setData({ historyVisible: false, lastMessageId: '' })
+    resetTail(this)
     this.openConversation(id)
   },
   // 恢复一条历史会话：正文、思考过程、工具执行都由后端持久化，这里整条拉回来
@@ -300,13 +307,13 @@ Page({
       const hydrated = (messages || []).map((message: any) => message.role === 'assistant'
         ? hydrateAssistant(message)
         : message)
-      this.setData({ messages: hydrated, lastMessageId: '' }, () => this.syncCanSend())
+      this.setData({ messages: hydrated, lastMessageId: '' }, () => { this.syncCanSend(); resetTail(this); pinTailSoon(this) })
       this.resumeActiveRun(id)
     }).catch(() => wx.showToast({ title: '历史对话加载失败', icon: 'none' }))
   },
   newConversation() {
     this.detachStream()
-    this.setData({ historyVisible: false, conversationId: '', messages: [], input: '', sending: false, canSend: false, readyForInput: true, lastMessageId: '' }, () => this.syncCanSend())
+    this.setData({ historyVisible: false, conversationId: '', messages: [], input: '', sending: false, canSend: false, readyForInput: true, lastMessageId: '' }, () => { this.syncCanSend(); resetTail(this) })
     if (this.data.pickMode) pickPage.exit(this)
   },
   // 左滑出「删除」后二次确认再删。历史存在服务端，删除范围限定本用户。
@@ -387,7 +394,7 @@ Page({
       // 技能选中态保留在 selectedSkillIds 中，不在这里重置
       messages: [...this.data.messages, { id: userId, role: 'user', content, sources: [] }, assistantMessage(assistantId)],
       lastMessageId: assistantId,
-    })
+    }, () => { resetTail(this); pinTail(this) })
     let assistant = ''
     const payload: any = {
       mode: askMode === 'planner' ? 'web' : 'knowledge',
@@ -441,7 +448,7 @@ Page({
     // 用户主动停止：移除本轮未完成的占位回答（连带前一条提问一起撤销，避免半截对话留在界面上）
     const dropLastPair = len >= 2 && messages[len - 1].role === 'assistant' && !messages[len - 1].content && messages[len - 2].role === 'user'
     const nextMessages = dropLastPair ? messages.slice(0, len - 2) : messages
-    this.setData({ sending: false, messages: nextMessages, lastMessageId: nextMessages.length ? nextMessages[nextMessages.length - 1].id : '' }, () => this.syncCanSend())
+    this.setData({ sending: false, messages: nextMessages, lastMessageId: nextMessages.length ? nextMessages[nextMessages.length - 1].id : '' }, () => { this.syncCanSend(); pinTail(this) })
   },
   applyRunSnapshot(id: string, run: ChatRunSnapshot, scroll = true) {
     // 快照每秒都会重建这条消息：跳过没人消费的 html（正文交给 <markdown-view>），长回答下省一大截
@@ -457,12 +464,11 @@ Page({
     }, { skipHtml: true })
     const running = run.status === 'running'
     // 轮询快照没有 progress 帧：运行文案直接从过程区派生，别让用户一直看「正在思考…」
-    const message = { ...restored, progress: running ? runningLabel(run.trace || []) : '', running, traceTitle: running ? (restored.trace && restored.trace.length ? '正在执行' : '思考中') : restored.traceTitle, traceElapsed: running ? '' : restored.traceElapsed }
+    const message = { ...restored, progress: running ? runningProgress(run.trace || [], run.duration_ms || 0) : '', running, traceTitle: running ? (restored.trace && restored.trace.length ? '正在执行' : '思考中') : restored.traceTitle, traceElapsed: running ? '' : restored.traceElapsed }
 
     const messages = this.data.messages.map((item: any) => item.id === id ? message : item)
-    const patch: any = { messages }
-    if (scroll) patch.lastMessageId = id
-    this.setData(patch)
+    this.setData({ messages })
+    if (scroll) pinTail(this)
   },
   resumeActiveRun(conversationId: string) {
     if (!conversationId) return
@@ -478,7 +484,7 @@ Page({
         if (at >= 0) messages.splice(at + 1, 0, assistantMessage(assistantId))
         else messages.push(assistantMessage(assistantId))
       }
-      this.setData({ messages, lastMessageId: '', sending: true, canSend: false, chatRunId: run.id }, () => this.syncCanSend())
+      this.setData({ messages, lastMessageId: '', sending: true, canSend: false, chatRunId: run.id }, () => { this.syncCanSend(); resetTail(this); pinTailSoon(this) })
       this.applyRunSnapshot(assistantId, run, false)
       ;(this as any).cancelStream = followChatRun(run.id, {
         onSnapshot: (snapshot) => {
@@ -505,6 +511,7 @@ Page({
   updateAssistant(id: string, content: string, sources?: Source[]) {
     const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, content, progress: content ? '' : message.progress, sources: sources ? decorateSources(sources) : message.sources } : message)
     this.setData({ messages, lastMessageId: id })
+    pinTail(this)
   },
   updateAssistantProgress(id: string, progress: string) {
     const messages = this.data.messages.map((message: any) => message.id === id ? { ...message, progress } : message)
@@ -522,12 +529,12 @@ Page({
   settleAnswer(id: string) { this.setData({ messages: settleTrace(this.data.messages, id) }) },
   pushTrace(id: string, item: any) {
     const result = appendTrace(this.data.messages, id, item)
-    if (result.changed) this.setData({ messages: result.messages, lastMessageId: id })
+    if (result.changed) { this.setData({ messages: result.messages, lastMessageId: id }); pinTail(this) }
   },
   // 工具产物：agent 本轮生成的文件，后端收好之后随时推来，落在这一轮回答下面
   pushArtifact(id: string, artifact: any) {
     const result = addArtifact(this.data.messages, id, artifact)
-    if (result.changed) this.setData({ messages: result.messages, lastMessageId: id })
+    if (result.changed) { this.setData({ messages: result.messages, lastMessageId: id }); pinTail(this) }
   },
   // 文件卡只带 id：回到本轮消息里取完整产物（实时问答与历史回放走同一条）
   findArtifact(e: any) {

@@ -1,3 +1,5 @@
+import { pinTail } from './thread'
+
 /**
  * 会话页键盘避让：问AI / 文件夹会话 / 知识库会话三处共用同一套算法。
  *
@@ -28,9 +30,7 @@ export function shellStyle(safeBottom: number, keyboardHeight: number, paddingBo
   return pad ? `${height}padding-bottom:${pad};` : height
 }
 
-/** 容器变矮之后，把消息列表重新贴回最新一条。 */
+/** 容器变矮之后，把消息列表重新贴回最新一条（跟 thread 的滚动跟随共用一套）。 */
 export function repinLatest(page: any): void {
-  const id = String((page && page.data && page.data.lastMessageId) || '')
-  if (!id) return
-  page.setData({ lastMessageId: '' }, () => page.setData({ lastMessageId: id }))
+  pinTail(page)
 }

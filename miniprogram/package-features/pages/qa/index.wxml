@@ -8,7 +8,7 @@
     </view>
   </view>
 
-  <scroll-view class="qa-body" scroll-y scroll-with-animation enhanced show-scrollbar="{{false}}" scroll-into-view="{{lastMessageId}}">
+  <scroll-view class="qa-body" scroll-y enhanced show-scrollbar="{{false}}" scroll-top="{{scrollTop}}" bindscroll="onThreadScroll">
     <view wx:if="{{loadState === 'error'}}" class="qa-state">
       <text class="qa-state-title">暂时无法连接资料</text>
       <text class="qa-state-desc">登录或网络暂不可用，请稍后重试。</text>

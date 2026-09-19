@@ -472,6 +472,59 @@ export function runningLabel(trace: any[]): string {
 }
 
 /**
+ * 运行中的进度文案：过程区标签 + 已运行秒数。
+ * 「卡在正在思考」多半是首字之前的等待（运行时冷启动 + 模型首字），把秒数露出来
+ * 比一个静止的「正在思考…」诚实。
+ */
+export function runningProgress(trace: any[], durationMs: number): string {
+  const label = runningLabel(trace) || '正在思考…'
+  const seconds = Math.floor(Math.max(0, Number(durationMs) || 0) / 1000)
+  return seconds >= 3 ? `${label} · ${seconds}s` : label
+}
+
+/**
+ * 会话滚动跟随。
+ *
+ * scroll-into-view 对同一个 id 不会二次触发，而流式输出时锚点一直是同一条消息，
+ * 于是正文越长视图越不跟手。这里改成持续变大的 scroll-top：值一变就重新贴底，
+ * 流式输出与历史回放走同一条路径。
+ *
+ * 用户手动往上翻时暂停跟随（不跟用户抢位置），翻回接近底部自动恢复。
+ */
+export function resetTail(page: any): void {
+  if (page) (page as any).tailPaused = false
+}
+
+export function pinTail(page: any): void {
+  if (!page || (page as any).tailPaused) return
+  const next = Number((page.data && page.data.scrollTop) || 0) + 100000
+  page.setData({ scrollTop: next })
+}
+
+/** 历史回放里图片与富文本是异步落位的，贴底补一次，否则会停在半路。 */
+export function pinTailSoon(page: any): void {
+  pinTail(page)
+  setTimeout(() => pinTail(page), 260)
+}
+
+export function trackTail(page: any, e: any): void {
+  const detail = (e && e.detail) || {}
+  const viewHeight = Number((page && (page as any).bodyHeight) || 0)
+  if (!viewHeight) return
+  const gap = Number(detail.scrollHeight || 0) - Number(detail.scrollTop || 0) - viewHeight
+  ;(page as any).tailPaused = gap > 160
+}
+
+/** 记下滚动容器的高度，用来判断用户是否翻离了底部（量不到就始终贴底）。 */
+export function measureThreadBody(page: any, selector: string): void {
+  try {
+    wx.createSelectorQuery().select(selector).boundingClientRect((rect: any) => {
+      if (rect && rect.height) (page as any).bodyHeight = rect.height
+    }).exec()
+  } catch (e) { /* 量不到就不启用暂停跟随，继续贴底 */ }
+}
+
+/**
  * 历史对话回放：后端把思考全文、过程节点、耗时随消息一起落了库，
  * 这里用与实时流完全相同的 appendTrace / settleTrace 还原，
  * 保证「重新进入对话」和「刚回答完」看到的过程区、折叠状态、耗时、排版一致。

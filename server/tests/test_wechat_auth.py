@@ -56,6 +56,34 @@ class WeChatCredentialValidationTests(unittest.IsolatedAsyncioTestCase):
             checked = await wechat_auth.validate_wechat_credentials()
         self.assertFalse(checked)
 
+    async def test_unexpected_payload_does_not_block_startup(self):
+        """形状异常的返回体（如出口代理自己的 JSON）不能判定为凭证错误。
+
+        线上踩过：HTTPS 被拦截后回退 HTTP，拿到 {'code': 1, 'message': 'proxy'} 这类响应，
+        旧逻辑把它当成「凭证无效」直接 raise，容器卡在启动阶段反复重启。
+        """
+        request = mock.AsyncMock(return_value=_response({'code': 1, 'message': 'proxy rejected'}))
+        with (
+            mock.patch.object(wechat_auth.settings, 'app_env', 'production'),
+            mock.patch.object(wechat_auth.settings, 'wechat_appid', 'wx1234567890abcdef'),
+            mock.patch.object(wechat_auth.settings, 'wechat_secret', 'a' * 32),
+            mock.patch.object(wechat_auth, 'wechat_request', request),
+        ):
+            checked = await wechat_auth.validate_wechat_credentials()
+        self.assertFalse(checked)
+
+    async def test_transient_wechat_error_does_not_block_startup(self):
+        """微信侧的非凭证错误（系统繁忙、频率超限、IP 白名单）同样不该阻塞启动。"""
+        request = mock.AsyncMock(return_value=_response({'errcode': -1, 'errmsg': 'system error'}))
+        with (
+            mock.patch.object(wechat_auth.settings, 'app_env', 'production'),
+            mock.patch.object(wechat_auth.settings, 'wechat_appid', 'wx1234567890abcdef'),
+            mock.patch.object(wechat_auth.settings, 'wechat_secret', 'a' * 32),
+            mock.patch.object(wechat_auth, 'wechat_request', request),
+        ):
+            checked = await wechat_auth.validate_wechat_credentials()
+        self.assertFalse(checked)
+
 
 class WeChatLoginExchangeTests(unittest.IsolatedAsyncioTestCase):
     async def test_login_code_returns_session(self):

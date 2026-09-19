@@ -23,6 +23,12 @@ class WeChatAuthError(RuntimeError):
         self.message = message
 
 
+# 微信明确表示「凭证本身无效」的错误码：只有这些才在启动时判定为配置错误。
+# 其它错误码（-1 系统繁忙、45009 调用频率超限、40164 IP 不在白名单等）以及形状异常的返回体
+# 都属于网络/平台侧问题，只记日志、不阻塞启动——服务起不来比凭证暂时不可用严重得多。
+WECHAT_FATAL_CREDENTIAL_CODES = {40013, 40125}
+
+
 async def validate_wechat_credentials() -> bool:
     """Validate production credentials when the network is reachable.
 
@@ -52,10 +58,20 @@ async def validate_wechat_credentials() -> bool:
         return False
     if not isinstance(data, dict):
         raise RuntimeError("微信开发者凭证校验失败：返回内容不是 JSON 对象")
-    if data.get("errcode") or not data.get("access_token"):
-        code = data.get("errcode", "unknown")
-        message = data.get("errmsg", "unknown error")
-        raise RuntimeError(f"微信开发者凭证校验失败：errcode={code}, errmsg={message}")
+    errcode = data.get("errcode")
+    if isinstance(errcode, int) and errcode in WECHAT_FATAL_CREDENTIAL_CODES:
+        raise RuntimeError(f"微信开发者凭证校验失败：errcode={errcode}, errmsg={data.get('errmsg', '')}")
+    if errcode or not data.get("access_token"):
+        # 没有 access_token 又不属于上面那些明确的凭证错误，说明这次拿到的不是微信的标准响应
+        # （云托管出口代理拦截 HTTPS 后回退 HTTP 时出现过，返回体是代理自己的 JSON）。
+        # 据这种响应判定「凭证错误」会让容器卡在启动阶段反复重启，所以按暂不可用处理，
+        # 并把状态码与原始响应体打出来，便于下次直接定位到底是平台出口还是微信侧的问题。
+        print(
+            f"[wechat] 凭证在线校验未通过（按暂不可用处理，服务继续启动）："
+            f"http={response.status_code} errcode={errcode} body={str(data)[:300]}",
+            flush=True,
+        )
+        return False
     return True
 
 

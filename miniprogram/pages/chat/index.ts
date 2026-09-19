@@ -13,6 +13,7 @@ import { applyLocalized, localizeImages } from '../../services/media'
 // 多选分享：选中态、勾选映射、分享面板与「存到知识库」都在 utils/pick-page 里收口
 import * as pickPage from '../../utils/pick-page'
 import { persistSkills, readLocalSkills, restoreSkills } from '../../utils/skill-prefs'
+import { readKeyboardHeight, repinLatest, shellStyle } from '../../utils/keyboard'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
 // 与后端 CHAT_MODELS 一致的兜底清单；正常运行时会被 /api/models 的返回值覆盖
@@ -25,22 +26,26 @@ let bootSplashShown = true
 
 
 Page({
-  data: { safeBottom: 0, dirTouchStartX: 0, dirTouchStartY: 0, booting: !bootSplashShown, knowledgeId: '', knowledgeName: '', knowledgeDesc: '', conversationId: '', conversationActive: false, selectedIndex: 0, input: '', canSend: false, sending: false, readyForInput: false, lastMessageId: '', model: 'deepseek-flash', selectedModelKey: 'deepseek-flash', modelLabel: '云枢', modelShortLabel: '云枢', thinkingMode: 'quick' as 'quick' | 'deep', modelOptions: FALLBACK_MODEL_OPTIONS, modelPickerVisible: false, askMode: 'knowledge' as 'knowledge' | 'web', modePickerVisible: false, pinned: false, uploadSheetVisible: false, uploadUsedLabel: '0.00GB', uploadLimitLabel: '300MB', loadState:'loading', knowledge:[] as Knowledge[], filteredKnowledge:[] as Knowledge[], pickerQuery:'', pickerVisible:false, personalExpanded:true, subscriptionsExpanded:true, sharedExpanded:true, documents:[] as any[], documentsLoading:false, documentsError:false, folders:[] as Folder[], documentGroups:[] as any[], visibleDocuments:[] as any[], currentFolderId:'', currentFolderName:'', articleSheetVisible:false, articleUrl:'', articleImporting:false, importMode:false, pendingFileName:'', askLayerVisible:false, askFocus:false, askGreeting:'', suggestions:[] as string[], suggestionsFor:'', suggestionsLoading:false, messages: [] as any[], selectedSkillIds: [] as string[], pickMode:false, pickedKeys:[] as string[], pickedMap:{} as any, pickCount:0, pickTotal:0, pickMessageCount:0, pickFileCount:0, shareSheetVisible:false, shareKnowledges:[] as any[], shareKnowledgeLoading:false, shareHintText:'', shareBusy:false, personalKnowledge:[] as Knowledge[], subscriptionKnowledge:[] as Knowledge[], sharedKnowledge:[] as Knowledge[], filteredShared:[] as Knowledge[], filteredSubscriptions:[] as Knowledge[], knowledgeReadOnly:false, knowledgeShareable:true, knowledgeSourceMissing:false, kbShareVisible:false, kbShareArmed:false, kbSharePath:'', kbShareTitle:'', kbShareToken:'', kbShareDays:7 },
+  data: { safeBottom: 0, keyboardHeight: 0, shellStyle: '', dirTouchStartX: 0, dirTouchStartY: 0, booting: !bootSplashShown, knowledgeId: '', knowledgeName: '', knowledgeDesc: '', conversationId: '', conversationActive: false, selectedIndex: 0, input: '', canSend: false, sending: false, readyForInput: false, lastMessageId: '', model: 'deepseek-flash', selectedModelKey: 'deepseek-flash', modelLabel: '云枢', modelShortLabel: '云枢', thinkingMode: 'quick' as 'quick' | 'deep', modelOptions: FALLBACK_MODEL_OPTIONS, modelPickerVisible: false, askMode: 'knowledge' as 'knowledge' | 'web', modePickerVisible: false, pinned: false, uploadSheetVisible: false, uploadUsedLabel: '0.00GB', uploadLimitLabel: '300MB', loadState:'loading', knowledge:[] as Knowledge[], filteredKnowledge:[] as Knowledge[], pickerQuery:'', pickerVisible:false, personalExpanded:true, subscriptionsExpanded:true, sharedExpanded:true, documents:[] as any[], documentsLoading:false, documentsError:false, folders:[] as Folder[], documentGroups:[] as any[], visibleDocuments:[] as any[], currentFolderId:'', currentFolderName:'', articleSheetVisible:false, articleUrl:'', articleImporting:false, importMode:false, pendingFileName:'', askLayerVisible:false, askFocus:false, askGreeting:'', suggestions:[] as string[], suggestionsFor:'', suggestionsLoading:false, messages: [] as any[], selectedSkillIds: [] as string[], pickMode:false, pickedKeys:[] as string[], pickedMap:{} as any, pickCount:0, pickTotal:0, pickMessageCount:0, pickFileCount:0, shareSheetVisible:false, shareKnowledges:[] as any[], shareKnowledgeLoading:false, shareHintText:'', shareBusy:false, personalKnowledge:[] as Knowledge[], subscriptionKnowledge:[] as Knowledge[], sharedKnowledge:[] as Knowledge[], filteredShared:[] as Knowledge[], filteredSubscriptions:[] as Knowledge[], knowledgeReadOnly:false, knowledgeShareable:true, knowledgeSourceMissing:false, kbShareVisible:false, kbShareArmed:false, kbSharePath:'', kbShareTitle:'', kbShareToken:'', kbShareDays:7 },
   onLoad() {
     // tabBar 为自定义组件：会话态、提问层、进入文件夹后的目录都要隐藏它，
     // 这里统一拦截 setData 同步，避免逐个调用点遗漏
     const originalSetData = this.setData.bind(this)
     // kbShareVisible：邀请面板是底部弹层，底部 tabBar 压在它上面会吃「选择微信好友」按钮的点击与视线
     const tabBarKeys = ['conversationActive', 'askLayerVisible', 'currentFolderId', 'kbShareVisible']
+    // shellKeys：外壳高度与底部留白随会话态、键盘高度变化，统一在 setData 回调里重算，避免逐个调用点遗漏
+    const shellKeys = ['conversationActive', 'currentFolderId', 'safeBottom', 'keyboardHeight']
     ;(this as any).setData = (data: any, callback?: () => void) => {
       originalSetData(data, () => {
         if (data && tabBarKeys.some((key) => Object.prototype.hasOwnProperty.call(data, key))) this.syncTabBar()
+        if (data && shellKeys.some((key) => Object.prototype.hasOwnProperty.call(data, key))) this.syncShell()
         // 会话里只剩下开场白时，顺手拉一次推荐问题（后端按指纹缓存）
         if (data && Array.isArray(data.messages) && data.messages.length === 1 && data.messages[0] && data.messages[0].greeting) this.ensureSuggestions()
         if (callback) callback()
       })
     }
     this.primeThreadState()
+    this.syncShell()
   },
   // 自定义 tabBar 需要页面自己同步选中项与显隐：会话视图为全屏，隐藏底部导航
   // 会话视图与问AI问答页共用一套交互：技能包、历史对话抽屉、顶部安全高度
@@ -135,6 +140,26 @@ Page({
       const bottom = info && info.safeArea ? Math.max(0, (info.windowHeight || 0) - (info.safeArea.bottom || 0)) : 0
       if (bottom !== this.data.safeBottom) this.setData({ safeBottom: bottom })
     } catch (e) { /* 忽略，继续使用 CSS env() 兜底 */ }
+    this.syncShell()
+  },
+  // 键盘避让 + 底部留白：会话态不留呼吸位，目录态给 tabBar 上方留出空间；键盘弹起时统一清零
+  syncShell() {
+    const base = this.data.conversationActive ? 0 : (this.data.currentFolderId ? 16 : 10)
+    const padding = this.data.safeBottom ? `calc(${base}rpx + ${this.data.safeBottom}px)` : ''
+    this.setData({ shellStyle: shellStyle(this.data.safeBottom, this.data.keyboardHeight, padding) })
+  },
+  onKeyboardHeightChange(e: any) {
+    const height = readKeyboardHeight(e)
+    if (height === this.data.keyboardHeight) return
+    this.setData({ keyboardHeight: height }, () => {
+      this.syncShell()
+      if (height > 0) repinLatest(this)
+    })
+  },
+  // 收起键盘的兜底：个别机型只在弹起时给高度，失焦即恢复满屏
+  onKeyboardBlur() {
+    if (!this.data.keyboardHeight) return
+    this.setData({ keyboardHeight: 0 }, () => this.syncShell())
   },
   finishBoot() {
     // 启动页已上移到小程序入口（问AI tab）：知识库页不再有首屏加载动画

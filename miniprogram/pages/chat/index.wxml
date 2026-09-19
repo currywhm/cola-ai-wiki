@@ -1,4 +1,4 @@
-<view class="page chat-page {{conversationActive ? 'conversation-mode' : ''}}{{!conversationActive && currentFolderId ? ' folder-mode' : ''}}" style="{{safeBottom ? 'padding-bottom:calc(' + (conversationActive ? 0 : (currentFolderId ? 16 : 10)) + 'rpx + ' + safeBottom + 'px)' : ''}}">
+<view class="page chat-page {{conversationActive ? 'conversation-mode' : ''}}{{!conversationActive && currentFolderId ? ' folder-mode' : ''}}" style="{{shellStyle}}">
   <view wx:if="{{conversationActive}}" class="qa-nav" style="height:{{navHeight}}px;">
     <button class="qa-back" bindtap="leaveConversation" aria-label="返回"><ui-icon name="back" size="{{36}}" rpx /></button>
     <button class="qa-history" bindtap="openHistory" aria-label="历史对话"><ui-icon name="menu" size="{{41}}" rpx /></button>
@@ -207,7 +207,7 @@
     </view>
     <view wx:if="{{conversationActive}}" class="qa-composer">
       <!-- 选中的技能不显示在对话里：技能图标线条变蓝即表示本轮已启用 -->
-      <textarea class="qa-input" value="{{input}}" placeholder="{{askMode === 'web' ? '向全网提问' : '基于知识库提问'}}" placeholder-style="color:#8f978f;font-size:32rpx;line-height:1.5;" auto-height maxlength="8000" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
+      <textarea class="qa-input" value="{{input}}" placeholder="{{askMode === 'web' ? '向全网提问' : '基于知识库提问'}}" placeholder-style="color:#8f978f;font-size:32rpx;line-height:1.5;" auto-height maxlength="8000" adjust-position="{{false}}" show-confirm-bar="{{false}}" bindkeyboardheightchange="onKeyboardHeightChange" bindblur="onKeyboardBlur" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
       <view class="qa-bar">
         <button class="qa-logic {{askMode === 'web' ? 'planner' : 'knowledge'}}" bindtap="toggleAskLogic" aria-label="切换问答逻辑">
           <ui-icon name="{{askMode === 'web' ? 'robot-planner' : 'robot-knowledge'}}" size="{{34}}" rpx />
@@ -229,7 +229,7 @@
   </view>
   <pick-bar wx:if="{{pickMode}}" count="{{pickCount}}" total="{{pickTotal}}" bind:close="exitPick" bind:all="togglePickAll" bind:share="openShareSheet" />
   <share-sheet visible="{{shareSheetVisible}}" message-count="{{pickMessageCount}}" file-count="{{pickFileCount}}" knowledges="{{shareKnowledges}}" knowledge-loading="{{shareKnowledgeLoading}}" hint="{{shareHintText}}" bind:close="closeShareSheet" bind:wechat="armShareWechat" bind:copy="shareCopy" bind:knowledgeopen="loadShareKnowledges" bind:knowledgepick="saveShareToKnowledge" />
-  <view wx:if="{{askLayerVisible}}" class="ask-layer">
+  <view wx:if="{{askLayerVisible}}" class="ask-layer" style="bottom:{{keyboardHeight}}px;">
     <app-nav conversation back title="{{knowledgeName || '微信用户的知识库'}}" bind:conversationback="closeAskLayer" />
     <scroll-view class="ask-body" scroll-y enhanced show-scrollbar="{{false}}">
       <text class="ask-greeting">{{askGreeting}}</text>
@@ -251,7 +251,7 @@
             <text>问知识库</text>
           </button>
         </view>
-        <textarea class="composer-input" value="{{input}}" placeholder="{{askMode === 'web' ? '向全网提问' : '基于知识库提问'}}" placeholder-style="color:#8f978f;font-size:32rpx;" focus="{{askFocus}}" auto-height maxlength="8000" bindinput="onInput" bindconfirm="sendFromAsk" confirm-type="send" adjust-position="{{true}}" show-confirm-bar="{{false}}"></textarea>
+        <textarea class="composer-input" value="{{input}}" placeholder="{{askMode === 'web' ? '向全网提问' : '基于知识库提问'}}" placeholder-style="color:#8f978f;font-size:32rpx;" focus="{{askFocus}}" auto-height maxlength="8000" bindinput="onInput" bindconfirm="sendFromAsk" confirm-type="send" adjust-position="{{false}}" show-confirm-bar="{{false}}" bindkeyboardheightchange="onKeyboardHeightChange" bindblur="onKeyboardBlur"></textarea>
         <view class="composer-bar">
           <button class="scope-button" bindtap="toggleModePicker" disabled="{{sending}}" aria-label="选择提问范围">
             <ui-icon name="{{askMode === 'web' ? 'web' : 'knowledge-mode'}}" size="{{26}}" rpx />

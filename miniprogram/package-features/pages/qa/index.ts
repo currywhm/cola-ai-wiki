@@ -7,6 +7,7 @@ import { buildSharePayload, homePayload, questionFor } from '../../../utils/shar
 // 多选分享：选中态、勾选映射、分享面板与「存到知识库」都在 utils/pick-page 里收口
 import * as pickPage from '../../../utils/pick-page'
 import { persistSkills, readLocalSkills, restoreSkills } from '../../../utils/skill-prefs'
+import { readKeyboardHeight, repinLatest, shellStyle } from '../../../utils/keyboard'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
 
@@ -14,6 +15,8 @@ Page({
   data: {
     safeBottom: 0,
     navHeight: 88,
+    keyboardHeight: 0,
+    shellStyle: '',
     pickMode: false,
     pickedKeys: [] as string[],
     pickedMap: {} as any,
@@ -97,6 +100,24 @@ Page({
       const bottom = info && info.safeArea ? Math.max(0, (info.windowHeight || 0) - (info.safeArea.bottom || 0)) : 0
       if (bottom !== this.data.safeBottom) this.setData({ safeBottom: bottom })
     } catch (e) { /* 忽略，继续使用 CSS env() 兜底 */ }
+    this.syncShell()
+  },
+  // 键盘避让：固定高度布局里 adjust-position 推不动页面，改为按键盘高度自己收缩外壳
+  syncShell() {
+    this.setData({ shellStyle: shellStyle(this.data.safeBottom, this.data.keyboardHeight) })
+  },
+  onKeyboardHeightChange(e: any) {
+    const height = readKeyboardHeight(e)
+    if (height === this.data.keyboardHeight) return
+    this.setData({ keyboardHeight: height }, () => {
+      this.syncShell()
+      if (height > 0) repinLatest(this)
+    })
+  },
+  // 收起键盘的兜底：个别机型只在弹起时给高度，失焦即恢复满屏
+  onKeyboardBlur() {
+    if (!this.data.keyboardHeight) return
+    this.setData({ keyboardHeight: 0 }, () => this.syncShell())
   },
   loadModels() {
     getModels().then((options) => {

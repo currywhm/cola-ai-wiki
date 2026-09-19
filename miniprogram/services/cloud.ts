@@ -11,7 +11,8 @@
 //   · 返回包上限 1000KiB          → 大 JSON 要瘦身、二进制走签名地址
 //   · 调用前必须 wx.cloud.init()  → 见 initCloud()，基础库需 ≥ 2.23.0
 export const CLOUD_ENV = 'prod-d4g10pz8j04137ed3'
-export const CLOUD_SERVICE = 'cola-ai-wiki-dev'
+// 服务名必须与「云托管控制台 → 服务管理 → 服务列表」里的名称逐字一致，否则网关路由不到
+export const CLOUD_SERVICE = 'cola-ai-wiki-dev3'
 export const CONTAINER_TIMEOUT = 15000
 
 export type ContainerResponse<T> = {

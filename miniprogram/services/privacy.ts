@@ -15,7 +15,7 @@
 //
 // 当前小程序真正会触发的隐私接口只有三类，对应后台要申报的项：
 //   收集你的昵称、头像          <button open-type="chooseAvatar"> / <input type="nickname">
-//   收集你选中的照片或视频信息  wx.chooseMedia / wx.chooseImage  （相册导入、拍照扫描）
+//   收集你选中的照片或视频信息  wx.chooseMedia / wx.chooseImage  （资料图片、拍照扫描、知识库头像）
 //   收集你选中的文件          wx.chooseMessageFile            （微信文件导入）
 
 export type PrivacySetting = { needAuthorization: boolean; privacyContractName?: string }

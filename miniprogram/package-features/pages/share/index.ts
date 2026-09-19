@@ -3,7 +3,7 @@
 import { renderMarkdown } from '../../../utils/markdown'
 import { decorateSources } from '../../../utils/thread'
 import { claimShare, getShare } from '../../../services/api'
-import { decorateShareFiles, openShareFile, saveShareFile, ShareFileItem } from '../../../utils/share-file'
+import { decorateShareFiles, openShareFile, saveShareFile, ShareFileItem } from '../../utils/share-file'
 import { SHARE_HOME_PATH, SHARE_IMAGE, shareTitle } from '../../../utils/share'
 
 type ShareState = 'loading' | 'ready' | 'missing' | 'error'
@@ -102,12 +102,16 @@ Page({
     if (!id) { this.enterApp(); return }
     // 收件是当前微信用户自己的动作：这里隐式走一次微信登录，再把它收进自己的「共享知识库」
     this.setData({ claimBusy: true })
-    claimShare(id).then((result) => {
+    // 收件要复制文件并抽取正文，可能几十秒：转圈上带服务端进度，别让好友以为卡死
+    wx.showLoading({ title: '正在收取', mask: true })
+    claimShare(id, (label) => wx.showLoading({ title: String(label || '正在收取').slice(0, 12), mask: true })).then((result) => {
+      wx.hideLoading()
       this.setData({ claimBusy: false })
       const knowledgeId = String((result && result.knowledge_id) || '')
       wx.showToast({ title: (result && result.message) || '已收进共享知识库', icon: 'none', duration: 2200 })
       setTimeout(() => this.openLibrary(knowledgeId), 900)
     }).catch((error: any) => {
+      wx.hideLoading()
       this.setData({ claimBusy: false })
       // 登录没走通 / 网络异常 / 空间不足：把原因说清楚再退回首页，不让好友卡在这一页
       wx.showToast({ title: (error && error.message) || '暂时收不进来，稍后再试', icon: 'none', duration: 2600 })

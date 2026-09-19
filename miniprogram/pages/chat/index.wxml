@@ -79,9 +79,8 @@
               <button class="dir-action delete-action" catchtap="confirmDeleteDocument" data-id="{{item.id}}" data-name="{{item.filename}}">删除</button>
             </view>
             <view class="directory-item dir-swipe-card" style="transform:translateX({{item.swipeX || 0}}rpx);" bindtap="openDocument" data-id="{{item.id}}" bindlongpress="showDocumentActions" data-id="{{item.id}}" bindtouchstart="onDirTouchStart" bindtouchmove="onDirTouchMove" bindtouchend="onDirTouchEnd" data-rowtype="doc" data-rowkey="{{item.id}}">
-              <view class="directory-file-icon {{item.preview_url ? '' : 'thumb-fallback'}}">
-                <image wx:if="{{item.preview_url}}" src="{{item.preview_url}}" mode="aspectFill" />
-                <ui-icon wx:else name="file" size="{{30}}" rpx />
+              <view class="directory-file-icon thumb-fallback">
+                <ui-icon name="file" size="{{30}}" rpx />
               </view>
               <view class="directory-file-copy">
                 <view class="directory-file-name-row">
@@ -295,7 +294,7 @@
         <view class="picker-group">
           <view class="picker-group-head"><view class="picker-group-title" data-group="personal" bindtap="togglePickerGroup"><text>个人知识库</text><view class="picker-chevron {{personalExpanded ? '' : 'collapsed'}}"><ui-icon name="chevron-down" size="{{28}}" rpx /></view></view><button class="picker-add" catchtap="createFromPicker" aria-label="创建知识库"><ui-icon name="plus" size="{{42}}" rpx /></button></view>
           <view wx:if="{{personalExpanded}}">
-            <view wx:for="{{filteredKnowledge}}" wx:key="id" class="picker-item {{item.id === knowledgeId ? 'selected' : ''}}" bindtap="selectKnowledge" data-id="{{item.id}}"><view class="picker-folder"><ui-icon name="knowledge-pick" size="{{48}}" rpx /></view><view class="grow"><text class="picker-name">{{item.name}}</text><text class="picker-meta">{{item.metaLabel}}</text></view><view wx:if="{{item.id === knowledgeId}}" class="picker-check"><ui-icon name="check" size="{{34}}" rpx /></view></view>
+            <view wx:for="{{filteredKnowledge}}" wx:key="id" class="picker-item {{item.id === knowledgeId ? 'selected' : ''}}" bindtap="selectKnowledge" data-id="{{item.id}}"><view class="picker-folder"><image wx:if="{{item.avatarUrl}}" class="picker-avatar" src="{{item.avatarUrl}}" mode="aspectFill" /><ui-icon wx:else name="knowledge-pick" size="{{48}}" rpx /></view><view class="grow"><text class="picker-name">{{item.name}}</text><text class="picker-meta">{{item.metaLabel}}</text></view><view wx:if="{{item.id === knowledgeId}}" class="picker-check"><ui-icon name="check" size="{{34}}" rpx /></view></view>
             <view wx:if="{{!filteredKnowledge.length}}" class="picker-empty">{{pickerQuery ? '没有找到匹配的知识库' : '还没有个人知识库，点右上角新建'}}</view>
           </view>
         </view>
@@ -303,7 +302,7 @@
           <view class="picker-group-head"><view class="picker-group-title" data-group="shared" bindtap="togglePickerGroup"><text>共享知识库</text><view class="picker-chevron {{sharedExpanded ? '' : 'collapsed'}}"><ui-icon name="chevron-down" size="{{28}}" rpx /></view></view></view>
           <view wx:if="{{sharedExpanded}}">
             <view wx:for="{{filteredShared}}" wx:key="id" class="picker-item {{item.id === knowledgeId ? 'selected' : ''}}" bindtap="selectKnowledge" data-id="{{item.id}}">
-              <view class="picker-folder"><ui-icon name="knowledge-pick" size="{{48}}" rpx /></view>
+              <view class="picker-folder"><image wx:if="{{item.avatarUrl}}" class="picker-avatar" src="{{item.avatarUrl}}" mode="aspectFill" /><ui-icon wx:else name="knowledge-pick" size="{{48}}" rpx /></view>
               <view class="grow"><text class="picker-name">{{item.name}}</text><text class="picker-meta">{{item.metaLabel}}</text></view>
               <text wx:if="{{item.badgeLabel}}" class="picker-badge">{{item.badgeLabel}}</text>
               <view wx:if="{{item.id === knowledgeId}}" class="picker-check"><ui-icon name="check" size="{{34}}" rpx /></view>
@@ -315,12 +314,13 @@
           <view class="picker-group-head"><view class="picker-group-title" data-group="subscriptions" bindtap="togglePickerGroup"><text>订阅知识库</text><view class="picker-chevron {{subscriptionsExpanded ? '' : 'collapsed'}}"><ui-icon name="chevron-down" size="{{28}}" rpx /></view></view></view>
           <view wx:if="{{subscriptionsExpanded}}">
             <view wx:for="{{filteredSubscriptions}}" wx:key="id" class="picker-item {{item.id === knowledgeId ? 'selected' : ''}}" bindtap="selectKnowledge" data-id="{{item.id}}">
-              <view class="picker-folder"><ui-icon name="knowledge-pick" size="{{48}}" rpx /></view>
+              <view class="picker-folder"><image wx:if="{{item.avatarUrl}}" class="picker-avatar" src="{{item.avatarUrl}}" mode="aspectFill" /><ui-icon wx:else name="knowledge-pick" size="{{48}}" rpx /></view>
               <view class="grow"><text class="picker-name">{{item.name}}</text><text class="picker-meta">{{item.metaLabel}}</text></view>
               <text wx:if="{{item.badgeLabel}}" class="picker-badge">{{item.badgeLabel}}</text>
               <view wx:if="{{item.id === knowledgeId}}" class="picker-check"><ui-icon name="check" size="{{34}}" rpx /></view>
             </view>
-            <view wx:if="{{!filteredSubscriptions.length}}" class="picker-empty-row">{{pickerQuery ? '没有找到匹配的订阅知识库' : '暂无订阅，点右上角发现'}}</view>
+            <view wx:if="{{!filteredSubscriptions.length && pickerQuery}}" class="picker-empty-row">没有找到匹配的订阅知识库</view>
+            <view wx:if="{{!filteredSubscriptions.length && !pickerQuery}}" class="picker-discover" bindtap="openDiscover"><view class="picker-discover-copy"><text class="picker-discover-title">去发现更多知识库</text><text class="picker-discover-desc">在知识库广场订阅后，会出现在这里</text></view><view class="picker-discover-art"><view class="picker-discover-sheet back"></view><view class="picker-discover-sheet front"></view></view></view>
           </view>
         </view>
         <!-- 两个链接挨着居中：button 自带 auto 左右外边距，在 flex 里会被拉开，必须清零 -->

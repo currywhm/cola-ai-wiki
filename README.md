@@ -12,8 +12,9 @@
 - 登录同意：登录页微信按钮下方需要勾选《服务协议》《隐私政策》《AI 隐私政策》。已勾选时直接登录并进入问 AI；未勾选时先弹隐私提示层，点“同意”后再继续登录。
 - 默认账号：服务端按微信 OpenID 创建或关联账号，默认昵称为“微信用户”、头像为产品默认图。登录过程不调用 `wx.getUserProfile` / `wx.getUserInfo` / `<open-data>`，不会假装读取真实微信资料。
 - 可选设置：“我的 → 账号设置”保留微信官方 `<button open-type="chooseAvatar">` 和 `<input type="nickname">`，用户主动点击后选择并保存；未设置时继续显示默认资料。
-- 系统隐私弹窗：`services/privacy.ts` 不注册 `wx.onNeedPrivacyAuthorization`，相册、拍照、微信文件等隐私接口交给微信官方弹窗处理；未同意时对应能力不可用。
-- 微信后台按实际能力申报：「收集你的昵称、头像」（仅账号设置主动选择）、「收集你选中的照片或视频信息」、「收集你选中的文件」。位置、麦克风、通讯录、日历、微信运动不申请。
+- 知识库头像：新建知识库时点击头像图标，只打开个人相册供用户选择 1 张图片；相册权限不在进入页面时申请，拒绝后仍可用默认头像创建知识库。
+- 系统隐私弹窗：`services/privacy.ts` 不注册 `wx.onNeedPrivacyAuthorization`，个人相册、拍照、微信文件等隐私接口交给微信官方弹窗处理；未同意时对应能力不可用。
+- 微信后台按实际能力申报：「收集你的昵称、头像」（仅账号设置主动选择）、「收集你选中的照片或视频信息」（资料图片、拍照扫描、知识库头像）、「收集你选中的文件」（微信文件选择）。位置、麦克风、通讯录、日历、微信运动不申请。
 - 退出登录：“我的 → 退出登录”先弹底部确认层，确认后调用后端退出、清理令牌并回到登录页；服务端资料不随退出自动删除。
 - 账号设置与导入文件弹层打开时会收起原生 tabBar，避免遮住底部按钮。
 
@@ -110,17 +111,20 @@ python3 scripts/manage.py setup
 .venv/bin/python scripts/manage.py start
 ```
 
-小程序开发配置当前使用 `http://127.0.0.1:8765`，接口文档在 `http://127.0.0.1:8765/docs`。`project.private.config.json` 关闭了开发工具的合法域名校验。真机与正式版必须改成外部服务器的 HTTPS 域名，并在微信公众平台配置 request、uploadFile、downloadFile 服务器域名；上线前将 `urlCheck` 恢复为 `true`。
+小程序端只走微信云托管私有协议（`wx.cloud.callContainer`）：接口请求不需要配置服务器域名、不经过公网，也不受 DNS 劫持影响。开发、测试、生产三套环境都连同一个云托管环境，环境 ID 与服务名只在 `miniprogram/services/cloud.ts`（`CLOUD_ENV` / `CLOUD_SERVICE`）里维护一处；服务名要与云托管「服务管理 → 服务列表」里的名称逐字一致。
+
+容器通道有硬限制（单次调用 15s、请求体 100KiB、返回包 1000KiB），所以：文件由客户端直传对象存储（上传拿一次性直传凭证，下载换短时效直链）、耗时动作（解析、模型生成、技能制作）走后端任务队列 + 轮询。**唯一需要在小程序后台配置的是对象存储桶域名**，加进 uploadFile 与 downloadFile 两个服务器域名列表即可；`project.private.config.json` 的 `urlCheck: false` 只影响开发者工具。
+
+本机只跑后端时接口文档在 `http://127.0.0.1:8765/docs`。
 
 ## 外部服务器部署
 
 1. 准备 Linux 服务器、域名和 HTTPS 证书，创建 `/opt/cola-ai-wiki`。
 2. 上传 `server/dist/zhi-reader-api.tar.gz` 并解压，复制 `.env.example` 为 `.env`。
-3. 设置 `JWT_SECRET`、`WECHAT_APPID`、`WECHAT_SECRET`，以及 `DEEPSEEK_API_KEY`（可选 `MINIMAX_API_KEY`）。
-4. 设置 `HARNESS_ENABLED=true`、`HARNESS_PROVIDER=deepseek-official`、`HARNESS_MODEL=deepseek-v4-flash`，以及官方适配器使用的 `LLM_API_KEY` / `LLM_BASE_URL`。Docker 会安装同版本 SDK 和 runtime wheel。
-   默认沙箱模式使用官方 `DSH_PERMISSION_MODE=workspace-write`；审批与工具策略由 Harness 自己处理。
+3. 只需设置认证和合规类变量：`JWT_SECRET`、`WECHAT_APPID`、`WECHAT_SECRET`、`LLM_API_KEY`，以及 `LEGAL_OPERATOR_NAME`、`LEGAL_CONTACT_EMAIL`、`LEGAL_ICP_NUMBER`。
+4. Harness、DeepSeek 接口地址、运行目录、端口和沙箱模式已由镜像提供默认值；Docker 会安装同版本 SDK 和 runtime wheel。需要切换兼容网关时才覆盖 `LLM_BASE_URL` 或 `HARNESS_MODEL`。
 5. 执行 `docker compose up -d --build`，反向代理将 `https://api.example.com` 转到 `127.0.0.1:8765`；详细步骤见独立后端的 README。
-6. 用 `GET /health` 检查服务；把小程序 `app.ts` 的 `apiBase` 改为 HTTPS API 地址后，在开发者工具「详情 → 域名信息」刷新配置。
+6. 用 `GET /health` 检查服务。小程序端不用改地址：它只连云托管环境（要换环境改 `miniprogram/services/cloud.ts` 的 `CLOUD_ENV` / `CLOUD_SERVICE`，并把对象存储桶域名配进 uploadFile、downloadFile 服务器域名）。
 
 服务默认使用 SQLite 与本地 `uploads/`，适合单机部署；生产扩容时把数据库替换为 PostgreSQL，把上传目录替换为 MinIO/S3，并把文档解析任务移到队列。文件解析已支持 PDF、DOCX、TXT、Markdown、CSV 和图片 OCR。Docker 部署会安装 Tesseract 中文/英文语言包；非 Docker 部署请确保系统已安装 `tesseract-ocr` 与 `chi_sim` 语言数据。
 
@@ -138,7 +142,7 @@ python3 scripts/manage.py setup
 - 补齐运营者信息：在 `.env` 里设置 `LEGAL_OPERATOR_NAME`（真实运营者名称）、`LEGAL_CONTACT_EMAIL`、`LEGAL_ICP_NUMBER`，然后重跑导入；漏填可以用 `python scripts/import_content.py --check` 查出来。
 - 完成微信小程序主体认证，并在微信后台把《用户隐私保护指引》按 `server/content/legal/README.md` 的清单逐项勾选；开启客服，保证注销与退款有入口。
 - 配置真实 `WECHAT_APPID/SECRET`，不要使用开发回退登录。
-- 使用 HTTPS 域名、生产 `JWT_SECRET`，并恢复 `urlCheck: true`。
+- 生产 `JWT_SECRET`；小程序服务器域名只配对象存储桶域名（uploadFile / downloadFile 两个列表），最低基础库版本设到 2.23.0 以上。
 - 配置 DeepSeek/MiniMax Key，设置反向代理超时和上传大小限制。
 - 核对虚拟支付道具价格与 `PLAN_CATALOG`、以及 `content/legal/entries/07-plan.md` 三处一致。
 - 将 `data/`、`uploads/` 纳入备份，配置日志与异常告警。

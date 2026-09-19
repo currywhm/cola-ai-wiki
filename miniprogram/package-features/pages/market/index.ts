@@ -1,4 +1,5 @@
-import { getMarketKnowledge, subscribeKnowledge, unsubscribeKnowledge } from '../../../services/api'
+import { contentAssetUrl, getMarketKnowledge, subscribeKnowledge, unsubscribeKnowledge, userAvatarUrl } from '../../../services/api'
+import { localizeImages } from '../../../services/media'
 
 Page({
   data: { query: '', loading: false, items: [] as any[], category: '', error: '', busyId: '' },
@@ -6,7 +7,19 @@ Page({
   load() {
     this.setData({ loading: true, error: '' })
     getMarketKnowledge(this.data.query, this.data.category)
-      .then((items) => this.setData({ items, loading: false }))
+      .then((items) => {
+        const normalized = items.map((item: any) => ({
+          ...item,
+          avatarSource: contentAssetUrl(item.avatar || ''),
+          publisherAvatarSource: userAvatarUrl(item.publisher_avatar || ''),
+          avatarUrl: '',
+          publisherAvatarUrl: '',
+        }))
+        this.setData({ items: normalized, loading: false })
+        localizeImages(normalized.flatMap((item: any) => [item.avatarSource, item.publisherAvatarSource])).then((map) => this.setData({
+          items: normalized.map((item: any) => ({ ...item, avatarUrl: map[item.avatarSource] || '', publisherAvatarUrl: map[item.publisherAvatarSource] || '' })),
+        }))
+      })
       .catch(() => this.setData({ items: [], loading: false, error: '知识库广场暂时无法连接，请稍后重试。' }))
   },
   onInput(e: any) { this.setData({ query: e.detail.value }) },

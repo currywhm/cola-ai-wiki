@@ -1,4 +1,4 @@
-import { contentAssetBase, getDocument, previewDocument } from '../../../services/api'
+import { getDocument, previewDocument } from '../../../services/api'
 import { localizeHtmlImages } from '../../../services/media'
 import { canPreview, previewIconName } from '../../../utils/file-type'
 
@@ -73,10 +73,9 @@ Page({
       const previewable = canPreview(document.file_type)
       const previewIcon = previewIconName(document.file_type)
       if (document.file_type === '.html' && document.content_html) {
-        const base = contentAssetBase()
-        const html = String(document.content_html).replace(/src="\//g, `src="${base}/`)
+        const html = String(document.content_html)
         this.setData({ document, canPreview: previewable, previewIcon, isHtml: true, textUnavailable: false, htmlContent: html, metaLabel: metaLabelFor(document) })
-        // 正文里的配图同样要换成可渲染的本地地址，否则 rich-text 里只剩空框
+        // 正文里的配图是相对路径（/api/article-assets/...）：换成可渲染的本地地址，否则 rich-text 里只剩空框
         localizeHtmlImages(html).then((localized) => this.setData({ htmlContent: localized })).catch(() => {})
         return
       }

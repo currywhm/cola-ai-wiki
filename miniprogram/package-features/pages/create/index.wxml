@@ -1,5 +1,11 @@
 <view class="page create-page"><app-nav title="创建知识库" back />
   <view class="create-intro"><view class="state-icon"><ui-icon name="knowledge-pick" size="{{34}}" /></view><text class="headline">新建一个知识库</text><text class="muted block">一个主题，一个空间。资料放进来就能提问。</text></view>
+  <view class="kb-avatar-picker" bindtap="chooseAvatar">
+    <image wx:if="{{avatarPreview}}" class="kb-avatar-preview" src="{{avatarPreview}}" mode="aspectFill" />
+    <view wx:else class="kb-avatar-placeholder"><ui-icon name="image" size="{{36}}" /></view>
+    <text class="kb-avatar-label">{{avatarPreview ? '更换知识库头像' : '设置知识库头像'}}</text>
+    <text class="kb-avatar-privacy" catchtap="openPrivacyGuide">仅从个人相册选择 1 张图片，仅用于知识库头像 · 隐私保护指引</text>
+  </view>
   <text class="scope-note">将创建在「个人知识库」里，之后可以分享给微信好友</text>
   <view class="card form-card"><label class="field-label" for="kb-name">知识库名称 <text class="required">必填</text></label><input id="kb-name" class="form-input" value="{{name}}" maxlength="80" placeholder="例如：工作资料、读书笔记" bindinput="nameInput" /><text class="counter">{{name.length}} / 80</text>
   <label class="field-label" for="kb-description">简介 <text class="optional">选填</text></label><textarea id="kb-description" class="form-textarea" value="{{description}}" maxlength="300" placeholder="描述这个知识库的用途，方便日后查找" bindinput="descriptionInput" /><text class="counter">{{description.length}} / 300</text></view>

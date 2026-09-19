@@ -206,13 +206,23 @@ button.picker-market { display:flex; align-items:center; gap:9rpx; min-height:64
 .picker-add { display:flex; align-items:center; justify-content:center; width:60rpx; height:60rpx; min-height:60rpx; background:transparent; color:#3a3f45; }
 .picker-item { display:flex; align-items:center; gap:16rpx; min-height:118rpx; padding:12rpx 0; }
 .picker-item.selected .picker-name { color:#079758; }
-.picker-folder { display:flex; align-items:center; justify-content:center; flex:0 0 60rpx; width:60rpx; height:60rpx; border-radius:18rpx; background:transparent; color:#0a9b5c; }
+.picker-folder { display:flex; align-items:center; justify-content:center; flex:0 0 60rpx; width:60rpx; height:60rpx; overflow:hidden; border-radius:18rpx; background:transparent; color:#0a9b5c; }
+.picker-avatar { display:block; width:100%; height:100%; }
 .picker-name { display:block; overflow:hidden; color:#273343; font-size:30rpx; font-weight:600; line-height:1.35; text-overflow:ellipsis; white-space:nowrap; }
 .picker-meta { display:block; margin-top:5rpx; color:#98a1ab; font-size:24rpx; line-height:1.35; }
 /* 选中项的对号：给一个小圆底，让选中状态一眼可见，但不加任何多余装饰 */
 .picker-check { display:flex; align-items:center; justify-content:center; flex:0 0 44rpx; width:44rpx; height:44rpx; border-radius:50%; background:#e8f3ec; }
 .picker-empty { padding:70rpx 0; color:#98a1ab; font-size:26rpx; text-align:center; }
 .picker-empty-row { min-height:80rpx; padding:8rpx 0 30rpx; color:#a0a8b2; font-size:27rpx; }
+.picker-discover { position:relative; display:flex; align-items:center; min-height:168rpx; margin:18rpx 0 28rpx; padding:24rpx 28rpx; overflow:hidden; border-radius:18rpx; background:#eaf8f1; }
+.picker-discover:active { opacity:.82; }
+.picker-discover-copy { position:relative; z-index:2; flex:0 1 62%; min-width:0; }
+.picker-discover-title { display:block; color:#0b9859; font-size:31rpx; font-weight:650; line-height:1.35; }
+.picker-discover-desc { display:block; margin-top:8rpx; color:#7ca88f; font-size:22rpx; line-height:1.45; }
+.picker-discover-art { position:absolute; right:22rpx; bottom:-10rpx; width:156rpx; height:112rpx; }
+.picker-discover-sheet { position:absolute; width:82rpx; height:102rpx; border:5rpx solid #fff; border-radius:12rpx; background:#dff3e8; box-shadow:0 4rpx 12rpx rgba(21,110,68,.08); }
+.picker-discover-sheet.back { right:46rpx; top:16rpx; transform:rotate(-14deg); background:#cfeadc; }
+.picker-discover-sheet.front { right:10rpx; top:4rpx; transform:rotate(8deg); background:#fff; }
 /* 两个链接挨着居中：button 自带 auto 左右外边距，在 flex 里会被撑开，必须清零 */
 .picker-footer { display:flex; align-items:center; justify-content:center; margin:40rpx 0 20rpx; font-size:25rpx; line-height:1.5; }
 /* 必须把 width 钉死：微信 v2 基础样式里的 wx-button:not([size="mini"]){width:184px}

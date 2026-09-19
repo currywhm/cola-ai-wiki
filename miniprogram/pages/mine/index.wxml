@@ -142,7 +142,7 @@
         <view class="plan-picker-head">
           <view class="plan-heading-copy">
             <text class="plan-picker-title">账号设置</text>
-            <text class="plan-picker-desc">{{privacyNeeded ? '第 1 步 · 同意微信官方隐私提示' : '第 2 步 · 选用你的微信头像和昵称'}}</text>
+            <text class="plan-picker-desc">{{privacyNeeded ? '请先阅读并同意用户隐私保护提示' : '设置头像和昵称'}}</text>
           </view>
           <button class="close-picker" bindtap="closeAccountSettings" disabled="{{savingProfile}}" aria-label="关闭账号设置">
             <ui-icon name="close" size="{{18}}" />
@@ -158,13 +158,13 @@
             <text class="official-notice-body">在你使用 cola知识库 服务之前，请仔细阅读 {{privacyContractName || '《cola知识库小程序隐私保护指引》'}}。如你同意该指引，请点击「同意」开始使用本小程序。</text>
           </view>
           <button class="confirm-pay" open-type="agreePrivacyAuthorization" bindagreeprivacyauthorization="onPrivacyAgreed" bindtap="onAgreeTap">
-            <text>同意并使用微信头像昵称</text>
+            <text>同意并继续</text>
           </button>
           <view class="account-privacy" bindtap="openPrivacyGuide">查看《小程序用户隐私保护指引》全文</view>
         </block>
 
-        <!-- 第 2 步：两个控件都是微信官方的，各点一下就能选用，不需要打字。
-             头像 = <button open-type="chooseAvatar">，昵称 = <input type="nickname">（键盘上方给微信昵称）。 -->
+        <!-- 头像用微信官方「头像选择」控件，昵称就是普通输入框：用户自己输入即可，
+             也可以用键盘上方的微信昵称建议（<input type="nickname">）。 -->
         <block wx:else>
           <button class="avatar-picker" open-type="chooseAvatar" bind:chooseavatar="onChooseAvatar">
             <image wx:if="{{avatarPreview}}" class="avatar-picker-image" src="{{avatarPreview}}" mode="aspectFill" />
@@ -172,13 +172,11 @@
             <image wx:else class="avatar-picker-image" src="/assets/brand/cola-avatar.png" mode="aspectFit" />
             <view class="avatar-picker-badge"><ui-icon name="camera" size="{{26}}" rpx /></view>
           </button>
-          <text class="avatar-picker-hint">点一下，选用你的微信头像</text>
-          <view class="account-row" bindtap="focusNickname">
-            <text class="account-row-label">微信昵称</text>
-            <input class="account-row-input" type="nickname" value="{{nicknameDraft}}" focus="{{nicknameFocus}}" placeholder="点一下一键选用" placeholder-class="account-placeholder" bindinput="onNicknameInput" bindblur="onNicknameBlur" />
-            <text class="account-row-tag">一键选用</text>
+          <text class="avatar-picker-hint">点击更换头像</text>
+          <view class="account-field">
+            <text class="account-field-label">昵称</text>
+            <input class="account-field-input" type="nickname" value="{{nicknameDraft}}" maxlength="24" placeholder="请输入昵称" placeholder-class="account-placeholder" bindinput="onNicknameInput" />
           </view>
-          <text class="account-note">头像和昵称用的都是微信官方控件里的那一份：点头像、点昵称各一次即可，不用打字。保存后仅用于在本小程序内显示你的账号。</text>
           <button class="confirm-pay" bindtap="saveProfile" loading="{{savingProfile}}" disabled="{{savingProfile}}">
             <text>{{savingProfile ? '保存中' : '保存'}}</text>
           </button>

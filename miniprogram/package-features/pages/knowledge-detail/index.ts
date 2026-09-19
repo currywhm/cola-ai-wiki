@@ -1,6 +1,7 @@
 import { openChat } from '../../../services/navigation'
 import { warnPrivacyRequired } from '../../../services/privacy'
-import { deleteDocument, deleteKnowledge, getKnowledge, getKnowledgeDetail, retryDocument, updateDocumentTags, uploadDocument, UploadSource } from '../../../services/api'
+import { contentAssetUrl, deleteDocument, deleteKnowledge, getKnowledge, getKnowledgeDetail, publishKnowledge, retryDocument, updateDocumentTags, uploadDocument, UploadSource } from '../../../services/api'
+import { localizeImage } from '../../../services/media'
 import { fileTypeKind, fileTypeLabel } from '../../../utils/file-type'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
@@ -17,6 +18,7 @@ Page({
     failedCount: 0,
     // 好友共享过来的知识库：只读，隐藏上传 / 删除入口（后端也会把写入拦下来）
     readOnly: false,
+    publishable: false,
     uploadSheetVisible: false,
     uploadUsedLabel: '0.00GB',
     uploadLimitLabel: '300MB',
@@ -53,15 +55,21 @@ Page({
         displayTime: this.displayTime(doc.created_at || doc.updated_at),
       }))
       const usedBytes = documents.reduce((sum: number, doc: any) => sum + Number(doc.file_size || 0), 0)
+      const knowledge = { ...(data.knowledge as any), avatarUrl: '' }
       this.setData({
         ...data,
+        knowledge,
         readOnly: !!((data as any).read_only || ((data as any).knowledge && (data as any).knowledge.read_only)),
+        publishable: !!knowledge.publishable,
         loadState: 'ready',
         completedCount: data.documents.filter(d => d.status === 'completed').length,
         pendingCount: data.documents.filter(d => d.status !== 'completed' && d.status !== 'failed').length,
         failedCount: data.documents.filter(d => d.status === 'failed').length,
         uploadUsedLabel: this.formatStorage(usedBytes),
         documents,
+      }, () => {
+        const source = knowledge.avatar ? contentAssetUrl(knowledge.avatar) : ''
+        if (source) localizeImage(source).then((avatarUrl) => this.setData({ 'knowledge.avatarUrl': avatarUrl } as any)).catch(() => {})
       })
     }).catch(() => this.setData({ loadState: 'error' }))
   },
@@ -87,11 +95,16 @@ Page({
   showActions() {
     // 好友共享过来的库只能「移除」，不能删到对方那边去
     const deleteLabel = this.data.readOnly ? '移除这个共享知识库' : '删除资料库'
+    const items = ['资料问答']
+    if (this.data.publishable) items.push((this.data.knowledge as any).published ? '从知识库广场下架' : '发布到知识库广场')
+    items.push(deleteLabel)
     wx.showActionSheet({
-      itemList: ['资料问答', deleteLabel],
+      itemList: items,
       success: async ({ tapIndex }) => {
-        if (tapIndex === 0) this.goChat()
-        if (tapIndex === 1) {
+        const label = items[tapIndex]
+        if (label === '资料问答') this.goChat()
+        if (label === '发布到知识库广场' || label === '从知识库广场下架') { this.togglePublish(label === '发布到知识库广场'); return }
+        if (label === deleteLabel) {
           const confirm = await new Promise<any>((resolve) => wx.showModal({
             title: this.data.readOnly ? '移除共享知识库' : '删除资料库',
             content: this.data.readOnly ? '移除后这里不再显示它，对方的资料不受影响。' : '删除后其中的文档、切片和问答记录都无法恢复。',
@@ -109,6 +122,29 @@ Page({
         }
       },
     })
+  },
+  async togglePublish(publish: boolean) {
+    const name = (this.data.knowledge as any).name || '这个知识库'
+    const confirm = await new Promise<any>((resolve) => wx.showModal({
+      title: publish ? '发布到知识库广场' : '从知识库广场下架',
+      content: publish
+        ? `发布后所有人可见，并可订阅「${name}」。请确认内容符合国家法律法规和政策，不包含国家秘密、危害国家安全、违法暴力、攻击或抹黑国家与英雄烈士、捏造事实及违背公序良俗的内容。`
+        : `下架后新用户不能再订阅「${name}」，已经订阅的用户会保留只读镜像。`,
+      confirmText: publish ? '确认发布' : '确认下架',
+      success: resolve,
+    }))
+    if (!confirm.confirm) return
+    try {
+      wx.showLoading({ title: publish ? '正在审核' : '正在下架', mask: true })
+      // 上架是后台任务：把服务端的进度（「正在做内容合规检查…」）显示出来，别让人干等
+      const result = await publishKnowledge(this.data.id, publish, publish, (label) => wx.showLoading({ title: String(label || '正在审核').slice(0, 12), mask: true }))
+      wx.hideLoading()
+      wx.showToast({ title: result.message || (publish ? '已发布' : '已下架'), icon: 'none' })
+      this.load()
+    } catch (error: any) {
+      wx.hideLoading()
+      wx.showModal({ title: '发布未通过', content: error?.message || '请检查内容后再试', showCancel: false })
+    }
   },
   async upload() {
     if (this.data.readOnly) { wx.showToast({ title: '好友共享的知识库只能阅读和提问', icon: 'none' }); return }

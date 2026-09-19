@@ -180,7 +180,7 @@ export function saveToKnowledge(page: any, knowledgeId: string, knowledgeName: s
     title: selection.title,
     content,
     artifact_ids: selection.artifactIds,
-  })
+  }, (label) => wx.showLoading({ title: String(label || '正在存入').slice(0, 12), mask: true }))
     .then((result) => {
       wx.hideLoading()
       page.setData({ shareBusy: false, shareSheetVisible: false })

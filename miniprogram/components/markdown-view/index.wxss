@@ -1,6 +1,8 @@
 .md-view { min-width:0; color:#22262b; font-size:29rpx; line-height:1.78; letter-spacing:.2rpx; white-space:normal; word-break:break-word; }
 .md-part { display:block; }
-.md-stream { white-space:pre-wrap; }
+/* 流式尾段：与段落保持同样的下边距，边界前移时不会因为块级切换把正文往上顶一下 */
+.md-stream { white-space:pre-wrap; margin:0 0 14rpx; }
+.md-stream:last-child { margin-bottom:0; }
 
 .md-part .md-p { margin:0 0 14rpx; }
 .md-part .md-p:last-child { margin-bottom:0; }

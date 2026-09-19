@@ -1,3 +1,8 @@
+.kb-avatar-picker { display:flex; flex-direction:column; align-items:center; margin:-12rpx 0 26rpx; }
+.kb-avatar-preview,.kb-avatar-placeholder { display:flex; align-items:center; justify-content:center; width:132rpx; height:132rpx; overflow:hidden; border:1rpx solid #dcebe2; border-radius:32rpx; background:#eef8f2; color:#079758; box-shadow:0 8rpx 22rpx rgba(10,120,70,.08); }
+.kb-avatar-preview { display:block; }
+.kb-avatar-label { margin-top:12rpx; color:#079758; font-size:24rpx; font-weight:600; line-height:1.4; }
+.kb-avatar-privacy { margin-top:8rpx; color:#8a8e9f; font-size:21rpx; line-height:1.45; text-align:center; }
 .create-intro { text-align:center; margin:20rpx 0 36rpx; }
 .create-intro .state-icon { background:#eaf9f1; color:#078b50; }
 .create-intro .headline { font-size:40rpx; margin:22rpx 0 12rpx; }

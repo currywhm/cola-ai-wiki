@@ -1,14 +1,17 @@
 .market-page { padding-bottom:32rpx; }
 .market-search { margin-top:2rpx; }
-.market-tabs { display:flex; gap:28rpx; padding:24rpx 2rpx 14rpx; border-bottom:1rpx solid #e7e3dd; }
-.market-tab { color:#858b99; font-size:25rpx; line-height:1.5; }
+.market-tabs { display:flex; width:100%; white-space:nowrap; padding:24rpx 2rpx 14rpx; border-bottom:1rpx solid #e7e3dd; }
+.market-tab { display:inline-flex; flex:0 0 auto; margin-right:52rpx; color:#858b99; font-size:26rpx; line-height:1.5; }
 .market-tab.active { color:#242b3d; font-weight:600; }
 /* 广场列表不画分隔线，靠封面图与留白区分条目 */
-.market-item { display:flex; align-items:center; gap:16rpx; min-height:126rpx; padding:20rpx 0; border:0 none; }
-.market-cover { display:flex; align-items:center; justify-content:center; flex:0 0 82rpx; width:82rpx; height:82rpx; border-radius:20rpx; background:#eaf9f1; color:#078b50; }
-.market-name { display:block; overflow:hidden; color:#2f3745; font-size:28rpx; font-weight:600; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
-.market-desc,.market-meta { display:block; overflow:hidden; margin-top:5rpx; color:#858b99; font-size:22rpx; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
-.market-meta { font-size:20rpx; }
+.market-item { display:flex; align-items:center; gap:18rpx; min-height:156rpx; margin:16rpx 0; padding:22rpx; border:0 none; border-radius:16rpx; background:#f7f8f8; }
+.market-cover { display:flex; align-items:center; justify-content:center; flex:0 0 112rpx; width:112rpx; height:112rpx; overflow:hidden; border-radius:14rpx; background:#eaf9f1; color:#078b50; }
+.market-cover-image { display:block; width:100%; height:100%; }
+.market-title-line { display:flex; align-items:center; min-width:0; gap:10rpx; }
+.market-name { display:block; flex:0 1 auto; min-width:0; overflow:hidden; color:#20252d; font-size:30rpx; font-weight:650; line-height:1.4; text-overflow:ellipsis; white-space:nowrap; }
+.market-category { flex:0 0 auto; padding:1rpx 10rpx; border-radius:8rpx; background:#e8f6ee; color:#078b50; font-size:19rpx; line-height:1.7; }
+.market-desc,.market-meta { display:block; overflow:hidden; margin-top:7rpx; color:#9299a1; font-size:23rpx; line-height:1.45; text-overflow:ellipsis; white-space:nowrap; }
+.market-meta { margin-top:10rpx; color:#7f878f; font-size:21rpx; }
 button.market-subscribe { display:flex; align-items:center; justify-content:center; flex:0 0 118rpx; width:118rpx !important; min-width:0 !important; min-height:58rpx; margin:0; padding:0 16rpx; border:1rpx solid #079758; border-radius:999rpx; background:#079758; color:#fff; font-size:24rpx; font-weight:600; line-height:58rpx; }
 button.market-subscribe::after { border:0; }
 button.market-subscribe.subscribed { border-color:#d9e5de; background:#f3f8f5; color:#078b50; }

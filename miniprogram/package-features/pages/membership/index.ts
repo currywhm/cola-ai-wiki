@@ -16,6 +16,7 @@ Page({
     activeBenefit: '',
     activeTierDesc: '',
     paying: false,
+    canPay: false,
   },
   onLoad() { this.load() },
   load() {
@@ -46,16 +47,16 @@ Page({
             const saved = Math.round((1 - plan.amount / (monthly.amount * months)) * 100)
             if (saved >= 3) note = `省 ${saved}%`
           }
-          plans.push({ id: plan.id, tier: tier.id, label, price: plan.price, period: `${plan.days} 天`, note })
+          plans.push({ id: plan.id, tier: tier.id, label, price: plan.price, period: `${plan.days} 天`, note, available: plan.available !== false })
         })
       })
       const fallbackPlans = plans.length ? plans : [
-        { id: 'plus_monthly', tier: 'plus', label: '月付', price: '12.00', period: '31 天', note: '按需开通' },
-        { id: 'plus_quarterly', tier: 'plus', label: '季付', price: '30.00', period: '92 天', note: '省 17%' },
-        { id: 'plus_yearly', tier: 'plus', label: '年付', price: '108.00', period: '365 天', note: '省 25%' },
-        { id: 'pro_monthly', tier: 'pro', label: '月付', price: '29.00', period: '31 天', note: '按需开通' },
-        { id: 'pro_quarterly', tier: 'pro', label: '季付', price: '75.00', period: '92 天', note: '省 14%' },
-        { id: 'pro_yearly', tier: 'pro', label: '年付', price: '258.00', period: '365 天', note: '省 26%' },
+        { id: 'plus_monthly', tier: 'plus', label: '月付', price: '12.00', period: '31 天', note: '按需开通', available: false },
+        { id: 'plus_quarterly', tier: 'plus', label: '季付', price: '30.00', period: '92 天', note: '省 17%', available: false },
+        { id: 'plus_yearly', tier: 'plus', label: '年付', price: '108.00', period: '365 天', note: '省 25%', available: false },
+        { id: 'pro_monthly', tier: 'pro', label: '月付', price: '29.00', period: '31 天', note: '按需开通', available: false },
+        { id: 'pro_quarterly', tier: 'pro', label: '季付', price: '75.00', period: '92 天', note: '省 14%', available: false },
+        { id: 'pro_yearly', tier: 'pro', label: '年付', price: '258.00', period: '365 天', note: '省 26%', available: false },
       ]
       const selected = fallbackPlans.find((item: any) => item.id === this.data.selectedPlan)
         || fallbackPlans.find((item: any) => item.tier === this.data.selectedTier && item.label === '季付')
@@ -79,6 +80,7 @@ Page({
         selectedPlan: (selected ? selected.id : this.data.selectedPlan) as MembershipPlan,
         selectedPlanPrice: selected ? selected.price : this.data.selectedPlanPrice,
         selectedPlanPeriod: selected ? selected.period : this.data.selectedPlanPeriod,
+        canPay: Boolean(selected && selected.available),
       })
     }).catch(() => this.setData({ loadState: 'error' }))
   },
@@ -86,8 +88,10 @@ Page({
   chooseTier(e: any) {
     if (this.data.paying) return
     const tier = e.currentTarget.dataset.tier as 'plus' | 'pro'
-    const selected = this.data.plans.find((item: any) => item.id === this.data.selectedPlan && item.tier === tier)
-      || this.data.plans.find((item: any) => item.tier === tier && item.label === '季付')
+    const selected = this.data.plans.find((item: any) => item.id === this.data.selectedPlan && item.tier === tier && item.available)
+      || this.data.plans.find((item: any) => item.tier === tier && item.label === '季付' && item.available)
+      || this.data.plans.find((item: any) => item.tier === tier && item.available)
+      || this.data.plans.find((item: any) => item.id === this.data.selectedPlan && item.tier === tier)
       || this.data.plans.find((item: any) => item.tier === tier)
     this.setData({
       selectedTier: tier,
@@ -97,16 +101,18 @@ Page({
       selectedPlan: selected ? selected.id : this.data.selectedPlan,
       selectedPlanPrice: selected ? selected.price : this.data.selectedPlanPrice,
       selectedPlanPeriod: selected ? selected.period : this.data.selectedPlanPeriod,
+      canPay: Boolean(selected && selected.available),
     })
   },
   choosePlan(e: any) {
     if (this.data.paying) return
     const id = e.currentTarget.dataset.plan as MembershipPlan
     const selected = this.data.visiblePlans.find((item: any) => item.id === id)
-    if (selected) this.setData({ selectedPlan: id, selectedPlanPrice: selected.price, selectedPlanPeriod: selected.period })
+    if (selected && selected.available) this.setData({ selectedPlan: id, selectedPlanPrice: selected.price, selectedPlanPeriod: selected.period, canPay: true })
   },
   async confirmPay() {
     if (this.data.paying) return
+    if (!this.data.canPay) { wx.showToast({ title: '支付暂未开放', icon: 'none' }); return }
     this.setData({ paying: true })
     try {
       wx.showLoading({ title: '正在创建订单', mask: true })

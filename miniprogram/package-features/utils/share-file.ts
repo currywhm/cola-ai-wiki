@@ -10,8 +10,8 @@
  *  · PDF/Office → wx.openDocument（微信内置渲染器，版式 1:1，右上角菜单可保存/转发）
  *  · 其它        → wx.shareFileMessage 转发到聊天，或提示先用微信打开
  */
-import { shareFileUrl, ShareFileView } from '../services/api'
-import { fileIconName, fileTypeLabel, fileKind, PREVIEW_FILE_TYPES } from './file-type'
+import { assetUrl, ShareFileView } from '../../services/api'
+import { fileIconName, fileTypeLabel, fileKind, PREVIEW_FILE_TYPES } from '../../utils/file-type'
 
 const IMAGE_KINDS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']
 
@@ -59,10 +59,11 @@ function toast(title: string) {
 
 /** 公开取件：不带 token，失败时给人能照做的提示 */
 export function downloadShareFile(shareId: string, item: ShareFileItem): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    if (!shareId) { reject(new Error('分享已失效')); return }
+  if (!shareId) return Promise.reject(new Error('分享已失效'))
+  // 文件字节在对象存储里：先换一条短时效直链，再下载（容器通道装不下文件）
+  return assetUrl(`/api/shares/${encodeURIComponent(shareId)}/files/${item.index}`).then((url) => new Promise<string>((resolve, reject) => {
     wx.downloadFile({
-      url: shareFileUrl(shareId, item.index),
+      url,
       timeout: 120000,
       success: (res: any) => {
         if (res.statusCode === 200 && res.tempFilePath) { resolve(res.tempFilePath); return }
@@ -70,7 +71,7 @@ export function downloadShareFile(shareId: string, item: ShareFileItem): Promise
       },
       fail: () => reject(new Error('文件下载失败，请检查网络后重试')),
     })
-  })
+  }))
 }
 
 function forwardFile(name: string, filePath: string): Promise<void> {

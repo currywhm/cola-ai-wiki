@@ -3,7 +3,6 @@
 interface IAppOption {
   globalData: {
     userInfo?: WechatMiniprogram.UserInfo,
-    apiBase: string,
     token: string,
     user?: { id?: string, nickname?: string, avatar?: string } | null,
     loggedOut?: boolean,

@@ -35,10 +35,10 @@
         </button>
       </view>
       <view class="plan-options">
-        <button wx:for="{{visiblePlans}}" wx:key="id" class="plan-option {{selectedPlan === item.id ? 'selected' : ''}}" data-plan="{{item.id}}" bindtap="choosePlan" disabled="{{paying}}">
+        <button wx:for="{{visiblePlans}}" wx:key="id" class="plan-option {{selectedPlan === item.id ? 'selected' : ''}} {{item.available ? '' : 'disabled'}}" data-plan="{{item.id}}" bindtap="choosePlan" disabled="{{paying || !item.available}}">
           <text class="plan-option-label">{{item.label}}</text>
           <text class="plan-option-price">¥{{item.price}}</text>
-          <text class="plan-option-note">{{item.period}} · {{item.note}}</text>
+          <text class="plan-option-note">{{item.period}} · {{item.available ? item.note : '暂不可购买'}}</text>
         </button>
       </view>
     </view>
@@ -62,6 +62,6 @@
       <text class="checkout-label">应付金额</text>
       <text class="checkout-price">¥{{selectedPlanPrice}}</text>
     </view>
-    <button class="checkout-button" bindtap="confirmPay" loading="{{paying}}" disabled="{{paying}}">{{paying ? '处理中' : '微信支付'}}</button>
+    <button class="checkout-button {{paying || !canPay ? 'disabled' : ''}}" bindtap="confirmPay" loading="{{paying}}" disabled="{{paying || !canPay}}">{{!canPay ? '暂不可购买' : paying ? '处理中' : '微信支付'}}</button>
   </view>
 </view>

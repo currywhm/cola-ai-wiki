@@ -1,21 +1,10 @@
-// 按小程序运行环境切换后端地址：开发版连本地，体验版/正式版连生产域名（上线前替换为真实 HTTPS 域名）
-const API_BASE_BY_ENV: Record<string, string> = {
-  develop: 'http://127.0.0.1:8765',
-  trial: 'https://airouter-api.zeabur.app',
-  release: 'https://airouter-api.zeabur.app',
-}
-function resolveApiBase(): string {
-  try {
-    const env = wx.getAccountInfoSync()?.miniProgram?.envVersion || 'develop'
-    return API_BASE_BY_ENV[env] || API_BASE_BY_ENV.develop
-  } catch {
-    return API_BASE_BY_ENV.develop
-  }
-}
+import { initCloud } from './services/cloud'
 
 App<IAppOption>({
-  globalData: { apiBase: resolveApiBase(), token: '', user: wx.getStorageSync('llmwiki_user') || null, loggedOut: !!wx.getStorageSync('llmwiki_logged_out'), pendingImportFile: null as { path: string; filename: string } | null, splashShown: false },
+  globalData: { token: '', user: wx.getStorageSync('llmwiki_user') || null, loggedOut: !!wx.getStorageSync('llmwiki_logged_out'), pendingImportFile: null as { path: string; filename: string } | null, splashShown: false },
   onLaunch(options?: any) {
+    // 原生限制：发起 callContainer 之前必须全局初始化一次云托管环境（见 services/cloud.ts）
+    initCloud()
     this.captureOpenFile?.(options)
     const cachedToken = wx.getStorageSync('llmwiki_token')
     if (cachedToken) this.globalData.token = cachedToken

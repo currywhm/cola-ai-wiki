@@ -67,7 +67,7 @@ button.qa-prompt::after { border: 0; }
   折叠时只留「图标 + 标题 + 一行摘要 + 耗时」，展开才看思考全文与逐条动作。
 */
 .qa-trace { margin: 0 0 18rpx; }
-.qa-trace-head { display: flex; align-items: center; gap: 12rpx; min-height: 60rpx; padding: 4rpx 0; }
+.qa-trace-head { display: flex; align-items: center; gap: 12rpx; min-height: 88rpx; padding: 4rpx 0; }
 .qa-trace-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 40rpx; width: 40rpx; height: 40rpx; }
 .qa-trace-head.live .qa-trace-icon { animation: qa-breathe 1.6s ease-in-out infinite; }
 @keyframes qa-breathe { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
@@ -122,13 +122,14 @@ button.qa-prompt::after { border: 0; }
   收起态不画分隔线，靠上方留白和正文分开，回答底下更干净。
 */
 .qa-sources-open { padding-top: 16rpx; border-top: 1rpx solid #eceff0; }
-/* 标题行整行可点：上下各留 12rpx，点击区做到 ~36px 高，手指好按又不显空旷 */
-.qa-source-head { display: flex; align-items: center; gap: 8rpx; padding: 12rpx 0 10rpx; }
+/* 标题行整行可点：点击区做到 88rpx（44px）——手指好按，看起来仍是一行小字 */
+.qa-source-head { display: flex; align-items: center; gap: 8rpx; min-height: 88rpx; padding: 12rpx 0 10rpx; }
 .qa-source-title { display: block; color: #8b98a5; font-size: 22rpx; line-height: 1.4; }
 .qa-source-arrow { display: flex; align-items: center; justify-content: center; width: 26rpx; height: 26rpx; transition: transform 0.18s ease; }
 .qa-sources-open .qa-source-arrow { transform: rotate(180deg); }
 .qa-source-list { margin-top: 12rpx; }
-.qa-source { display: flex; flex-direction: column; gap: 4rpx; margin-bottom: 10rpx; padding: 16rpx 18rpx; border-radius: 14rpx; background: #f7f9fa; }
+/* 参考出处一行一条：左图标右文字（此前是 column，44rpx 的图标会独占一行把行高撑开） */
+.qa-source { display: flex; align-items: center; flex-direction: row; gap: 14rpx; margin-bottom: 10rpx; padding: 16rpx 18rpx; border-radius: 14rpx; background: #f7f9fa; }
 .qa-source-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 44rpx; width: 44rpx; height: 44rpx; }
 .qa-source-copy { flex: 1 1 auto; min-width: 0; }
 .qa-source-file { display: block; color: #485465; font-size: 25rpx; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -149,11 +150,11 @@ button.qa-prompt::after { border: 0; }
 .qa-file-copy { flex: 1 1 auto; min-width: 0; }
 .qa-file-name { display: block; color: #22262b; font-size: 28rpx; font-weight: 600; line-height: 1.42; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qa-file-meta { display: block; margin-top: 4rpx; color: #9aa3ad; font-size: 22rpx; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-button.qa-file-save { display: flex; align-items: center; justify-content: center; flex: 0 0 56rpx; width: 56rpx; min-width: 56rpx; height: 56rpx; min-height: 56rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: #f4f5f6; }
+button.qa-file-save { display: flex; align-items: center; justify-content: center; flex: 0 0 72rpx; width: 72rpx; min-width: 72rpx; height: 72rpx; min-height: 72rpx; margin: 0; padding: 0; border: 0; border-radius: 50%; background: #f4f5f6; }
 button.qa-file-save:active { background: #e9ecee; }
 button.qa-file-save::after { border: 0; }
 
-button.qa-action { display: flex; align-items: center; gap: 6rpx; min-height: 48rpx; margin: 0; padding: 0 16rpx; border: 0; border-radius: 14rpx; background: #f3f4f5; color: #6d7684; font-size: 23rpx; line-height: 1.3; }
+button.qa-action { display: flex; align-items: center; gap: 6rpx; min-height: 72rpx; margin: 0; padding: 0 16rpx; border: 0; border-radius: 14rpx; background: #f3f4f5; color: #6d7684; font-size: 23rpx; line-height: 1.3; }
 button.qa-action:active { background: #eaeded; }
 
 .qa-state { display: flex; flex-direction: column; align-items: center; padding: 140rpx 30rpx 0; text-align: center; }

@@ -449,12 +449,35 @@ function durationLabel(durationMs?: number): string {
 }
 
 /**
+ * 运行中的一句话进度：取最后一个「还在跑」的过程节点（工具 / 技能 / 子智能体…），
+ * 没有活动节点就退回最后一个有标题的节点。
+ *
+ * 轮询快照里没有 SSE 那样的 progress 字段，过程区本身就是最准的进度来源；
+ * 页面据此把「正在思考…」换成「正在检索资料 · 第 3 步」这类可读文案。
+ */
+export function runningLabel(trace: any[]): string {
+  const items = Array.isArray(trace) ? trace : []
+  let fallback = ''
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const node = items[index] || {}
+    const title = String(node.title || node.tool_summary || '').trim()
+    if (!title) continue
+    const detail = String(node.detail || '').trim()
+    const label = detail && detail !== title ? `${title} · ${detail}` : title
+    if (!fallback) fallback = label
+    const state = String(node.state || '')
+    if (state === 'run' || state === 'load') return label
+  }
+  return fallback
+}
+
+/**
  * 历史对话回放：后端把思考全文、过程节点、耗时随消息一起落了库，
  * 这里用与实时流完全相同的 appendTrace / settleTrace 还原，
  * 保证「重新进入对话」和「刚回答完」看到的过程区、折叠状态、耗时、排版一致。
  * 旧数据没有这些字段时降级为只有正文，不会多出空的过程区。
  */
-export function hydrateAssistant(message: any): any {
+export function hydrateAssistant(message: any, options: { skipHtml?: boolean } = {}): any {
   const items: any[] = Array.isArray(message.trace) ? message.trace : []
   let draft: any[] = [{
     ...message,
@@ -473,7 +496,9 @@ export function hydrateAssistant(message: any): any {
   const restored = settleTrace(draft, message.id)[0]
   return {
     ...restored,
-    html: renderMarkdown(message.content || ''),
+    // 正文渲染走 <markdown-view source>，html 只在少数路径用到：
+    // 轮询快照每秒重建一次消息，能省就省（长回答下差别明显）
+    html: options.skipHtml ? '' : renderMarkdown(message.content || ''),
     sources: decorateSources(message.sources),
     artifacts: decorateArtifacts(message.artifacts),
     traceElapsed: durationLabel(message.duration_ms),
@@ -482,6 +507,7 @@ export function hydrateAssistant(message: any): any {
     planOpen: false,
   }
 }
+
 
 /**
  * 增量文本节流：模型逐字输出时，把 70ms 内的多条增量合并成一次 setData，

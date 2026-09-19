@@ -1,6 +1,6 @@
 .tool-card { margin: 0 0 14rpx; }
 .tool-card.tool-nested { margin-left: 52rpx; }
-.tool-head { display: flex; align-items: center; gap: 10rpx; min-height: 56rpx; padding: 2rpx 0; }
+.tool-head { display: flex; align-items: center; gap: 10rpx; min-height: 88rpx; padding: 2rpx 0; }
 .tool-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 38rpx; width: 38rpx; height: 38rpx; border-radius: 11rpx; background: #eef1f4; }
 .tool-card.run .tool-icon { background: #e6f6ee; animation: tool-breathe 1.6s ease-in-out infinite; }
 .tool-card.error .tool-icon { background: #fdecec; }

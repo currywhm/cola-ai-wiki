@@ -1,5 +1,5 @@
 import { consumeChatTarget } from '../../services/navigation'
-import { addArtifact, appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, markPlanReviewed, settleTrace, togglePlan } from '../../utils/thread'
+import { addArtifact, appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, markPlanReviewed, runningLabel, settleTrace, togglePlan } from '../../utils/thread'
 // 生成的文件：卡片打开 / 保存到微信都在 utils/artifact 里统一实现，三个会话页共用同一份
 import { openArtifact as openArtifactFile, saveArtifact as saveArtifactFile } from '../../utils/artifact'
 import { fileTypeKind, fileTypeLabel } from '../../utils/file-type'
@@ -8,6 +8,8 @@ import { warnPrivacyRequired } from '../../services/privacy'
 import { buildSharePayload, homePayload, questionFor, SHARE_IMAGE } from '../../utils/share'
 import { createKnowledgeShare } from '../../services/api'
 import { goLogin, isLoggedIn } from '../../services/api'
+import { contentAssetUrl } from '../../services/api'
+import { applyLocalized, localizeImages } from '../../services/media'
 // 多选分享：选中态、勾选映射、分享面板与「存到知识库」都在 utils/pick-page 里收口
 import * as pickPage from '../../utils/pick-page'
 import { persistSkills, readLocalSkills, restoreSkills } from '../../utils/skill-prefs'
@@ -144,7 +146,11 @@ Page({
     }
     this.setData({ loadState:'loading', readyForInput:false, canSend:false })
     this.loadModels()
-    getKnowledge().then((knowledge) => {
+    getKnowledge().then(async (knowledgeRaw) => {
+      const knowledge = knowledgeRaw.map((item: any) => ({ ...item, avatarUrl: item.avatar ? contentAssetUrl(item.avatar) : '' }))
+      // 头像存在对象存储里、接口下发的是相对路径：先取回本地文件再交给 <image>
+      const avatars = await localizeImages(knowledge.map((item: any) => item.avatarUrl).filter(Boolean))
+      knowledge.forEach((item: any) => { if (item.avatarUrl) item.avatarUrl = applyLocalized(item.avatarUrl, avatars) })
       // 刚从创建页 / 分享落地页回来时，默认选中那一个知识库（一次性标记，读完即清）
       const focusId = String(wx.getStorageSync('kb_focus') || '')
       if (focusId) wx.removeStorageSync('kb_focus')
@@ -1176,9 +1182,12 @@ Page({
     }, () => this.syncCanSend())
   },
   applyRunSnapshot(id: string, run: ChatRunSnapshot, scroll = true) {
-    const restored = hydrateAssistant({ id, role: 'assistant', content: run.answer || '', sources: run.sources || [], trace: run.trace || [], reason: run.reason || '', artifacts: run.artifacts || [], duration_ms: run.duration_ms || 0 })
+    // 快照每秒都会重建这条消息：跳过没人消费的 html（正文交给 <markdown-view>），长回答下省一大截
+    const restored = hydrateAssistant({ id, role: 'assistant', content: run.answer || '', sources: run.sources || [], trace: run.trace || [], reason: run.reason || '', artifacts: run.artifacts || [], duration_ms: run.duration_ms || 0 }, { skipHtml: true })
     const running = run.status === 'running'
-    const message = { ...restored, progress: '', running, traceTitle: running ? (restored.trace && restored.trace.length ? '正在执行' : '思考中') : restored.traceTitle, traceElapsed: running ? '' : restored.traceElapsed }
+    // 轮询快照没有 progress 帧：运行文案直接从过程区派生，别让用户一直看「正在思考…」
+    const message = { ...restored, progress: running ? runningLabel(run.trace || []) : '', running, traceTitle: running ? (restored.trace && restored.trace.length ? '正在执行' : '思考中') : restored.traceTitle, traceElapsed: running ? '' : restored.traceElapsed }
+
     const patch: any = { messages: this.data.messages.map((item: any) => item.id === id ? message : item) }
     if (scroll) patch.lastMessageId = id
     this.setData(patch)

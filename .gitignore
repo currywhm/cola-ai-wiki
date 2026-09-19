@@ -36,3 +36,6 @@ server/sitecustomize.py
 
 # 已下线页面的人工备份，只在本机留存，不进仓库
 _archive/
+
+# 工具状态（taste/plans），不入库
+.commandcode/

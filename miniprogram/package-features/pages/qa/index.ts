@@ -1,8 +1,8 @@
-import { addArtifact, appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, markPlanReviewed, settleTrace, togglePlan } from '../../../utils/thread'
+import { addArtifact, appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, markPlanReviewed, runningLabel, settleTrace, togglePlan } from '../../../utils/thread'
 // 生成的文件：卡片打开 / 保存到微信都在 utils/artifact 里统一实现，三个会话页共用同一份
 import { openArtifact as openArtifactFile, saveArtifact as saveArtifactFile } from '../../../utils/artifact'
 import { ChatRunSnapshot, deleteConversation, followChatRun, getActiveChatRun, getConversation, getConversations, getKnowledge, getModels, pinConversation, Knowledge, Source, reviewPlan, stopChatRun, streamChat } from '../../../services/api'
-import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER } from '../../../utils/skills'
+import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER } from '../../utils/skills'
 import { buildSharePayload, homePayload, questionFor } from '../../../utils/share'
 // 多选分享：选中态、勾选映射、分享面板与「存到知识库」都在 utils/pick-page 里收口
 import * as pickPage from '../../../utils/pick-page'
@@ -422,6 +422,7 @@ Page({
     this.setData({ sending: false, messages: nextMessages, lastMessageId: nextMessages.length ? nextMessages[nextMessages.length - 1].id : '' }, () => this.syncCanSend())
   },
   applyRunSnapshot(id: string, run: ChatRunSnapshot, scroll = true) {
+    // 快照每秒都会重建这条消息：跳过没人消费的 html（正文交给 <markdown-view>），长回答下省一大截
     const restored = hydrateAssistant({
       id,
       role: 'assistant',
@@ -431,9 +432,11 @@ Page({
       reason: run.reason || '',
       artifacts: run.artifacts || [],
       duration_ms: run.duration_ms || 0,
-    })
+    }, { skipHtml: true })
     const running = run.status === 'running'
-    const message = { ...restored, running, traceTitle: running ? (restored.trace && restored.trace.length ? '正在执行' : '思考中') : restored.traceTitle, traceElapsed: running ? '' : restored.traceElapsed }
+    // 轮询快照没有 progress 帧：运行文案直接从过程区派生，别让用户一直看「正在思考…」
+    const message = { ...restored, progress: running ? runningLabel(run.trace || []) : '', running, traceTitle: running ? (restored.trace && restored.trace.length ? '正在执行' : '思考中') : restored.traceTitle, traceElapsed: running ? '' : restored.traceElapsed }
+
     const messages = this.data.messages.map((item: any) => item.id === id ? message : item)
     const patch: any = { messages }
     if (scroll) patch.lastMessageId = id

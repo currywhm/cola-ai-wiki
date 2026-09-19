@@ -1,9 +1,10 @@
-// 后端下发的配图是完整 HTTP(S) 地址。微信基础库 3.17 起「渲染层」不再接受 http:// 图片，
-// 调试环境里 <image> 直接引用这些地址只会剩一个空框。
-// 这里的做法是不把远程地址交给 <image>，而是先把字节取回来落到本地临时文件，再渲染本地路径：
-//   · 本地文件在真机与模拟器里都能渲染，和协议无关；
-//   · 线上换成正式 HTTPS 域名后同样走这条路，不依赖任何调试用的旁路服务。
+// 后端下发的配图是相对路径（/api/content/assets/...）或对象存储直链。
+// 渲染层不能带登录态、也没法直连后端域名，所以统一先把字节取回来落到本地再渲染：
+//   · 库里的小图（使用技巧封面 / 插图）→ 走容器通道拿 base64，几十 KB 级，一次来回搞定；
+//   · 对象存储里的图（头像 / 文章配图）→ 换成短时效直链后 wx.downloadFile。
 // 取不到时返回空串，页面据此隐藏图片，而不是留一个灰框。
+import { resolveAssets } from './api'
+
 const cache: Record<string, string> = {}
 
 // 文件名用地址的哈希：同一张图多次出现只落一次盘，也不会因为参数不同而互相覆盖
@@ -13,43 +14,58 @@ function keyOf(src: string): string {
   return hash.toString(16)
 }
 
-function extensionOf(src: string): string {
+const MIME_EXTENSION: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/bmp': '.bmp',
+}
+
+function extensionOf(src: string, mime?: string): string {
+  if (mime && MIME_EXTENSION[mime]) return MIME_EXTENSION[mime]
   const hit = /\.(png|jpe?g|gif|webp|bmp)(?:[?#]|$)/i.exec(src)
   const ext = hit ? hit[1].toLowerCase() : 'png'
   return `.${ext === 'jpeg' ? 'jpg' : ext}`
 }
 
-function writeLocal(src: string, data: ArrayBuffer): Promise<string> {
+function writeLocal(src: string, data: string, mime?: string): Promise<string> {
   return new Promise((resolve) => {
     try {
-      const path = `${wx.env.USER_DATA_PATH}/cola-asset-${keyOf(src)}${extensionOf(src)}`
+      const path = `${wx.env.USER_DATA_PATH}/cola-asset-${keyOf(src)}${extensionOf(src, mime)}`
       wx.getFileSystemManager().writeFile({
         filePath: path,
         data,
+        encoding: 'base64' as any,
         success: () => resolve(path),
         fail: () => resolve(''),
       })
-    } catch (e) {
+    } catch (error) {
       resolve('')
     }
   })
 }
 
-// 走 wx.request 取字节：它按「请求域名」校验，调试环境里 http 后端同样能取到
-function download(src: string): Promise<string> {
+function downloadUrl(url: string, timeout = 30000): Promise<string> {
   return new Promise((resolve) => {
-    wx.request({
-      url: src,
-      method: 'GET',
-      responseType: 'arraybuffer',
-      timeout: 20000,
-      success: (res: any) => {
-        const status = Number(res.statusCode || 0)
-        if (status < 200 || status >= 300 || !res.data) { resolve(''); return }
-        writeLocal(src, res.data).then(resolve)
-      },
+    wx.downloadFile({
+      url,
+      timeout,
+      success: (res: any) => resolve(res.statusCode === 200 ? res.tempFilePath || '' : ''),
       fail: () => resolve(''),
     })
+  })
+}
+
+function fetchAsset(src: string): Promise<string> {
+  // 外部图片（模型回答里可能出现）保持原样直连
+  if (/^https?:/i.test(src)) return downloadUrl(src)
+  return resolveAssets([src]).then((items) => {
+    const item = items[src]
+    if (!item || item.error) return ''
+    if (item.base64) return writeLocal(src, item.base64, item.mime)
+    if (item.url) return downloadUrl(item.url)
+    return ''
   })
 }
 
@@ -57,15 +73,10 @@ function download(src: string): Promise<string> {
 export function localizeImage(src?: string): Promise<string> {
   if (!src) return Promise.resolve('')
   // 包内相对路径本来就能渲染，不用动
-  if (!/^https?:/i.test(src)) return Promise.resolve(src)
+  if (!/^https?:/i.test(src) && src.charAt(0) !== '/') return Promise.resolve(src)
   const hit = cache[src]
   if (hit) return Promise.resolve(hit)
-  // http:// 只出现在本地联调：渲染层已经不支持，getImageInfo 也拿不到，直接走字节下载
-  if (/^http:/i.test(src)) return download(src).then((path) => { if (path) cache[src] = path; return path })
-  // 线上 HTTPS 域名先试官方接口（最快），失败再自己下载
-  return new Promise<string>((resolve) => {
-    wx.getImageInfo({ src, success: (res: any) => resolve(res.path || ''), fail: () => resolve('') })
-  }).then((path) => (path ? path : download(src))).then((path) => {
+  return fetchAsset(src).then((path) => {
     if (path) cache[src] = path
     return path
   })

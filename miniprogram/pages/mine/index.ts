@@ -17,15 +17,14 @@ Page({
     logoutVisible: false,
     loggingOut: false,
     // 账号设置：头像走微信官方「头像选择」（<button open-type="chooseAvatar">），
-    // 昵称走官方「昵称填写」（<input type="nickname">，键盘上方一键选微信昵称）。
+    // 昵称用 <input type="nickname">：就是一个普通输入框，用户自己输入，也可以用键盘上方的微信昵称建议。
     // 平台不提供静默读取头像昵称的接口（wx.getUserProfile / open-data 都已回收），
-    // 所以设置层分两步：先官方隐私同意，再用官方「头像昵称填写」一键选用。
+    // 所以设置层分两步：先官方隐私同意，再让用户自己设置头像和昵称。
     // privacyNeeded=true 时，设置层只显示一个官方「同意」按钮。
     privacyNeeded: false,
     privacyContractName: '',
     accountVisible: false,
     nicknameDraft: '',
-    nicknameFocus: false,
     avatarPreview: '',
     avatarSrc: '',
     savingProfile: false,
@@ -45,8 +44,8 @@ Page({
   // 而且当前小程序调 wx.getUserInfo 直接报 errno 112（隐私协议里没声明该 scope），
   // <open-data> 也只会展示「微信用户」+ 灰色头像。
   // 平台留下的唯一合规通道是「头像昵称填写能力」：
-  //   头像用 <button open-type="chooseAvatar">，昵称用 <input type="nickname">（键盘上方一键选微信昵称）。
-  // 所以设置层的顺序是：官方隐私同意（未同意时）→ 点一下头像 → 点一下昵称 → 保存。
+  //   头像用 <button open-type="chooseAvatar">，昵称用 <input type="nickname">（用户自己输入）。
+  // 所以设置层的顺序是：官方隐私同意（未同意时）→ 选头像 / 填昵称 → 保存。
   openAccountSettings() {
     if (!this.requireLogin()) return
     // 标题栏是原生组件，不收起来会盖住弹层底部的「保存」按钮
@@ -55,7 +54,6 @@ Page({
       accountVisible: true,
       nicknameDraft: (this.data.user && this.data.user.nickname) || '',
       avatarPreview: '',
-      nicknameFocus: false,
     })
     // 微信侧还没记录同意时，弹层第一步只给官方「同意」按钮（open-type="agreePrivacyAuthorization"）
     readPrivacySetting().then((setting) => {
@@ -75,17 +73,17 @@ Page({
       if (!this.data.accountVisible || !this.data.privacyNeeded) return
       requestPrivacyAuthorize().then((granted) => {
         if (granted) this.enterAccountPick()
-        else warnPrivacyRequired('设置微信头像昵称')
+        else warnPrivacyRequired('设置头像和昵称')
       })
     }, 1200)
   },
-  // 用户在官方弹窗里点了「同意」：直接进入选用微信头像昵称这一步
+  // 用户在官方弹窗里点了「同意」：直接进入设置头像和昵称这一步
   onPrivacyAgreed() {
     const self = this as any
     if (self.agreeTimer) { clearTimeout(self.agreeTimer); self.agreeTimer = null }
     this.enterAccountPick()
   },
-  // 同意之后进入「选用微信头像昵称」，并把同意状态同步给全局（导入资料那边要用）
+  // 同意之后进入设置头像和昵称，并把同意状态同步给全局（导入资料那边要用）
   enterAccountPick() {
     getApp<IAppOption>().globalData.privacyGranted = true
     this.setData({ privacyNeeded: false })
@@ -100,12 +98,9 @@ Page({
     const self = this as any
     if (self.agreeTimer) { clearTimeout(self.agreeTimer); self.agreeTimer = null }
     this.setTabBarHidden(false)
-    this.setData({ accountVisible: false, avatarPreview: '', nicknameFocus: false })
+    this.setData({ accountVisible: false, avatarPreview: '' })
   },
   onNicknameInput(e: any) { this.setData({ nicknameDraft: e.detail.value }) },
-  // 昵称整行都能点：点一下聚焦 <input type="nickname">，键盘上方就会给出「微信昵称」，点一下即选用
-  focusNickname() { this.setData({ nicknameFocus: true }) },
-  onNicknameBlur() { this.setData({ nicknameFocus: false }) },
   // 微信官方头像选择：回调给的是本机临时路径（http://tmp/... 或 wxfile://...），
   // 只在本次会话有效，所以保存时要立刻上传到服务端。
   onChooseAvatar(e: any) {
@@ -125,7 +120,7 @@ Page({
   async saveProfile() {
     const nickname = String(this.data.nicknameDraft || '').trim()
     const preview = String(this.data.avatarPreview || '')
-    if (!nickname && !preview) { wx.showToast({ title: '先点一下头像，选用微信头像', icon: 'none' }); return }
+    if (!nickname && !preview) { wx.showToast({ title: '请填写昵称或选择头像', icon: 'none' }); return }
     this.setData({ savingProfile: true })
     let loading = false
     try {

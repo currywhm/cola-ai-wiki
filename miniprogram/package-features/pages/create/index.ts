@@ -1,19 +1,50 @@
-import { createKnowledge } from '../../../services/api'
+import { createKnowledge, uploadKnowledgeAvatar } from '../../../services/api'
+import { ensurePrivacyAuthorized, openPrivacyContract, warnPrivacyRequired } from '../../../services/privacy'
 Page({
   // quotaBlocked：服务端因为会员名额拒绝创建时，页面上多给一个「查看会员服务」的出口，而不是只留一句看不懂的报错。
-  data: { name:'', description:'', saving:false, error:'', quotaBlocked:false, from:'' },
+  data: { name:'', description:'', saving:false, error:'', quotaBlocked:false, from:'', avatarPreview:'' },
   onLoad(query: any) {
     // from=library：从知识库页的新建入口进来，建好后回到知识库页并默认选中它
     this.setData({ from: String((query && query.from) || '') })
   },
   nameInput(e:any) { this.setData({ name:e.detail.value, error:'', quotaBlocked:false }) },
   descriptionInput(e:any) { this.setData({ description:e.detail.value }) },
+  chooseAvatar() {
+    if (this.data.saving) return
+    ensurePrivacyAuthorized().then((granted) => {
+      if (!granted) { warnPrivacyRequired('从个人相册选择知识库头像'); return }
+      const media = wx as any
+      const accept = (path: string) => { if (path) this.setData({ avatarPreview: path }) }
+      const failed = (error: any) => {
+        if (String(error?.errMsg || '').includes('cancel')) return
+        wx.showToast({ title: '需要个人相册权限才能选择知识库头像', icon: 'none' })
+      }
+      if (typeof media.chooseMedia === 'function') {
+        media.chooseMedia({
+          count: 1, mediaType: ['image'], sourceType: ['album'], sizeType: ['compressed'],
+          success: (result: any) => accept(String(result?.tempFiles?.[0]?.tempFilePath || '')),
+          fail: failed,
+        })
+        return
+      }
+      wx.chooseImage({ count: 1, sizeType: ['compressed'], sourceType: ['album'], success: (result) => accept(String(result.tempFilePaths?.[0] || '')), fail: failed })
+    })
+  },
+  openPrivacyGuide() {
+    if (!openPrivacyContract()) wx.navigateTo({ url: '/package-features/pages/legal/index?type=guide' })
+  },
   async save() {
     const name=this.data.name.trim()
     if (!name || this.data.saving) return
     this.setData({ saving:true, error:'' })
     try {
       const item=await createKnowledge({ name, description:this.data.description.trim() })
+      if (this.data.avatarPreview) {
+        wx.showLoading({ title: '保存头像', mask: true })
+        try { await uploadKnowledgeAvatar(item.id, this.data.avatarPreview) }
+        catch (error: any) { wx.showToast({ title: error?.message || '知识库已创建，头像稍后可重新设置', icon: 'none' }) }
+        finally { wx.hideLoading() }
+      }
       if (this.data.from) {
         // 回到知识库页，并且默认选中刚建好的这个库（不再回到「选择知识库」弹窗）
         wx.setStorageSync('kb_focus', item.id)

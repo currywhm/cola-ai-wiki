@@ -3,7 +3,7 @@
   <view wx:if="{{loadState === 'loading'}}" class="card state-card"><view class="skeleton"></view><view class="skeleton short"></view><text class="state-desc">正在加载资料库…</text></view>
   <view wx:elif="{{loadState === 'error'}}" class="card state-card"><text class="state-title">资料库加载失败</text><text class="state-desc">请检查网络后重试。</text><button class="ghost-btn" bindtap="load">重新加载</button></view>
   <block wx:else>
-    <view class="library-toolbar"><view class="library-title-wrap"><text class="library-title">{{knowledge.name || '微信用户的知识库'}}</text><text wx:if="{{readOnly}}" class="library-tag">共享</text><button class="library-switch" bindtap="switchKnowledge" aria-label="选择知识库"><ui-icon name="chevron-down" size="{{32}}" rpx /></button></view><view class="toolbar-actions"><button class="toolbar-button" bindtap="goSearch" aria-label="搜索文档"><ui-icon name="search" size="{{46}}" rpx /></button><button wx:if="{{!readOnly}}" class="toolbar-button add-button" bindtap="upload" aria-label="添加文档"><ui-icon name="upload" size="{{44}}" rpx /></button><button class="toolbar-button" bindtap="showActions" aria-label="更多功能"><ui-icon name="menu" size="{{46}}" rpx /></button></view></view>
+    <view class="library-toolbar"><view class="library-title-wrap"><image wx:if="{{knowledge.avatarUrl}}" class="library-avatar" src="{{knowledge.avatarUrl}}" mode="aspectFill" /><text class="library-title">{{knowledge.name || '微信用户的知识库'}}</text><text wx:if="{{readOnly}}" class="library-tag">共享</text><text wx:elif="{{knowledge.published}}" class="library-tag published">广场</text><button class="library-switch" bindtap="switchKnowledge" aria-label="选择知识库"><ui-icon name="chevron-down" size="{{32}}" rpx /></button></view><view class="toolbar-actions"><button class="toolbar-button" bindtap="goSearch" aria-label="搜索文档"><ui-icon name="search" size="{{46}}" rpx /></button><button wx:if="{{!readOnly}}" class="toolbar-button add-button" bindtap="upload" aria-label="添加文档"><ui-icon name="upload" size="{{44}}" rpx /></button><button class="toolbar-button" bindtap="showActions" aria-label="更多功能"><ui-icon name="menu" size="{{46}}" rpx /></button></view></view>
     <view class="document-list">
       <view wx:for="{{documents}}" wx:key="id" class="doc-swipe-row {{item.swipeX ? 'swiped' : ''}}" data-index="{{index}}" bindtouchstart="onDocTouchStart" bindtouchmove="onDocTouchMove" bindtouchend="onDocTouchEnd">
         <view wx:if="{{!readOnly}}" class="doc-actions">
@@ -11,8 +11,7 @@
           <button class="doc-action delete-action" catchtap="confirmDeleteDocument" data-id="{{item.id}}">删除</button>
         </view>
         <view class="doc-card" style="transform:translateX({{item.swipeX || 0}}rpx);" bindtap="viewDoc" data-id="{{item.id}}">
-          <view wx:if="{{item.preview_url}}" class="doc-thumb"><image src="{{item.preview_url}}" mode="aspectFill" /></view>
-          <view wx:else class="doc-thumb doc-thumb-fallback"><ui-icon name="file" size="{{28}}" /></view>
+          <view class="doc-thumb doc-thumb-fallback"><ui-icon name="file" size="{{28}}" /></view>
           <view class="doc-copy"><text class="doc-title">{{item.filename}}</text><view class="doc-meta-line"><ui-icon wx:if="{{item.typeKind === 'image'}}" name="image-blue" size="{{24}}" /><view class="pdf-mark {{item.typeKind === 'image' ? 'mark-plain' : ''}}">{{item.typeLabel}}</view><text class="doc-meta-divider">|</text><text class="doc-meta">{{item.status === 'completed' ? item.displayTime : (item.status === 'failed' ? '解析失败' : '解析中')}}</text></view></view>
           <button class="more-btn" aria-label="文档更多操作" catchtap="showDocumentActions" data-id="{{item.id}}"><ui-icon name="more" size="{{20}}" /></button>
         </view>

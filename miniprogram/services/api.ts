@@ -1,18 +1,8 @@
-import { EventStream } from './event-stream'
 import { ensurePrivacyAuthorized } from './privacy'
 import { PREVIEW_FILE_TYPES } from '../utils/file-type'
+import { callContainer } from './cloud'
 
 function appInstance() { return getApp<IAppOption>() }
-function base() { return appInstance()?.globalData?.apiBase || 'http://127.0.0.1:8765' }
-
-// 配图地址就跟后端同一个 base。微信基础库 3.17 起 <image> 不再接受 http://，
-// 所以这些地址不会直接交给 <image>：services/media.ts 会先把字节取回来落到本地文件再渲染，
-// 这样调试环境不需要额外的 HTTPS 旁路服务，线上换成正式域名也走同一条路。
-// 真需要单独指定配图域名时，在 globalData.assetBase 里覆盖即可。
-function assetBase() {
-  const override = (appInstance()?.globalData as any)?.assetBase
-  return override || base()
-}
 function token() { return appInstance()?.globalData?.token || wx.getStorageSync('llmwiki_token') || '' }
 
 // 页面展示与业务请求要分开判断：游客仍可切换 tab、浏览入口，
@@ -53,9 +43,98 @@ function redirectToLogin(): void {
 
 
 let authPromise: Promise<void> | null = null
-function rawRequest<T>(path: string, method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE' = 'GET', data?: any): Promise<T> {
-  return new Promise((resolve, reject) => wx.request({ url: `${base()}${path}`, method: method as any, data, header: { Authorization: `Bearer ${token()}` }, success: (res) => { if (res.statusCode >= 200 && res.statusCode < 300) resolve(res.data as T); else reject(Object.assign(new Error((res.data as any)?.detail || `请求失败（${res.statusCode}）`), { statusCode: res.statusCode })) }, fail: reject }))
+/** 错误文案：后端版本落后时 FastAPI 只回英文 detail（Not Found / Method Not Allowed），
+ *  这种「接口不存在」要翻译成人话，否则用户看到的就是一个干巴巴的 Not Found。 */
+function readableError(statusCode: number, data: any): string {
+  const detail = String((data && data.detail) || '').trim()
+  if (statusCode === 404 && (!detail || detail === 'Not Found')) return '服务端还没有这个接口（版本过旧），请重新部署后端后再试'
+  if (statusCode === 405) return '服务端版本过旧，接口不匹配，请重新部署后端后再试'
+  return detail || `请求失败（${statusCode}）`
 }
+
+// 所有业务请求都走微信云托管私有协议：不需要配置服务器域名，也不经过公网。
+// 返回体（statusCode + data）与 wx.request 一致，所以错误映射与 401 重试逻辑照旧。
+function rawRequest<T>(path: string, method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE' = 'GET', data?: any): Promise<T> {
+  return callContainer<T>({ path, method, data, header: { Authorization: `Bearer ${token()}` } }).then((res) => {
+    if (res.statusCode >= 200 && res.statusCode < 300) return res.data as T
+    throw Object.assign(new Error(readableError(res.statusCode, res.data)), { statusCode: res.statusCode })
+  })
+}
+
+// 长任务：容器通道单次调用上限 15s，可能更久的动作都由后端排队，
+// 前端拿 job_id 轮询。（对话流见 followChatRun）
+export type JobView = { id: string; kind: string; status: 'queued' | 'running' | 'done' | 'error' | 'interrupted'; progress: string; result: any; error: string }
+
+export function pollJob(jobId: string, handlers: { onProgress?: (label: string) => void; onDone: (result: any) => void; onError: (error: any) => void }, interval = 1500): () => void {
+  let finished = false
+  let timer: any = null
+  let failures = 0
+  let lastProgress = ''
+  const stop = () => { finished = true; if (timer) { clearTimeout(timer); timer = null } }
+  const tick = () => {
+    if (finished) return
+    request<JobView>(`/api/jobs/${jobId}`).then((job) => {
+      if (finished) return
+      failures = 0
+      if (job.progress && job.progress !== lastProgress) {
+        lastProgress = job.progress
+        if (handlers.onProgress) handlers.onProgress(job.progress)
+      }
+      if (job.status === 'done') { stop(); handlers.onDone(job.result || {}); return }
+      if (job.status === 'error' || job.status === 'interrupted') { stop(); handlers.onError(new Error(job.error || '任务未完成，请重试')); return }
+      timer = setTimeout(tick, interval)
+    }).catch((error) => {
+      if (finished) return
+      failures += 1
+      // 网络抖动不该让任务看起来失败：退避重试几次再报错
+      if (failures >= 5) { stop(); handlers.onError(error); return }
+      timer = setTimeout(tick, interval * failures)
+    })
+  }
+  tick()
+  return stop
+}
+
+// 二进制资源：后端路径 → 对象存储预签名地址（直接 wx.downloadFile）
+function downloadToTemp(url: string, timeout = 120000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    wx.downloadFile({
+      url, timeout,
+      success: (res: any) => {
+        if (res.statusCode === 200 && res.tempFilePath) { resolve(res.tempFilePath); return }
+        reject(new Error(`文件下载失败（${res.statusCode}）`))
+      },
+      fail: () => reject(new Error('文件下载失败，请检查网络后重试')),
+    })
+  })
+}
+
+export type ResolvedAsset = { mode?: 'cos' | 'inline' | 'local'; url?: string; base64?: string; mime?: string; filename?: string; error?: string }
+
+/** 批量解析后端资源路径：一次来回换回可下载地址或小图字节。 */
+export function resolveAssets(paths: string[]): Promise<Record<string, ResolvedAsset>> {
+  if (!paths.length) return Promise.resolve({})
+  return rawRequest<{ items: Record<string, ResolvedAsset> }>('/api/assets/resolve', 'POST', { paths: paths.slice(0, 32) }).then((res) => res.items || {})
+}
+
+/** 单条资源 → 可交给 wx.downloadFile 的地址。 */
+export function assetUrl(path: string): Promise<string> {
+  return resolveAssets([path]).then((items) => {
+    const item = items[path]
+    if (!item || item.error || !item.url) throw new Error((item && item.error) || '文件暂时无法下载，请稍后重试')
+    return item.url
+  })
+}
+
+/** 后端排队执行的接口：拿到 job_id 就等任务结果，否则原样返回。
+ *  onProgress 透传后端写进 jobs.progress 的那句话（「正在审阅…」），调用方可以显示真实进度。 */
+function jobResult<T>(result: any, onProgress?: (label: string) => void): Promise<T> {
+  if (!result || !result.pending || !result.job_id) return Promise.resolve(result as T)
+  return new Promise<T>((resolve, reject) => {
+    pollJob(result.job_id, { onProgress, onDone: (done) => resolve(done as T), onError: reject })
+  })
+}
+
 // 微信登录只允许从登录页的用户明确操作触发。其他页面没有令牌时只负责回到登录页，
 // 不在这里静默调用 wx.login，避免绕过登录页直接进入问 AI 首页。
 export function ensureAuth(): Promise<void> {
@@ -107,22 +186,13 @@ export const getArtifactPreview = (id: string) => request<ArtifactView>(`/api/ar
  * 微信的原生预览（图片 / 文档）与「转发到聊天」都只认本地路径，所以这一步不能省。
  */
 export function downloadArtifact(artifactId: string): Promise<string> {
-  return ensureAuth().then(() => new Promise<string>((resolve, reject) => {
-    wx.downloadFile({
-      url: `${base()}/api/artifacts/${artifactId}/download`,
-      header: { Authorization: `Bearer ${token()}` },
-      timeout: 120000,
-      success: (res: any) => {
-        if (res.statusCode === 200 && res.tempFilePath) { resolve(res.tempFilePath); return }
-        reject(new Error(`文件下载失败（${res.statusCode}）`))
-      },
-      fail: () => reject(new Error('文件下载失败，请检查网络后重试')),
-    })
-  }))
+  return ensureAuth()
+    .then(() => assetUrl(`/api/artifacts/${artifactId}/download`))
+    .then((url) => downloadToTemp(url))
 }
 
 // shared/read_only：好友共享过来的只读镜像；source_name 是来源库名称；source_missing 表示来源已被删掉
-export type Knowledge = { id: string; name: string; description: string; icon: string; document_count: number; updated_at: string; shared?: boolean; subscribed?: boolean; subscription_source?: string; read_only?: boolean; source_name?: string; source_missing?: boolean; inbox?: boolean; shareable?: boolean }
+export type Knowledge = { id: string; name: string; description: string; icon: string; avatar?: string; document_count: number; category?: string; subscribers?: number; published?: boolean; published_at?: string; publishable?: boolean; updated_at: string; shared?: boolean; subscribed?: boolean; subscription_source?: string; read_only?: boolean; source_name?: string; source_missing?: boolean; inbox?: boolean; shareable?: boolean }
 export type Document = { id: string; filename: string; file_type: string; file_size: number; page_count: number; status: string; progress: number; error_message: string; organized_title?: string; summary?: string; tags?: string[]; key_points?: string[]; organize_status?: string; organize_method?: string }
 export type Source = { id: string; document_id?: string; filename: string; page_number: number; quote: string; score: number; url?: string }
 
@@ -166,12 +236,10 @@ export type TipIndex = { version: string; title: string; subtitle: string; intro
 export type TipRun = { text: string; style: 'plain' | 'strong' | 'code' }
 export type TipBlock = { type: 'heading' | 'paragraph' | 'bullet' | 'step' | 'note' | 'figure'; level?: number; index?: number; text?: string; runs?: TipRun[]; src?: string; caption?: string }
 export type TipDetail = TipEntry & { group: string; blocks: TipBlock[] }
-export const contentAssetBase = () => assetBase()
-export const contentAssetUrl = (path: string) => {
-  if (!path) return ''
-  if (/^https?:\/\//.test(path)) return path
-  return `${assetBase()}${path.charAt(0) === '/' ? path : `/${path}`}`
-}
+// 后端下发的配图是相对路径（/api/content/assets/...）。渲染层不能带登录态、也没有域名可用，
+// 所以统一交给 services/media.ts：它按路径换回可渲染的本地文件。
+export const contentAssetUrl = (path: string) => (path || '')
+
 export const getTipsIndex = () => rawRequest<TipIndex>('/api/content/tips')
 export const getTipDetail = (id: string) => rawRequest<TipDetail>(`/api/content/tips/${id}`)
 // 合规文档（关于 / 数据管理 / 隐私安全 / 隐私保护指引 / 服务协议 / 软件许可 /
@@ -185,25 +253,60 @@ export const getLegalDoc = (id: string) => rawRequest<LegalDetail>(`/api/content
 // 两个字段都可选：只改昵称时不会顺手把头像清掉（后端同样按“未传则保持原值”处理）
 export const updateMe = (data: { nickname?: string; avatar?: string }) => request<any>('/api/me', 'PATCH', data)
 
-// 微信「头像昵称填写能力」回调给的是本机临时路径（http://tmp/... 或 wxfile://...），
-// 换设备或重装就失效，所以选完要立刻上传到服务端持久化。
-export function uploadAvatar(filePath: string): Promise<{ avatar: string }> {
-  return ensureAuth().then(() => new Promise((resolve, reject) => {
-    wx.uploadFile({
-      url: `${base()}/api/me/avatar`, filePath, name: 'file',
-      header: { Authorization: `Bearer ${token()}` },
-      success: res => { try { const body = JSON.parse(res.data); if (res.statusCode >= 200 && res.statusCode < 300) resolve(body); else reject(Object.assign(new Error(body?.detail || '头像上传失败'), { statusCode: res.statusCode })) } catch { reject(new Error('头像上传响应无效，请重试')) } },
-      fail: reject,
-    })
-  }))
+// 文件不能走容器通道（请求体上限 100KiB）：先向服务端要一份只允许写单个对象、
+// 且锁死体积上限的直传凭证，再由客户端直接写进对象存储，最后回执登记。
+type UploadSlot = { mode: string; url?: string; fields?: Record<string, string>; key?: string; document_id?: string; filename?: string; max_bytes?: number; suffix?: string }
+
+function suffixOfPath(path: string): string {
+  const hit = /\.([A-Za-z0-9]+)(?:[?#]|$)/.exec(String(path || ''))
+  return hit ? `.${hit[1].toLowerCase()}` : ''
 }
 
-// 后端存的是相对地址（/api/avatars/...），渲染前先补上 base
-export const userAvatarUrl = (avatar?: string) => (avatar ? contentAssetUrl(avatar) : '')
+async function acquireUploadSlot(kind: 'document' | 'avatar' | 'knowledge-avatar', filename: string, extra: Record<string, any> = {}): Promise<UploadSlot> {
+  const slot = await request<UploadSlot>('/api/uploads/direct', 'POST', { kind, filename, ...extra })
+  if (slot.mode !== 'cos' || !slot.url || !slot.key) throw new Error('当前环境不支持文件直传，请稍后重试')
+  return slot
+}
+
+function uploadToCos(filePath: string, slot: UploadSlot): Promise<void> {
+  return new Promise((resolve, reject) => {
+    wx.uploadFile({
+      url: String(slot.url), filePath, name: 'file', formData: slot.fields || {},
+      success: (res: any) => {
+        const status = Number(res.statusCode || 0)
+        if (status >= 200 && status < 300) { resolve(); return }
+        reject(new Error(`文件上传失败（${status}）`))
+      },
+      fail: () => reject(new Error('文件上传失败，请检查网络后重试')),
+    })
+  })
+}
+
+// 微信「头像昵称填写能力」回调给的是本机临时路径（http://tmp/... 或 wxfile://...），
+// 换设备或重装就失效，所以选完要立刻传到对象存储持久化，再回执写回用户资料。
+export function uploadAvatar(filePath: string): Promise<{ avatar: string }> {
+  return ensureAuth().then(async () => {
+    const slot = await acquireUploadSlot('avatar', filePath, { suffix: suffixOfPath(filePath) })
+    await uploadToCos(filePath, slot)
+    return request<{ avatar: string }>('/api/me/avatar/complete', 'POST', { key: slot.key })
+  })
+}
+
+export function uploadKnowledgeAvatar(knowledgeId: string, filePath: string): Promise<{ avatar: string }> {
+  return ensureAuth().then(async () => {
+    const slot = await acquireUploadSlot('knowledge-avatar', filePath, { knowledge_id: knowledgeId, suffix: suffixOfPath(filePath) })
+    await uploadToCos(filePath, slot)
+    return request<{ avatar: string }>(`/api/knowledge/${knowledgeId}/avatar/complete`, 'POST', { key: slot.key })
+  })
+}
+
+// 后端存的是相对地址（/api/avatars/...），渲染前由 services/media.ts 解析成可取用的地址
+export const userAvatarUrl = (avatar?: string) => (avatar || '')
+
 
 export const deleteAccount = () => request<any>('/api/me', 'DELETE')
 export const getKnowledge = () => request<Knowledge[]>('/api/knowledge')
-export type MarketKnowledge = { id: string; name: string; description: string; icon: string; category: string; subscribers: number; documents: number; updated_at: string; subscribed: boolean; owned: boolean }
+export type MarketKnowledge = { id: string; name: string; description: string; icon: string; avatar?: string; category: string; subscribers: number; documents: number; updated_at: string; published_at?: string; publisher_name: string; publisher_avatar?: string; subscribed: boolean; owned: boolean }
 export const getMarketKnowledge = (query = '', category = '') => request<MarketKnowledge[]>(`/api/market?query=${encodeURIComponent(query)}&category=${encodeURIComponent(category)}`)
 export type SubscriptionResult = { knowledge_id: string; name: string; documents: number; subscribers: number; already: boolean; message: string }
 export const subscribeKnowledge = (knowledgeId: string) => request<SubscriptionResult>('/api/subscriptions', 'POST', { knowledge_id: knowledgeId })
@@ -211,6 +314,14 @@ export const unsubscribeKnowledge = (knowledgeId: string) => request<{ ok: boole
 // 最近知识只展示最新的 20 条（服务端同样按 20 条收敛，不白拉数据）
 export const getRecent = (limit = 20) => request<{ knowledge: any[]; items: any[] }>(`/api/recent?limit=${limit}`)
 export const createKnowledge = (data: { name: string; description: string }) => request<Knowledge>('/api/knowledge', 'POST', data)
+// 上架要通读整个知识库做合规检查（最多 80 份资料），可能超过容器通道单次调用上限：
+// 后端排队执行，这里等任务结果；下架是瞬时动作，后端直接返回。
+export function publishKnowledge(id: string, published: boolean, acknowledged = false, onProgress?: (label: string) => void): Promise<{ ok: boolean; published: boolean; category?: string; subscribers?: number; reviewed_documents?: number; message: string }> {
+  return request<any>(`/api/knowledge/${id}/publish`, 'POST', { published, acknowledged })
+    .then((result) => jobResult<{ ok: boolean; published: boolean; category?: string; subscribers?: number; reviewed_documents?: number; message: string }>(result, onProgress))
+}
+
+
 export const deleteKnowledge = (id: string) => request<any>(`/api/knowledge/${id}`, 'DELETE')
 export const getKnowledgeDetail = (id: string) => request<{ knowledge: Knowledge; documents: Document[] }>(`/api/knowledge/${id}`)
 export const getDocument = (id: string) => request<any>(`/api/documents/${id}`)
@@ -224,28 +335,24 @@ export const getDocument = (id: string) => request<any>(`/api/documents/${id}`)
 export function previewDocument(id: string, fileType: string): Promise<void> {
   const type = String(fileType || '').replace(/^\./, '').toLowerCase()
   if (PREVIEW_FILE_TYPES.indexOf(type) < 0) return Promise.reject(new Error('该格式暂不支持原文预览'))
-  return ensureAuth().then(() => new Promise<void>((resolve, reject) => {
-    wx.showLoading({ title: '正在打开原文', mask: true })
-    const done = () => wx.hideLoading()
-    wx.downloadFile({
-      url: `${base()}/api/documents/${id}/download`,
-      header: { Authorization: `Bearer ${token()}` },
-      timeout: 120000,
-      success: (res: any) => {
-        if (res.statusCode !== 200) { done(); reject(new Error(`原文下载失败（${res.statusCode}）`)); return }
-        // 临时文件路径通常不带扩展名，必须显式告诉渲染器按哪种格式打开，否则会报格式不支持
-        wx.openDocument({
-          filePath: res.tempFilePath,
-          fileType: type as any,
-          showMenu: true,
-          success: () => { done(); resolve() },
-          fail: (error: any) => { done(); reject(new Error((error && error.errMsg) || '该文件暂时无法打开')) },
-        })
-      },
-      fail: () => { done(); reject(new Error('原文下载失败，请检查网络后重试')) },
-    })
-  }))
+  wx.showLoading({ title: '正在打开原文', mask: true })
+  const done = () => wx.hideLoading()
+  return ensureAuth()
+    .then(() => assetUrl(`/api/documents/${id}/download`))
+    .then((url) => downloadToTemp(url))
+    .then((filePath) => new Promise<void>((resolve, reject) => {
+      // 临时文件路径通常不带扩展名，必须显式告诉渲染器按哪种格式打开，否则会报格式不支持
+      wx.openDocument({
+        filePath,
+        fileType: type as any,
+        showMenu: true,
+        success: () => { done(); resolve() },
+        fail: (error: any) => { done(); reject(new Error((error && error.errMsg) || '该文件暂时无法打开')) },
+      })
+    }))
+    .catch((error) => { done(); throw error })
 }
+
 export const deleteDocument = (id: string) => request<any>(`/api/documents/${id}`, 'DELETE')
 export const updateDocumentTags = (id: string, tags: string[]) => request<any>(`/api/documents/${id}/tags`, 'PATCH', { tags })
 export const retryDocument = (id: string) => request<any>(`/api/documents/${id}/retry`, 'POST')
@@ -284,12 +391,20 @@ export const createShare = (data: { title?: string; question: string; answer: st
 export const getShare = (id: string) => rawRequest<ShareCard>(`/api/shares/${encodeURIComponent(id)}`)
 // 收进自己的「共享知识库」：这一步要登录（小程序里就是微信登录），所以要带 token
 export type ShareClaimResult = { knowledge_id: string; knowledge_name: string; folder_id: string; documents: any[]; skipped: string[]; already: boolean; message: string }
-export const claimShare = (id: string) => request<ShareClaimResult>(`/api/shares/${encodeURIComponent(id)}/claim`, 'POST', {})
+// 收进「共享知识库」要复制文件并抽取正文，后端排队执行，这里等任务结果
+export function claimShare(id: string, onProgress?: (label: string) => void): Promise<ShareClaimResult> {
+  return request<any>(`/api/shares/${encodeURIComponent(id)}/claim`, 'POST', {}).then((result) => jobResult<ShareClaimResult>(result, onProgress))
+}
+
 // 分享页里的文件：公开只读，凭分享 id + 序号取件，不需要登录态
-export const shareFileUrl = (id: string, index: number) => `${base()}/api/shares/${encodeURIComponent(id)}/files/${index}`
-/** 把对话里勾选的内容与文件存进指定知识库（分享面板的「存到知识库」）。 */
-export const saveSelectionToKnowledge = (data: { knowledge_id: string; folder_id?: string; title: string; content: string; artifact_ids: string[] }) =>
-  request<{ knowledge_id: string; knowledge_name: string; saved: any[]; skipped: string[]; message: string }>('/api/shares/to-knowledge', 'POST', data)
+export const shareFilePath = (id: string, index: number) => `/api/shares/${encodeURIComponent(id)}/files/${index}`
+/** 把对话里勾选的内容与文件存进指定知识库（分享面板的「存到知识库」）。
+ *  文件要逐个抽取正文，后端排队执行，这里等任务结果。 */
+export function saveSelectionToKnowledge(data: { knowledge_id: string; folder_id?: string; title: string; content: string; artifact_ids: string[] }, onProgress?: (label: string) => void): Promise<{ knowledge_id: string; knowledge_name: string; saved: any[]; skipped: string[]; message: string }> {
+  return request<any>('/api/shares/to-knowledge', 'POST', data)
+    .then((result) => jobResult<{ knowledge_id: string; knowledge_name: string; saved: any[]; skipped: string[]; message: string }>(result, onProgress))
+}
+
 // 技能：技能广场（所有人可用）与我的技能（用户级隔离，仅作者本人可见可用）
 export type Skill = {
   id: string; name: string; summary: string; prompt: string; icon: string
@@ -311,41 +426,61 @@ export const deleteSkill = (id: string) => request<any>(`/api/skills/${id}`, 'DE
 export const publishSkill = (id: string, published: boolean) => request<Skill>(`/api/skills/${id}/publish`, 'POST', { published })
 export const likeSkill = (id: string, active: boolean) => request<SkillFlagResult>(`/api/skills/${id}/like`, 'POST', { active })
 export const favoriteSkill = (id: string, active: boolean) => request<SkillFlagResult>(`/api/skills/${id}/favorite`, 'POST', { active })
-// 增强提示词：把随手写的一句话按技能模板改写成可执行的技能指令（直连模型，秒级返回）
-export const enhanceSkillPrompt = (data: { instruction: string; name?: string }) => request<{ instruction: string }>('/api/skills/enhance', 'POST', data)
-// 制作技能：交给后端 harness 加载 skill-creator 生成技能包（可能包含 SKILL.md 之外的脚本/模板）。
-// 生成要跑完整一轮 agent，用 SSE 把过程阶段推出来，与对话流同一套分帧解析。
+// 增强提示词：把随手写的一句话按技能模板改写成可执行的技能指令。
+// 改写由模型完成、可能跑几十秒（超过容器单次调用上限），所以后端排队、这里轮询结果。
+export function enhanceSkillPrompt(data: { instruction: string; name?: string }): Promise<{ instruction: string }> {
+  return request<{ job_id: string }>('/api/skills/enhance', 'POST', data).then(({ job_id }) => new Promise((resolve, reject) => {
+    pollJob(job_id, {
+      onDone: (result) => resolve({ instruction: String((result && result.instruction) || '') }),
+      onError: reject,
+    })
+  }))
+}
+// 制作技能：后端 harness 跑完整一轮 skill-creator（可能几分钟）。
+// 任务排队执行，过程阶段与成品都用任务轮询取；返回的函数只停止轮询，不取消服务端任务。
 export function buildSkill(payload: { instruction: string; name?: string; summary?: string; icon?: string; developer_wechat?: string }, onStage: (label: string) => void, onSkill: (skill: Skill & { note?: string }) => void, onError: (error: any) => void, onDone: () => void) {
-  let task: any; let finished = false; let receivedChunk = false
+  let cancelPoll: (() => void) | null = null
+  let finished = false
   const fail = (error: any) => { if (!finished) { finished = true; onError(error) } }
-  const parser = new EventStream((data) => {
-    if (finished) return
-    if (data.type === 'stage') onStage(String(data.label || ''))
-    else if (data.type === 'skill') onSkill(data.skill || {})
-    else if (data.type === 'error') fail(new Error(data.message || '技能制作失败，请重试'))
-    else if (data.type === 'done') { finished = true; onDone() }
-  })
-  ensureAuth().then(() => {
-    if (finished) return
-    task = wx.request({
-      url: `${base()}/api/skills/build`, method: 'POST', enableChunked: true, responseType: 'text', data: payload, timeout: 600000,
-      header: { 'content-type': 'application/json', Authorization: `Bearer ${token()}` },
-      success: (res: any) => {
-        if (finished) return
-        if (res.statusCode < 200 || res.statusCode >= 300) { let detail = ''; try { detail = (typeof res.data === 'string' ? JSON.parse(res.data) : res.data)?.detail || '' } catch { /* 非 JSON 错误体 */ } fail(new Error(detail || `技能制作请求失败（${res.statusCode}）`)); return }
-        try { if (!receivedChunk && typeof res.data === 'string') parser.push(res.data); if (!finished) fail(new Error('连接已中断，技能没有制作完成，请重试。')) } catch { fail(new Error('技能制作数据格式异常，请重试。')) }
-      },
-      fail,
-    } as any)
-    task.onChunkReceived((chunk: any) => { if (finished) return; receivedChunk = true; try { parser.push(chunk.data) } catch { fail(new Error('技能制作数据格式异常，请重试。')) } })
-  }).catch(fail)
-  return () => { finished = true; if (task) task.abort() }
+  ensureAuth()
+    .then(() => request<{ job_id: string }>('/api/skills/build', 'POST', payload))
+    .then(({ job_id }) => {
+      if (finished) return
+      cancelPoll = pollJob(job_id, {
+        onProgress: onStage,
+        onDone: (result) => {
+          if (finished) return
+          finished = true
+          const skill = (result && result.skill) || {}
+          if (result && result.note) skill.note = result.note
+          onSkill(skill)
+          onDone()
+        },
+        onError: fail,
+      }, 2000)
+    })
+    .catch(fail)
+  return () => { finished = true; if (cancelPoll) cancelPoll() }
 }
 export const logout = () => request<any>('/api/auth/logout', 'POST').catch(() => ({ ok: false }))
 export type Folder = { id: string; name: string; document_count: number }
 export const getFolders = (knowledgeId: string) => request<Folder[]>(`/api/knowledge/${knowledgeId}/folders`)
-// 推荐问题：不传 folderId 时按整个知识库生成，传了则收窄到该文件夹
-export const getSuggestions = (knowledgeId: string, folderId = '') => request<{ questions: string[] }>(`/api/knowledge/${knowledgeId}/suggestions${folderId ? `?folder_id=${encodeURIComponent(folderId)}` : ''}`)
+// 推荐问题：不传 folderId 时按整个知识库生成，传了则收窄到该文件夹。
+// 首次生成由模型完成，后端排队执行，这里等任务结果；命中缓存时后端直接返回。
+export function getSuggestions(knowledgeId: string, folderId = ''): Promise<{ questions: string[] }> {
+  const path = `/api/knowledge/${knowledgeId}/suggestions${folderId ? `?folder_id=${encodeURIComponent(folderId)}` : ''}`
+  return request<{ questions: string[]; pending?: boolean; job_id?: string }>(path).then((result) => {
+    if (!result.pending || !result.job_id) return { questions: result.questions || [] }
+    return new Promise<{ questions: string[] }>((resolve) => {
+      pollJob(result.job_id as string, {
+        onDone: (done) => resolve({ questions: (done && done.questions) || [] }),
+        // 推荐问题只是锦上添花：生成失败就让页面按「没有推荐」处理，不打扰用户
+        onError: () => resolve({ questions: [] }),
+      })
+    })
+  })
+}
+
 export const createFolder = (knowledgeId: string, name: string) => request<Folder>(`/api/knowledge/${knowledgeId}/folders`, 'POST', { name })
 export const deleteFolder = (folderId: string) => request<any>(`/api/folders/${folderId}`, 'DELETE')
 export const moveDocument = (documentId: string, folderId: string) => request<any>(`/api/documents/${documentId}/move`, 'PATCH', { folder_id: folderId })
@@ -359,9 +494,12 @@ export type LegacyMembershipPlan = MembershipPlan
 export const createPayOrder = (plan: MembershipPlan) => request<any>('/api/pay/orders', 'POST', { plan })
 // 微信虚拟支付在 iOS 端要求微信客户端 >= 8.0.68，版本不足时直接拦截并提示升级
 function ensureVirtualPaymentSupported(): void {
-  const sys = wx.getSystemInfoSync()
-  if (sys.platform !== 'ios') return
-  const current = String(sys.version || '').split('.').map(Number)
+  const api = wx as any
+  // 平台已拆分 getSystemInfoSync：设备字段看 device，微信客户端版本看 appBase。
+  const device = typeof api.getDeviceInfo === 'function' ? api.getDeviceInfo() : wx.getSystemInfoSync()
+  const appBase = typeof api.getAppBaseInfo === 'function' ? api.getAppBaseInfo() : device
+  if (device.platform !== 'ios') return
+  const current = String(appBase.version || device.version || '').split('.').map(Number)
   const minimum = [8, 0, 68]
   for (let i = 0; i < 3; i += 1) {
     if ((current[i] || 0) > minimum[i]) return
@@ -443,18 +581,16 @@ function selectUploadSource(): Promise<UploadSource> {
 }
 
 function uploadPickedFile(knowledgeId: string, file: LocalUpload, folderId = ''): Promise<any> {
-  return ensureAuth().then(() => new Promise((resolve, reject) => {
+  return ensureAuth().then(async () => {
+    const slot = await acquireUploadSlot('document', file.filename, { knowledge_id: knowledgeId, folder_id: folderId })
     wx.showLoading({ title: '正在上传', mask: true })
-    let loadingVisible = true
-    const finish = () => { if (loadingVisible) { wx.hideLoading(); loadingVisible = false } }
-    wx.uploadFile({
-      url: `${base()}/api/knowledge/${knowledgeId}/documents`, filePath: file.path, name: 'file',
-      formData: { folder_id: folderId },
-      header: { Authorization: `Bearer ${token()}`, 'X-Upload-Filename': encodeURIComponent(file.filename) },
-      success: res => { finish(); try { const body = JSON.parse(res.data); if (res.statusCode >= 200 && res.statusCode < 300) resolve(body); else reject(Object.assign(new Error(body?.detail || '上传失败'), { statusCode: res.statusCode })) } catch { reject(new Error('上传响应无效，请重试')) } },
-      fail: error => { finish(); reject(error) },
-    })
-  }))
+    try {
+      await uploadToCos(file.path, slot)
+      return await request<any>(`/api/knowledge/${knowledgeId}/documents/${slot.document_id}/complete`, 'POST', { key: slot.key })
+    } finally {
+      wx.hideLoading()
+    }
+  })
 }
 
 export function uploadLocalFile(knowledgeId: string, path: string, filename: string, folderId = ''): Promise<any> {
@@ -501,83 +637,61 @@ type ChatRunHandlers = {
   onError: (error: any) => void
 }
 
+// 对话过程的轮询间隔：服务端每 ~0.2s 落一次快照。取 600ms 是「跟手」与「请求量」的折中
+// ——1s 会在长回答下看出明显的成段跳字，再快就只是白刷接口。
+const CHAT_POLL_INTERVAL = 600
+const CHAT_POLL_MAX_FAILURES = 8
+
 /**
- * 订阅一个已经启动的服务端聊天任务。网络断开时自动续订；返回的函数只退订，不停止服务端任务。
+ * 订阅一个已经启动的服务端聊天任务：轮询 run 快照，revision 变化就回调。
+ *
+ * 用轮询而不是 SSE：云托管私有协议单次调用上限 15s，而一轮回答动辄几分钟，
+ * 长连接拿不到。返回的函数只停止轮询，不停止服务端任务。
  */
 export function followChatRun(runId: string, handlers: ChatRunHandlers): () => void {
   let finished = false
-  let task: any = null
-  let retryTimer: any = null
-  let revision = 0
-  let receivedChunk = false
+  let timer: any = null
+  let revision = -1
+  let failures = 0
+
+  const stop = () => {
+    finished = true
+    if (timer) { clearTimeout(timer); timer = null }
+  }
 
   const fail = (error: any) => {
     if (finished) return
-    finished = true
+    stop()
     handlers.onError(error)
   }
 
-  const retry = () => {
-    if (finished || retryTimer) return
-    retryTimer = setTimeout(() => {
-      retryTimer = null
-      connect()
-    }, 800)
-  }
-
-  const connect = () => {
+  const tick = () => {
     if (finished) return
-    receivedChunk = false
-    const parser = new EventStream((data) => {
+    getChatRun(runId).then((run) => {
       if (finished) return
-      if (data.type === 'snapshot' && data.run) {
-        const run = data.run as ChatRunSnapshot
-        revision = Number(run.revision || revision || 0)
+      failures = 0
+      const next = Number(run.revision || 0)
+      if (next !== revision) {
+        revision = next
         handlers.onSnapshot(run)
+      }
+      if (run.status === 'running') {
+        timer = setTimeout(tick, CHAT_POLL_INTERVAL)
         return
       }
-      if (data.type === 'done' || data.type === 'cancelled') {
-        finished = true
-        handlers.onDone()
-        return
-      }
-      if (data.type === 'error') fail(new Error(data.message || '任务未完成'))
-    })
-    task = wx.request({
-      url: `${base()}/api/chat/runs/${runId}/stream?after=${revision}`,
-      method: 'GET',
-      enableChunked: true,
-      responseType: 'text',
-      timeout: 1800000,
-      header: { Authorization: `Bearer ${token()}` },
-      success: (res: any) => {
-        if (finished) return
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          let detail = ''
-          try { detail = (typeof res.data === 'string' ? JSON.parse(res.data) : res.data)?.detail || '' } catch { /* 非 JSON 错误体 */ }
-          fail(new Error(detail || `订阅任务失败（${res.statusCode}）`))
-          return
-        }
-        try {
-          if (!receivedChunk && typeof res.data === 'string') parser.push(res.data)
-        } catch { fail(new Error('回答数据格式异常，请重试。')) }
-        if (!finished) retry()
-      },
-      fail: () => retry(),
-    } as any)
-    task.onChunkReceived((chunk: any) => {
+      stop()
+      handlers.onDone()
+    }).catch((error) => {
       if (finished) return
-      receivedChunk = true
-      try { parser.push(chunk.data) } catch { fail(new Error('回答数据格式异常，请重试。')) }
+      // 弱网下轮询失败不该把整轮回答判死：退避重试，连续失败才报错
+      failures += 1
+      if (failures >= CHAT_POLL_MAX_FAILURES) { fail(error); return }
+      timer = setTimeout(tick, CHAT_POLL_INTERVAL * failures)
     })
   }
 
-  connect()
-  return () => {
-    finished = true
-    if (retryTimer) clearTimeout(retryTimer)
-    if (task) task.abort()
-  }
+  tick()
+  return stop
 }
 
 export function streamChat(payload: { knowledge_id?: string; conversation_id?: string; folder_id?: string; content: string; model?: string; mode?: 'knowledge' | 'web'; thinking?: 'quick' | 'deep'; skill?: string; skills?: string[] }, onMeta: (value: any) => void, onDelta: (value: string) => void, onDone: () => void, onError: (error: any) => void, _onProgress?: (label: string) => void, onTrace?: (item: TraceItem) => void, onArtifact?: (artifact: ArtifactView) => void, onSnapshot?: (run: ChatRunSnapshot) => void) {

@@ -488,6 +488,8 @@ export const createFolder = (knowledgeId: string, name: string) => request<Folde
 export const deleteFolder = (folderId: string) => request<any>(`/api/folders/${folderId}`, 'DELETE')
 export const moveDocument = (documentId: string, folderId: string) => request<any>(`/api/documents/${documentId}/move`, 'PATCH', { folder_id: folderId })
 export const importArticle = (knowledgeId: string, url: string, folderId = '') => request<any>(`/api/knowledge/${knowledgeId}/import-article`, 'POST', { url, folder_id: folderId })
+// 进会话页时预热后端运行时（官方 SDK 的冷启动 0.7–3.8s），失败静默：不预热也能正常问答
+export const preheatHarness = () => request<any>('/api/harness/preheat', 'POST', {})
 export type MembershipPlan = 'plus_monthly' | 'plus_quarterly' | 'plus_yearly' | 'pro_monthly' | 'pro_quarterly' | 'pro_yearly'
 export type PayPlanOption = { id: MembershipPlan; amount: number; price: string; days: number; available: boolean }
 export type PayTier = { id: 'plus' | 'pro'; label: string; storage_bytes: number; storage_label: string; knowledge_bases: number; monthly_credits: number; max_file_label: string; plans: PayPlanOption[] }

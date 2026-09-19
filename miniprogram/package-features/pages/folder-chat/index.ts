@@ -11,7 +11,7 @@ import * as pickPage from '../../../utils/pick-page'
 import { fileTypeLabel } from '../../../utils/file-type'
 import { readKeyboardHeight, repinLatest, shellStyle } from '../../../utils/keyboard'
 import { markdownToText } from '../../../utils/markdown'
-import { ChatRunSnapshot, deleteConversation, followChatRun, getActiveChatRun, getConversation, getConversations, getKnowledgeDetail, getModels, getSuggestions, pinConversation, Source, reviewPlan, stopChatRun, streamChat } from '../../../services/api'
+import { ChatRunSnapshot, deleteConversation, followChatRun, getActiveChatRun, getConversation, getConversations, getKnowledgeDetail, getModels, getSuggestions, pinConversation, preheatHarness, Source, reviewPlan, stopChatRun, streamChat } from '../../../services/api'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
 
@@ -77,7 +77,7 @@ Page({
     this.loadFolder()
     this.restoreSkillPrefs()
   },
-  onShow() { this.measureSafeArea() },
+  onShow() { this.measureSafeArea(); preheatHarness().catch(() => undefined) },
   onReady() { this.measureBody() },
   onUnload() {
     const cancel = (this as any).cancelStream

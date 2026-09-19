@@ -3,7 +3,7 @@ import { addArtifact, appendTrace, assistantMessage, createFlusher, decorateSour
 // 生成的文件：卡片打开 / 保存到微信都在 utils/artifact 里统一实现，三个会话页共用同一份
 import { openArtifact as openArtifactFile, saveArtifact as saveArtifactFile } from '../../utils/artifact'
 import { fileTypeKind, fileTypeLabel } from '../../utils/file-type'
-import { ChatRunSnapshot, deleteConversation, followChatRun, getActiveChatRun, getConversation, getConversations, getKnowledge, getKnowledgeDetail, deleteDocument, deleteKnowledge, getModels, getFolders, getSuggestions, createFolder, deleteFolder, importArticle, moveDocument, pinConversation, uploadLocalFile, Knowledge, ModelOption, Folder, Source, reviewPlan, stopChatRun, streamChat, uploadDocument, UploadSource } from '../../services/api'
+import { ChatRunSnapshot, deleteConversation, followChatRun, getActiveChatRun, getConversation, getConversations, getKnowledge, getKnowledgeDetail, deleteDocument, deleteKnowledge, getModels, getFolders, getSuggestions, createFolder, deleteFolder, importArticle, moveDocument, pinConversation, preheatHarness, uploadLocalFile, Knowledge, ModelOption, Folder, Source, reviewPlan, stopChatRun, streamChat, uploadDocument, UploadSource } from '../../services/api'
 import { warnPrivacyRequired } from '../../services/privacy'
 import { buildSharePayload, homePayload, questionFor, SHARE_IMAGE } from '../../utils/share'
 import { createKnowledgeShare } from '../../services/api'
@@ -73,6 +73,8 @@ Page({
     this.syncTabBar()
     this.measureSafeArea()
     this.measureBody()
+    // 提前把后端运行时拉起来（官方 SDK 冷启动 0.7–3.8s），失败静默
+    preheatHarness().catch(() => undefined)
     const target = consumeChatTarget()
     if (!isLoggedIn()) {
       this.setData({

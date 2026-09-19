@@ -97,6 +97,10 @@ _SKILL_NAME_RE = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 
 _clients: dict[str, dict] = {}
 _clients_lock = threading.Lock()
+# 每个 key 一把构建锁：冷启动要好几秒，必须放在全局锁外面做
+_build_locks: dict[str, threading.Lock] = {}
+# 技能目录的同步指纹：按租户记住"已同步到哪个 mtime"，避免每轮都拷一遍
+_SKILLS_SYNCED: dict[str, float] = {}
 
 
 def configured() -> bool:
@@ -182,7 +186,19 @@ def sync_skills(user_id: str = '', force: bool = False) -> int:
     source = skills_source_dir()
     if not source.is_dir():
         return 0
+    tenant = _tenant_id(user_id)
     target = skills_target_dir(user_id)
+    try:
+        stamp = source.stat().st_mtime
+    except OSError:
+        stamp = 0.0
+    # 技能目录没变、目标目录也还在就直接跳过：每轮问答都 copy 一遍是白付的 I/O
+    if not force and _SKILLS_SYNCED.get(tenant) == stamp:
+        try:
+            if target.is_dir() and any(target.iterdir()):
+                return 0
+        except OSError:
+            pass
     try:
         target.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -207,6 +223,7 @@ def sync_skills(user_id: str = '', force: bool = False) -> int:
             except OSError:
                 continue
     normalize_skill_names(target)
+    _SKILLS_SYNCED[tenant] = stamp
     return synced
 
 
@@ -338,28 +355,62 @@ def _evict_idle_locked() -> list[tuple[str, dict]]:
     return victims
 
 
+def _build_lock(key: str) -> threading.Lock:
+    with _clients_lock:
+        lock = _build_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _build_locks[key] = lock
+        return lock
+
+
+def _register_client(key: str, client) -> dict:
+    """登记刚建好的运行时；并发里输的一方把自己那份关掉，不留孤儿进程。"""
+    entry = {
+        'client': client,
+        'used': time.monotonic(),
+        'busy': 0,
+        'run_lock': threading.Lock(),
+    }
+    with _clients_lock:
+        existing = _clients.get(key)
+        if existing is not None:
+            entry = existing
+            drop = client
+        else:
+            _clients[key] = entry
+            drop = None
+    if drop is not None:
+        try:
+            drop.close()
+        except Exception:
+            pass
+    return entry
+
+
 def _get_client(user_id: str, model: str, profile: str, effort: str = ''):
     key = _client_key(user_id, model, profile, effort)
     victims: list[tuple[str, dict]] = []
     with _clients_lock:
         entry = _clients.get(key)
+        if entry is not None:
+            entry['busy'] += 1
+            entry['used'] = time.monotonic()
+            return entry
+        victims = _evict_idle_locked()
+    # 冷启动（拉起运行时 + initialize）在全新 DSH_HOME 上要 3–4 秒，必须在全局锁外做：
+    # 否则某个用户的首问会把同一时刻其他用户的首问一起堵住。
+    with _build_lock(key):
+        with _clients_lock:
+            entry = _clients.get(key)
         if entry is None:
-            victims = _evict_idle_locked()
-            if _clients.get(key) is None:
-                started = time.monotonic()
-                client = _build_client(user_id, model, profile, effort)
-                entry = {
-                    'client': client,
-                    'used': time.monotonic(),
-                    'busy': 0,
-                    'run_lock': threading.Lock(),
-                }
-                _clients[key] = entry
-                print(f'[harness] runtime started for {key} in {time.monotonic() - started:.1f}s', flush=True)
-            else:
-                entry = _clients[key]
-        entry['busy'] += 1
-        entry['used'] = time.monotonic()
+            started = time.monotonic()
+            client = _build_client(user_id, model, profile, effort)
+            entry = _register_client(key, client)
+            print(f'[harness] runtime started for {key} in {time.monotonic() - started:.1f}s', flush=True)
+        with _clients_lock:
+            entry['busy'] += 1
+            entry['used'] = time.monotonic()
     for victim_key, victim in victims:
         try:
             victim['client'].close()
@@ -367,6 +418,29 @@ def _get_client(user_id: str, model: str, profile: str, effort: str = ''):
             pass
         print(f'[harness] runtime evicted (idle) {victim_key}', flush=True)
     return entry
+
+
+def warm(user_id: str, model: str = '', profile: str = '', effort: str = '') -> bool:
+    """为一个用户预热运行时（进会话页时调用，用官方 SDK 的 start/initialize 路径）。
+
+    实测：全新 DSH_HOME 的冷启动约 3.8s（官方运行时要在 home 下物化整套 profile
+    代理包），同一个 home 再次启动约 0.7s。把它提前到用户还在打字的时候付掉，
+    首字就不用再等它。
+    """
+    if not configured():
+        return False
+    default_profile, default_model, default_effort = thinking_config('quick')
+    chosen_profile = (profile or default_profile).strip()
+    chosen_model = (model or default_model).strip()
+    chosen_effort = (effort or default_effort).strip()
+    key = _client_key(user_id, chosen_model, chosen_profile, chosen_effort)
+    try:
+        _get_client(user_id, chosen_model, chosen_profile, chosen_effort)
+    except Exception as exc:  # noqa: BLE001 - 预热失败不影响正常问答
+        print(f'[harness] 预热失败（忽略）：{exc}', flush=True)
+        return False
+    _release_client(key)
+    return True
 
 
 def _release_client(key: str) -> None:
@@ -380,6 +454,7 @@ def _release_client(key: str) -> None:
 def _drop_client(key: str) -> None:
     with _clients_lock:
         entry = _clients.pop(key, None)
+        _build_locks.pop(key, None)
     if entry is not None:
         try:
             entry['client'].close()

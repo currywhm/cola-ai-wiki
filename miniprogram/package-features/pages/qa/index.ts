@@ -1,7 +1,7 @@
 import { addArtifact, appendTrace, assistantMessage, createFlusher, decorateSources, hydrateAssistant, markPlanReviewed, measureThreadBody, pinTail, pinTailSoon, resetTail, runningProgress, settleTrace, togglePlan, trackTail } from '../../../utils/thread'
 // 生成的文件：卡片打开 / 保存到微信都在 utils/artifact 里统一实现，三个会话页共用同一份
 import { openArtifact as openArtifactFile, saveArtifact as saveArtifactFile } from '../../../utils/artifact'
-import { ChatRunSnapshot, deleteConversation, followChatRun, getActiveChatRun, getConversation, getConversations, getKnowledge, getModels, pinConversation, Knowledge, Source, reviewPlan, stopChatRun, streamChat } from '../../../services/api'
+import { ChatRunSnapshot, deleteConversation, followChatRun, getActiveChatRun, getConversation, getConversations, getKnowledge, getModels, pinConversation, preheatHarness, Knowledge, Source, reviewPlan, stopChatRun, streamChat } from '../../../services/api'
 import { KNOWLEDGE_PLACEHOLDER, PLANNER_PLACEHOLDER } from '../../utils/skills'
 import { buildSharePayload, homePayload, questionFor } from '../../../utils/share'
 // 多选分享：选中态、勾选映射、分享面板与「存到知识库」都在 utils/pick-page 里收口
@@ -70,7 +70,7 @@ Page({
     this.load()
     this.restoreSkillPrefs()
   },
-  onShow() { this.measureSafeArea() },
+  onShow() { this.measureSafeArea(); preheatHarness().catch(() => undefined) },
   onReady() { this.measureBody() },
   onUnload() {
     const cancel = (this as any).cancelStream

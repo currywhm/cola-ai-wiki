@@ -59,6 +59,7 @@ from .services.harness import (
     stream_raw_prompt,
     cancel_user_runtime,
     select_turn_skill_ids,
+    warm as harness_warm,
 )
 from .services.organizer import organize_document
 from .services.credits import estimate_usage, quote_turn, total_tokens
@@ -3329,6 +3330,19 @@ async def stop_chat_run(run_id: str, user_id: str = Depends(current_user)) -> di
     # runtime is the supported interruption boundary.
     await asyncio.to_thread(cancel_user_runtime, user_id)
     return view
+
+
+@app.post("/api/harness/preheat")
+async def preheat_harness(user_id: str = Depends(current_user)) -> dict:
+    """进会话页时提前把运行时拉起来，用官方 SDK 的 start/initialize 路径。
+
+    实测冷启动：全新 DSH_HOME 约 3.8s（官方运行时要在 home 下物化整套 profile 代理包），
+    同一个 home 再次启动约 0.7s。这里放到后台付掉，请求立即返回；失败不影响后续问答。
+    """
+    if not harness_configured():
+        return {"ok": False, "reason": "disabled"}
+    asyncio.create_task(asyncio.to_thread(harness_warm, user_id))
+    return {"ok": True}
 
 
 @app.get("/api/conversations/{conversation_id}/active-run")

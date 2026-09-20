@@ -52,6 +52,7 @@ Page({
     sending: false,
     readyForInput: false,
     inputFocus: false,
+    overlayGrace: false,
     askMode: 'knowledge' as 'knowledge' | 'planner',
     modelSheetVisible: false,
     skillSheetVisible: false,

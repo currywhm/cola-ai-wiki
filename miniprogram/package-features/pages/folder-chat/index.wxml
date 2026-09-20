@@ -120,7 +120,7 @@
   <view wx:if="{{!pickMode}}" class="qa-footer">
     <view class="qa-composer">
       <!-- 选中的技能不显示在对话里：技能图标线条变蓝即表示本轮已启用 -->
-      <textarea wx:if="{{!modelSheetVisible && !skillSheetVisible && !scopeSheetVisible && !historyVisible}}" class="qa-input" value="{{input}}" placeholder="{{placeholder}}" placeholder-style="color:#8f978f;font-size:32rpx;line-height:1.5;" auto-height maxlength="8000" focus="{{inputFocus}}" bindfocus="onInputFocus" adjust-position="{{false}}" show-confirm-bar="{{false}}" bindkeyboardheightchange="onKeyboardHeightChange" bindblur="onKeyboardBlur" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
+      <textarea wx:if="{{!overlayGrace && !modelSheetVisible && !skillSheetVisible && !scopeSheetVisible && !historyVisible}}" class="qa-input" value="{{input}}" placeholder="{{placeholder}}" placeholder-style="color:#8f978f;font-size:32rpx;line-height:1.5;" auto-height maxlength="8000" focus="{{inputFocus}}" bindfocus="onInputFocus" adjust-position="{{false}}" show-confirm-bar="{{false}}" bindkeyboardheightchange="onKeyboardHeightChange" bindblur="onKeyboardBlur" bindinput="onInput" bindconfirm="send" confirm-type="send" disabled="{{loadState !== 'ready'}}"></textarea>
       <view class="qa-bar">
         <button class="qa-logic {{askMode}}" bindtap="toggleAskLogic" aria-label="切换问答逻辑">
           <ui-icon name="{{askMode === 'planner' ? 'robot-planner' : 'robot-knowledge'}}" size="{{34}}" rpx />

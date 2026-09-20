@@ -32,16 +32,30 @@ export function shellStyle(safeBottom: number, keyboardHeight: number, paddingBo
 
 /** 弹层刚关闭的时间窗：这期间出现的"聚焦"基本是同一次手势的点击穿透。 */
 const GHOST_FOCUS_WINDOW_MS = 400
+/** 弹层关闭后输入框保持离树的时长：让补发的那次 click 无处可落。 */
+const OVERLAY_GRACE_MS = 350
 
 /**
- * 记下弹层关闭的时刻。
+ * 记下弹层关闭的时刻，并在随后的一小段时间里让输入框继续离树。
  *
  * 底部弹层在同一手势里被卸载时，浏览器补齐的那次 click 会落到当时手指下方的新元素上；
- * 如果那里正好是输入框，它就会被聚焦、键盘跟着弹起来——这就是"选完知识库键盘自己弹出来"。
- * 关闭时刻记下来，紧接着的聚焦一律撤销（见 isGhostFocus）。
+ * 如果那里正好是刚重新挂载出来的输入框，它就被聚焦、键盘跟着弹起来。与其"落到输入框后
+ * 再靠失焦补救"（iOS 上失焦不可靠），不如让这个窗口里根本没有输入框可点。
+ *
+ * 页面需要：data 里声明 overlayGrace，输入框写成
+ * {{!overlayGrace && ...原有条件}}，并把关闭时刻打在这些路径上。
  */
 export function markOverlayClosed(page: any): void {
-  if (page) (page as any).overlayClosedAt = Date.now()
+  if (!page) return
+  ;(page as any).overlayClosedAt = Date.now()
+  if (typeof page.setData !== 'function') return
+  page.setData({ overlayGrace: true })
+  const timer = (page as any).overlayGraceTimer
+  if (timer) clearTimeout(timer)
+  ;(page as any).overlayGraceTimer = setTimeout(() => {
+    ;(page as any).overlayGraceTimer = null
+    page.setData({ overlayGrace: false })
+  }, OVERLAY_GRACE_MS)
 }
 
 /** 这次聚焦是不是点击穿透造成的（弹层刚关闭）。 */

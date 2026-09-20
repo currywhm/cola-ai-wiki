@@ -51,6 +51,7 @@ Page({
     sending: false,
     readyForInput: false,
     inputFocus: false,
+    overlayGrace: false,
     // 两种问答逻辑：planner=执行规划（agent，含联网检索）；knowledge=基于知识库问答
     askMode: 'knowledge' as 'knowledge' | 'planner',
     modelSheetVisible: false,

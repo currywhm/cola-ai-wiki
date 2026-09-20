@@ -152,8 +152,9 @@ Page({
   syncShell() {
     const conversation = this.data.conversationActive
     const folder = !conversation && !!this.data.currentFolderId
-    // 底部导航高 104rpx，这里留 120rpx + 实测安全区。不能只靠 CSS 的 env()：
-    // 真机上 env(safe-area-inset-bottom) 偶发为 0，而 tabBar 用的是 JS 实测值，两者一差就把内容压到 bar 底下。
+    // 底部导航高 104rpx，这里留 128rpx + 实测安全区（bar 之上还有 24rpx 呼吸位）。
+    // 不能只靠 CSS 的 env()：真机上 env(safe-area-inset-bottom) 偶发为 0，而 tabBar 用的是 JS 实测值，
+    // 两者一差就把输入框压到 bar 底下。
     const base = conversation ? 0 : (folder ? 16 : 128)
     const padding = `calc(${base}rpx + ${this.data.safeBottom}px)`
     this.setData({ shellStyle: shellStyle(this.data.safeBottom, this.data.keyboardHeight, padding) })

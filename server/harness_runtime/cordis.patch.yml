@@ -9,6 +9,12 @@
     personaPrefix: !!js process.env.DSH_SYSTEM_PROMPT ?? 'You are the cola knowledge assistant.'
     personaSuffix: Your working directory is {{cwd}}.
 
+# 云托管容器不允许官方 dsh-sandbox-local 所需的用户命名空间，bubblewrap 和
+# Landlock 都无法启用。官方在沙箱不可用时 fail-closed，继续暴露 bash 只会让每轮
+# 问答产生 SandboxUnavailableError。cola 问答不需要命令执行，因此直接不发该工具。
+- id: tool-bash
+  disabled: true
+
 # The Web standard/ptc presets mount this official tool. Insert the same row so
 # the mini program receives the upstream deliverables/presented event instead of
 # scanning the workspace itself.

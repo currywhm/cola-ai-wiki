@@ -90,6 +90,15 @@ _TOOL_VARIANTS = {
     'todo_write': 'todo',
 }
 
+# The deployment overlay removes the official shell row. Keep the event bridge
+# defensive as well so an older runtime or an upgrade race cannot surface the
+# upstream fail-closed SandboxUnavailableError as a red tool card.
+_HIDDEN_TOOL_NAMES = frozenset({'bash', 'pwsh'})
+
+
+def _is_hidden_tool(name: str) -> bool:
+    return str(name or '').strip().lower() in _HIDDEN_TOOL_NAMES
+
 _TOOL_INPUT_MAX = 4800
 _TOOL_OUTPUT_MAX = 9000
 _TOOL_META_TEXT_MAX = 1600
@@ -1001,6 +1010,8 @@ def _forward(notification, emit: Callable, state: _TraceState) -> None:
     if etype == 'tool/call':
         call_id = str(data.get('callId') or f'_anonymous_{len(state.tools) + 1}')
         name = str(data.get('name') or '')
+        if _is_hidden_tool(name):
+            return
         args = _parse_arguments(data.get('arguments'))
         title = _TOOL_TITLES.get(name, '调用工具')
         contract = _tool_call_contract(name, args)
@@ -1040,6 +1051,9 @@ def _forward(notification, emit: Callable, state: _TraceState) -> None:
                         call_id, entry = key, candidate
                         break
         name = str(entry.get('name') or source.get('name') or '')
+        if _is_hidden_tool(name):
+            state.tools.pop(call_id, None)
+            return
         title = str(entry.get('title') or _TOOL_TITLES.get(name, '调用工具'))
         started = float(entry.get('started') or 0.0)
         failed = bool(data.get('error')) or nested_failed

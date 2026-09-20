@@ -117,6 +117,32 @@ class HarnessEventTests(unittest.TestCase):
         self.assertEqual([item['tool_output'] for item in done_items], ['b content', 'a content'])
         self.assertEqual(state.tools, {})
 
+    def test_disabled_shell_events_never_reach_the_client(self):
+        # The deployment overlay removes tool-bash. Keep this bridge defensive
+        # so an older cloud image or a partial upgrade cannot render the
+        # official fail-closed SandboxUnavailableError as a red card.
+        for tool_name in ('bash', 'pwsh'):
+            with self.subTest(tool_name=tool_name):
+                state = harness._TraceState('session-1')
+                emitted = []
+                emit = lambda kind, payload, pace: emitted.append((kind, payload, pace))
+
+                harness._forward(_notification('tool/call', {
+                    'callId': f'{tool_name}-1',
+                    'name': tool_name,
+                    'arguments': json.dumps({'command': 'ls'}),
+                }), emit, state)
+                harness._forward(_notification('tool/result', {
+                    'error': {'message': 'SandboxUnavailableError: SANDBOX_UNAVAILABLE'},
+                    'message': {
+                        'source': {'callId': f'{tool_name}-1', 'name': tool_name},
+                        'content': [{'type': 'text', 'text': 'SandboxUnavailableError'}],
+                    },
+                }), emit, state)
+
+                self.assertEqual(emitted, [])
+                self.assertEqual(state.tools, {})
+
     def test_result_meta_translates_typed_tool_payloads(self):
         read_meta = harness._tool_result_meta('read', {
             'path': 'server/app.py',

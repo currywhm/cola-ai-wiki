@@ -6,6 +6,7 @@ the upstream sdk profile.
 """
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 RUNNER = r'''
 import json, os
+import re
 from pathlib import Path
 
 from app.services import harness
@@ -47,6 +49,7 @@ out['patch_has_system_prompt'] = '- id: system-prompt' in text
 out['patch_inserts_official_present'] = "name: '@deepseek-ai/dsh-tool-present'" in text
 out['patch_has_custom_permission'] = '- id: sandbox-policy' in text or '- id: approval' in text or '- id: permission' in text
 out['patch_disables_official_tools'] = 'disabled: true' in text
+out['patch_disabled_rows'] = re.findall(r'- id: (\S+)\n\s+disabled: true', text)
 
 print('RESULT ' + json.dumps(out, ensure_ascii=False))
 '''
@@ -90,7 +93,8 @@ class HarnessIsolationTest(unittest.TestCase):
         self.assertTrue(result['patch_has_system_prompt'])
         self.assertTrue(result['patch_inserts_official_present'])
         self.assertFalse(result['patch_has_custom_permission'])
-        self.assertFalse(result['patch_disables_official_tools'])
+        self.assertTrue(result['patch_disables_official_tools'])
+        self.assertEqual(result['patch_disabled_rows'], ['tool-bash'])
 
 
 if __name__ == '__main__':

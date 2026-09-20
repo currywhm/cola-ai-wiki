@@ -130,7 +130,9 @@ Page({
     if (isGhostFocus(this)) { this.setData({ inputFocus: false }); dismissKeyboard(); return }
     if (!this.data.inputFocus) this.setData({ inputFocus: true })
   },
-  dismissInput() { this.setData({ inputFocus: false }); dismissKeyboard() },
+  // 打开弹层时把输入框整个从树上摘掉：iOS 上"收起键盘但没真正失焦"时，弹层一消失键盘会
+  // 自己回来（社区已知顽疾），隐藏组件是唯一确定有效的做法；关闭后组件会重新挂载、不带焦点。
+  dismissInput() { this.setData({ inputFocus: false, keyboardHeight: 0 }); dismissKeyboard() },
   // 滚动跟随：用户往上翻就暂停，回到底部自动恢复（见 utils/thread 的 pinTail）
   measureBody() { measureThreadBody(this, '.qa-body') },
   onThreadScroll(e: any) { trackTail(this, e) },

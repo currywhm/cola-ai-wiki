@@ -1,16 +1,17 @@
 FROM python:3.12-slim-bookworm
 WORKDIR /app
 ARG DEBIAN_MIRROR=https://mirrors.cloud.tencent.com
-# bubblewrap 是官方 dsh-sandbox-local 在 Linux 上的第一后端：装了它、且平台允许
-# unprivileged user namespace 时，bash 工具才能真正执行命令（沙箱内）；
-# 装不上/起不来时官方 fail-closed，后端会自动探测并把"没有命令行"告诉模型。
+# 云托管不开放官方 dsh-sandbox-local 所需的 user namespace，且 tool-bash 已在
+# harness_runtime/cordis.patch.yml 中显式关闭，因此不再安装 bubblewrap。
 RUN sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::https::Timeout=60 -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::https::Timeout=60 -o Acquire::Retries=5 install -y --no-install-recommends tesseract-ocr tesseract-ocr-chi-sim bubblewrap \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get -o Acquire::https::Timeout=60 -o Acquire::Retries=5 install -y --no-install-recommends tesseract-ocr tesseract-ocr-chi-sim \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/* /usr/share/info/*
 COPY requirements.txt .
 ARG PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
-RUN pip install --no-cache-dir --timeout 60 --retries 5 --index-url "${PIP_INDEX_URL}" -r requirements.txt
+ENV PYTHONDONTWRITEBYTECODE=1
+RUN pip install --no-cache-dir --no-compile --timeout 60 --retries 5 --index-url "${PIP_INDEX_URL}" -r requirements.txt
 COPY app ./app
 # 运营文案（使用技巧等）：镜像内自带一份，生产也可以挂载卷覆盖后热更新
 COPY content ./content

@@ -208,7 +208,9 @@ docker build -t zhi-reader-api:verify .
 
 默认通过官方 `DSH_PERMISSION_MODE=workspace-write` 运行。官方 profile 会继续自行处理 sandbox、approval 和工具策略；公开 Python SDK 没有审批应答接口，因此危险操作在无人审批时会 fail closed，而不是由后端伪造一个放行策略。生产环境仍应使用最小权限用户或独立容器，并且不要在容器内放置可被读取的密钥文件。
 
-命令沙箱是官方 `dsh-sandbox-local` 的能力边界：Linux 上先探 `bubblewrap`、再退到 Landlock，macOS 用 `sandbox-exec`；都不可用时按 fail-closed 拒绝执行（`SandboxUnavailableError`）——这是官方设计，官方文档也写明"容器/microVM 场景应由容器本身替代这层 seam"。镜像里已装上 `bubblewrap`；后端启动后按官方口径真跑一次探测（`bwrap` + 官方 read-only profile + `true`，退出码 0 才算可用），结果决定两件事：可用则命令正常执行；不可用则在系统提示里明确告诉模型"本环境没有命令行"，不再把步骤烧在注定失败的命令上。`HARNESS_SHELL_AVAILABLE` 可强制覆盖探测结果。要让命令在任何情况下都能跑，只有官方给的 `DSH_PERMISSION_MODE=danger-full-access`（命令不再受沙箱约束）——容器里放着模型与微信密钥，需要自行权衡后再开。
+云托管容器不开放官方 `dsh-sandbox-local` 所需的 user namespace，且 cola 问答不依赖命令行执行，因此 `harness_runtime/cordis.patch.yml` 直接关闭官方 `tool-bash`，镜像也不再安装 `bubblewrap`。这样不会让模型反复尝试注定失败的命令，也不会再产生 `SandboxUnavailableError`。其余官方工具仍由 Harness profile 管理。
+
+如果未来部署平台明确开放命令沙箱且业务确实需要命令行，再移除 `tool-bash` 的 `disabled` 行，并在镜像中重新安装 `bubblewrap`。不能改用 `DSH_PERMISSION_MODE=danger-full-access` 绕过沙箱，除非同时接受模型、微信和对象存储密钥处于同一高权限环境的风险。
 
 每个租户的工作区是 `harness-workspaces/users/<用户 id>`，`DSH_HOME` 是 `harness-home/users/<用户 id>`；技能、会话、附件、profile 状态与工作区按租户分开，不共享可写 profile。升级官方 SDK/runtime 时，只更新官方 wheel 和必要的官方 row override，不在应用层复制 Agent 逻辑。
 

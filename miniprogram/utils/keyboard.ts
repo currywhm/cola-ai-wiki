@@ -30,6 +30,14 @@ export function shellStyle(safeBottom: number, keyboardHeight: number, paddingBo
   return pad ? `${height}padding-bottom:${pad};` : height
 }
 
+/** 弹层（选择知识库 / 模型 / 技能 / 历史）打开前收起键盘：
+    输入框还带着焦点时，键盘会压在弹层上，选完还得手动收一次。 */
+export function dismissKeyboard(): void {
+  try {
+    wx.hideKeyboard({ fail: () => undefined })
+  } catch (e) { /* 个别环境没有这个 API，忽略 */ }
+}
+
 /** 容器变矮之后，把消息列表重新贴回最新一条（跟 thread 的滚动跟随共用一套）。 */
 export function repinLatest(page: any): void {
   pinTail(page)

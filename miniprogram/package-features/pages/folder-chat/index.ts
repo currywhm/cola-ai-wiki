@@ -9,7 +9,7 @@ import { buildSharePayload, homePayload, questionFor } from '../../../utils/shar
 // 多选分享：选中态、勾选映射、分享面板与「存到知识库」都在 utils/pick-page 里收口
 import * as pickPage from '../../../utils/pick-page'
 import { fileTypeLabel } from '../../../utils/file-type'
-import { readKeyboardHeight, repinLatest, shellStyle } from '../../../utils/keyboard'
+import { dismissKeyboard, readKeyboardHeight, repinLatest, shellStyle } from '../../../utils/keyboard'
 import { markdownToText } from '../../../utils/markdown'
 import { ChatRunSnapshot, deleteConversation, followChatRun, getActiveChatRun, getConversation, getConversations, getKnowledgeDetail, getModels, getSuggestions, pinConversation, preheatHarness, Source, reviewPlan, stopChatRun, streamChat } from '../../../services/api'
 
@@ -223,14 +223,17 @@ Page({
   },
   openModelSheet() {
     if (this.data.sending) return
+    dismissKeyboard()
     this.setData({ modelSheetVisible: true, skillSheetVisible: false, scopeSheetVisible: false })
   },
   openSkillSheet() {
     if (this.data.sending) return
+    dismissKeyboard()
     this.setData({ skillSheetVisible: true, modelSheetVisible: false, scopeSheetVisible: false })
   },
   openScopeSheet() {
     if (this.data.sending) return
+    dismissKeyboard()
     this.setData({ scopeSheetVisible: true, modelSheetVisible: false, skillSheetVisible: false })
   },
   closeSheets() { this.setData({ modelSheetVisible: false, skillSheetVisible: false, scopeSheetVisible: false }) },
@@ -486,6 +489,7 @@ Page({
   },
   // 历史对话：只看当前文件夹的会话，与其它文件夹、根目录天然隔离
   openHistory() {
+    dismissKeyboard()
     this.setData({ historyVisible: true, historyLoading: true })
     getConversations({ knowledgeId: this.data.knowledgeId, folderId: this.data.folderId }).then((items) => {
       this.setData({ historyItems: items || [], historyLoading: false })

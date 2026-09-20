@@ -37,6 +37,7 @@ ENV APP_ENV=production \
     HARNESS_MODEL=deepseek-v4-flash \
     HARNESS_MAX_TOKENS=4096 \
     DSH_PERMISSION_MODE=workspace-write \
+    HARNESS_SHELL_AVAILABLE=false \
     HARNESS_REASONING_EFFORT=low \
     HARNESS_WORKSPACES=/app/harness-workspaces \
     HARNESS_MAX_RUNTIMES=6 \

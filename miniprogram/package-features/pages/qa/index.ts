@@ -7,7 +7,7 @@ import { buildSharePayload, homePayload, questionFor } from '../../../utils/shar
 // 多选分享：选中态、勾选映射、分享面板与「存到知识库」都在 utils/pick-page 里收口
 import * as pickPage from '../../../utils/pick-page'
 import { persistSkills, readLocalSkills, restoreSkills } from '../../../utils/skill-prefs'
-import { readKeyboardHeight, repinLatest, shellStyle } from '../../../utils/keyboard'
+import { dismissKeyboard, readKeyboardHeight, repinLatest, shellStyle } from '../../../utils/keyboard'
 import { markdownToText } from '../../../utils/markdown'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
@@ -201,10 +201,12 @@ Page({
   },
   openModelSheet() {
     if (this.data.sending) return
+    dismissKeyboard()
     this.setData({ modelSheetVisible: true, skillSheetVisible: false, knowledgeSheetVisible: false })
   },
   openSkillSheet() {
     if (this.data.sending) return
+    dismissKeyboard()
     this.setData({ skillSheetVisible: true, modelSheetVisible: false, knowledgeSheetVisible: false })
   },
   closeSheets() {
@@ -246,6 +248,7 @@ Page({
   // 选择知识：与知识库页面同一份数据源
   openKnowledgeSheet() {
     if (this.data.sending) return
+    dismissKeyboard()
     this.setData({
       knowledgeSheetVisible: true,
       modelSheetVisible: false,
@@ -285,6 +288,7 @@ Page({
   // 发一条招呼等于替用户把范围说死，所以这里保持空对话，等用户第一句话进来。
   // 历史对话：拉取当前知识库根目录的会话列表（后端按 user_id + knowledge_id + folder_id 收窄）
   openHistory() {
+    dismissKeyboard()
     this.setData({ historyVisible: true, historyLoading: true })
     getConversations({ knowledgeId: this.data.knowledgeId, folderId: '' }).then((items) => {
       this.setData({ historyItems: items || [], historyLoading: false })

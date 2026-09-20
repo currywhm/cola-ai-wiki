@@ -113,8 +113,16 @@ def parse_moment(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def openid_fingerprint(openid: str) -> str:
+    """注销标记用的加盐指纹：不可逆、不含可识别信息，只用于防止反复注销刷试用与额度。"""
+    return hashlib.sha256(f'{settings.jwt_secret}:{openid}'.encode('utf-8')).hexdigest()
+
+
 def trial_state(row: Any) -> dict:
     """新用户免费试用倒计时：注册起 TRIAL_DAYS 天，会员不参与倒计时。"""
+    if row is not None and 'trial_used' in row.keys() and int(row['trial_used'] or 0):
+        # 注销过又回来的账号：不再发一次试用（否则反复注销就能无限续试用与额度）
+        return {'active': False, 'days_left': 0, 'ends_at': ''}
     created = parse_moment(row['created_at']) if row is not None and 'created_at' in row.keys() else None
     if not created:
         return {'active': True, 'days_left': TRIAL_DAYS, 'ends_at': ''}
@@ -784,7 +792,9 @@ async def login(payload: LoginRequest, request: Request) -> dict:
     if row:
         await db.execute("UPDATE users SET session_key=?,updated_at=? WHERE id=?", (session_key, timestamp, user_id))
     else:
-        await db.execute("INSERT INTO users(id,openid,nickname,avatar,session_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (user_id, openid, "微信用户", "", session_key, timestamp, timestamp))
+        # 注销过的微信号重新登录：不再给新用户试用（否则可以靠反复注销刷试用与额度）
+        seen = await fetchone(db, "SELECT 1 AS hit FROM deleted_accounts WHERE openid_hash=?", (openid_fingerprint(openid),))
+        await db.execute("INSERT INTO users(id,openid,nickname,avatar,session_key,trial_used,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (user_id, openid, "微信用户", "", session_key, 1 if seen else 0, timestamp, timestamp))
     await ensure_default_knowledge(db, user_id)
     await db.commit(); await db.close()
     token_version = int(row["token_version"]) if row and row["token_version"] is not None else 0
@@ -1065,6 +1075,11 @@ async def delete_me(user_id: str = Depends(current_user)) -> dict:
     await db.execute("DELETE FROM usage_logs WHERE user_id=?", (user_id,))
     await db.execute("DELETE FROM kf_messages WHERE user_id=?", (user_id,))
     await db.execute("DELETE FROM kf_sessions WHERE user_id=?", (user_id,))
+    # 留一枚加盐指纹：注销本身可以，但同一个微信号不能靠反复注销重新领试用与额度。
+    # 指纹不可逆（见 openid_fingerprint），《数据管理》里也对这条留存有说明。
+    owner = await fetchone(db, "SELECT openid FROM users WHERE id=?", (user_id,))
+    if owner and str(owner['openid'] or ''):
+        await db.execute("INSERT OR REPLACE INTO deleted_accounts(openid_hash,deleted_at) VALUES(?,?)", (openid_fingerprint(str(owner['openid'])), now()))
     await db.execute("DELETE FROM users WHERE id=?", (user_id,))
     await db.commit()
     for row in [*files, *artifacts]:

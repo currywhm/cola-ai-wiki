@@ -274,7 +274,9 @@ async def connect():
 
 
 _SQLITE_SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, openid TEXT UNIQUE NOT NULL, nickname TEXT NOT NULL, avatar TEXT, session_key TEXT DEFAULT '', membership TEXT NOT NULL DEFAULT 'free', membership_expires_at TEXT DEFAULT '', preferences TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, openid TEXT UNIQUE NOT NULL, nickname TEXT NOT NULL, avatar TEXT, session_key TEXT DEFAULT '', membership TEXT NOT NULL DEFAULT 'free', membership_expires_at TEXT DEFAULT '', trial_used INTEGER NOT NULL DEFAULT 0, preferences TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+-- 注销过的微信号指纹（加盐哈希，不含可识别信息）：只用于防止反复注销刷试用与额度
+CREATE TABLE IF NOT EXISTS deleted_accounts (openid_hash TEXT PRIMARY KEY, deleted_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS knowledge_bases (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT DEFAULT '', icon TEXT DEFAULT 'library_books', avatar TEXT DEFAULT '', document_count INTEGER DEFAULT 0, visibility TEXT NOT NULL DEFAULT 'private', category TEXT DEFAULT '', subscribers INTEGER DEFAULT 0, published_at TEXT DEFAULT '', status TEXT DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, knowledge_id TEXT NOT NULL, user_id TEXT NOT NULL, filename TEXT NOT NULL, file_type TEXT NOT NULL, file_size INTEGER DEFAULT 0, storage_path TEXT NOT NULL, page_count INTEGER DEFAULT 0, status TEXT NOT NULL DEFAULT 'uploaded', progress INTEGER DEFAULT 0, error_message TEXT DEFAULT '', extracted_text TEXT DEFAULT '', organized_title TEXT DEFAULT '', summary TEXT DEFAULT '', tags_json TEXT DEFAULT '[]', key_points_json TEXT DEFAULT '[]', organize_status TEXT NOT NULL DEFAULT 'pending', organize_method TEXT DEFAULT 'local', organize_error TEXT DEFAULT '', organized_at TEXT DEFAULT '', folder_id TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(knowledge_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS chunks (id TEXT PRIMARY KEY, document_id TEXT NOT NULL, knowledge_id TEXT NOT NULL, content TEXT NOT NULL, page_number INTEGER DEFAULT 1, chunk_index INTEGER DEFAULT 0, created_at TEXT NOT NULL, FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE);
@@ -307,7 +309,7 @@ CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kin
 
 
 _SQLITE_MIGRATIONS: dict[str, dict[str, str]] = {
-    'users': {'session_key': "TEXT DEFAULT ''", 'membership': "TEXT NOT NULL DEFAULT 'free'", 'membership_expires_at': "TEXT DEFAULT ''", 'token_version': "INTEGER NOT NULL DEFAULT 0", 'preferences': "TEXT NOT NULL DEFAULT '{}'"},
+    'users': {'session_key': "TEXT DEFAULT ''", 'membership': "TEXT NOT NULL DEFAULT 'free'", 'membership_expires_at': "TEXT DEFAULT ''", 'token_version': "INTEGER NOT NULL DEFAULT 0", 'trial_used': "INTEGER NOT NULL DEFAULT 0", 'preferences': "TEXT NOT NULL DEFAULT '{}'"},
     'pay_orders': {'offer_id': "TEXT DEFAULT ''", 'product_id': "TEXT DEFAULT ''", 'wx_order_id': "TEXT DEFAULT ''", 'attach': "TEXT DEFAULT ''", 'quantity': "INTEGER DEFAULT 1", 'deliver_status': "TEXT DEFAULT 'pending'", 'delivered_at': "TEXT DEFAULT ''"},
     'documents': {'organized_title': "TEXT DEFAULT ''", 'summary': "TEXT DEFAULT ''", 'tags_json': "TEXT DEFAULT '[]'", 'key_points_json': "TEXT DEFAULT '[]'", 'organize_status': "TEXT NOT NULL DEFAULT 'pending'", 'organize_method': "TEXT DEFAULT 'local'", 'organize_error': "TEXT DEFAULT ''", 'organized_at': "TEXT DEFAULT ''", 'folder_id': "TEXT DEFAULT ''", 'origin_document_id': "TEXT DEFAULT ''", 'last_viewed_at': "TEXT DEFAULT ''"},
     'knowledge_bases': {'last_used_at': "TEXT DEFAULT ''", 'avatar': "TEXT DEFAULT ''", 'visibility': "TEXT NOT NULL DEFAULT 'private'", 'category': "TEXT DEFAULT ''", 'subscribers': "INTEGER DEFAULT 0", 'published_at': "TEXT DEFAULT ''", 'mirror_of': "TEXT DEFAULT ''", 'mirror_owner': "TEXT DEFAULT ''", 'mirror_state': "TEXT DEFAULT ''", 'mirror_token': "TEXT DEFAULT ''", 'mirror_at': "TEXT DEFAULT ''"},
@@ -358,10 +360,17 @@ _MYSQL_SCHEMA = (
       membership VARCHAR(16) NOT NULL DEFAULT 'free',
       membership_expires_at VARCHAR(64) NOT NULL DEFAULT '',
       token_version INT NOT NULL DEFAULT 0,
+      trial_used INT NOT NULL DEFAULT 0,
       preferences VARCHAR(2048) NOT NULL DEFAULT '{}',
       status VARCHAR(16) NOT NULL DEFAULT 'active',
       created_at VARCHAR(64) NOT NULL,
       updated_at VARCHAR(64) NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS deleted_accounts (
+      openid_hash VARCHAR(64) PRIMARY KEY,
+      deleted_at VARCHAR(64) NOT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
     """
@@ -816,7 +825,7 @@ _MYSQL_SCHEMA = (
 
 
 _MYSQL_MIGRATIONS: dict[str, dict[str, str]] = {
-    'users': {'session_key': "VARCHAR(512) NOT NULL DEFAULT ''", 'membership': "VARCHAR(16) NOT NULL DEFAULT 'free'", 'membership_expires_at': "VARCHAR(64) NOT NULL DEFAULT ''", 'token_version': "INT NOT NULL DEFAULT 0", 'preferences': "VARCHAR(2048) NOT NULL DEFAULT '{}'"},
+    'users': {'session_key': "VARCHAR(512) NOT NULL DEFAULT ''", 'membership': "VARCHAR(16) NOT NULL DEFAULT 'free'", 'membership_expires_at': "VARCHAR(64) NOT NULL DEFAULT ''", 'token_version': "INT NOT NULL DEFAULT 0", 'trial_used': "INT NOT NULL DEFAULT 0", 'preferences': "VARCHAR(2048) NOT NULL DEFAULT '{}'"},
     'pay_orders': {'offer_id': "VARCHAR(128) NOT NULL DEFAULT ''", 'product_id': "VARCHAR(128) NOT NULL DEFAULT ''", 'wx_order_id': "VARCHAR(128) NOT NULL DEFAULT ''", 'attach': "VARCHAR(512) NOT NULL DEFAULT ''", 'quantity': "INT NOT NULL DEFAULT 1", 'deliver_status': "VARCHAR(24) NOT NULL DEFAULT 'pending'", 'delivered_at': "VARCHAR(64) NOT NULL DEFAULT ''"},
     'documents': {'organized_title': "VARCHAR(255) NOT NULL DEFAULT ''", 'summary': "TEXT NULL", 'tags_json': "LONGTEXT NULL", 'key_points_json': "LONGTEXT NULL", 'organize_status': "VARCHAR(24) NOT NULL DEFAULT 'pending'", 'organize_method': "VARCHAR(24) NOT NULL DEFAULT 'local'", 'organize_error': "TEXT NULL", 'organized_at': "VARCHAR(64) NOT NULL DEFAULT ''", 'folder_id': "VARCHAR(32) NOT NULL DEFAULT ''", 'origin_document_id': "VARCHAR(32) NOT NULL DEFAULT ''", 'last_viewed_at': "VARCHAR(64) NOT NULL DEFAULT ''"},
     'knowledge_bases': {'last_used_at': "VARCHAR(64) NOT NULL DEFAULT ''", 'avatar': "TEXT NULL", 'visibility': "VARCHAR(16) NOT NULL DEFAULT 'private'", 'category': "VARCHAR(128) NOT NULL DEFAULT ''", 'subscribers': "INT NOT NULL DEFAULT 0", 'published_at': "VARCHAR(64) NOT NULL DEFAULT ''", 'mirror_of': "VARCHAR(32) NOT NULL DEFAULT ''", 'mirror_owner': "VARCHAR(32) NOT NULL DEFAULT ''", 'mirror_state': "VARCHAR(32) NOT NULL DEFAULT ''", 'mirror_token': "VARCHAR(64) NOT NULL DEFAULT ''", 'mirror_at': "VARCHAR(64) NOT NULL DEFAULT ''"},

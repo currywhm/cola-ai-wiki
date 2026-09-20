@@ -115,6 +115,11 @@ class Settings(BaseSettings):
     # Official Harness sandbox mode. The SDK still owns the sandbox, approval,
     # and tool policy; this value is passed through as DSH_PERMISSION_MODE.
     dsh_permission_mode: Literal['read-only', 'workspace-write', 'danger-full-access'] = 'workspace-write'
+    # 容器里没有可用的命令沙箱（bubblewrap / Landlock 都装不了），官方 bash 工具会按
+    # fail-closed 直接拒绝执行（SandboxUnavailableError）。置 false 时会在系统提示里
+    # 明确告诉模型"本环境没有命令行"，避免它反复尝试、白烧步骤；本机开发有 sandbox-exec，
+    # 在 .env 里置 true 即可恢复。
+    harness_shell_available: bool = False
     # 积分口径：用户侧的额度单位从「问答次数」改成「积分」，积分与 deepseek-flash
     # 的真实 token 成本挂钩，用户价 = 模型成本 × credit_markup（默认 1.5 倍）。
     # 单价默认取 DeepSeek 官方「模型 & 价格」的 deepseek-flash 高峰价（元 / 百万 tokens），

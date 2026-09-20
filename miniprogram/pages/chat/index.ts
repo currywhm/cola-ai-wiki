@@ -27,7 +27,7 @@ let bootSplashShown = true
 
 
 Page({
-  data: { safeBottom: 0, keyboardHeight: 0, shellStyle: '', scrollTop: 0, dirTouchStartX: 0, dirTouchStartY: 0, booting: !bootSplashShown, knowledgeId: '', knowledgeName: '', knowledgeDesc: '', conversationId: '', conversationActive: false, selectedIndex: 0, input: '', canSend: false, sending: false, readyForInput: false, lastMessageId: '', model: 'deepseek-flash', selectedModelKey: 'deepseek-flash', modelLabel: '云枢', modelShortLabel: '云枢', thinkingMode: 'quick' as 'quick' | 'deep', modelOptions: FALLBACK_MODEL_OPTIONS, modelPickerVisible: false, askMode: 'knowledge' as 'knowledge' | 'web', modePickerVisible: false, pinned: false, uploadSheetVisible: false, uploadUsedLabel: '0.00GB', uploadLimitLabel: '300MB', loadState:'loading', knowledge:[] as Knowledge[], filteredKnowledge:[] as Knowledge[], pickerQuery:'', pickerVisible:false, skillSheetVisible:false, historyVisible:false, historyLoading:false, historyItems:[] as any[], personalExpanded:true, subscriptionsExpanded:true, sharedExpanded:true, documents:[] as any[], documentsLoading:false, documentsError:false, folders:[] as Folder[], documentGroups:[] as any[], visibleDocuments:[] as any[], currentFolderId:'', currentFolderName:'', articleSheetVisible:false, articleUrl:'', articleImporting:false, importMode:false, pendingFileName:'', askLayerVisible:false, askFocus:false, askGreeting:'', suggestions:[] as string[], suggestionsFor:'', suggestionsLoading:false, messages: [] as any[], selectedSkillIds: [] as string[], pickMode:false, pickedKeys:[] as string[], pickedMap:{} as any, pickCount:0, pickTotal:0, pickMessageCount:0, pickFileCount:0, shareSheetVisible:false, shareKnowledges:[] as any[], shareKnowledgeLoading:false, shareHintText:'', shareBusy:false, personalKnowledge:[] as Knowledge[], subscriptionKnowledge:[] as Knowledge[], sharedKnowledge:[] as Knowledge[], filteredShared:[] as Knowledge[], filteredSubscriptions:[] as Knowledge[], knowledgeReadOnly:false, knowledgeShareable:true, knowledgeSourceMissing:false, kbShareVisible:false, kbShareArmed:false, kbSharePath:'', kbShareTitle:'', kbShareToken:'', kbShareDays:7 },
+  data: { safeBottom: 0, keyboardHeight: 0, shellStyle: '', scrollTop: 0, inputFocus: false, dirTouchStartX: 0, dirTouchStartY: 0, booting: !bootSplashShown, knowledgeId: '', knowledgeName: '', knowledgeDesc: '', conversationId: '', conversationActive: false, selectedIndex: 0, input: '', canSend: false, sending: false, readyForInput: false, lastMessageId: '', model: 'deepseek-flash', selectedModelKey: 'deepseek-flash', modelLabel: '云枢', modelShortLabel: '云枢', thinkingMode: 'quick' as 'quick' | 'deep', modelOptions: FALLBACK_MODEL_OPTIONS, modelPickerVisible: false, askMode: 'knowledge' as 'knowledge' | 'web', modePickerVisible: false, pinned: false, uploadSheetVisible: false, uploadUsedLabel: '0.00GB', uploadLimitLabel: '300MB', loadState:'loading', knowledge:[] as Knowledge[], filteredKnowledge:[] as Knowledge[], pickerQuery:'', pickerVisible:false, skillSheetVisible:false, historyVisible:false, historyLoading:false, historyItems:[] as any[], personalExpanded:true, subscriptionsExpanded:true, sharedExpanded:true, documents:[] as any[], documentsLoading:false, documentsError:false, folders:[] as Folder[], documentGroups:[] as any[], visibleDocuments:[] as any[], currentFolderId:'', currentFolderName:'', articleSheetVisible:false, articleUrl:'', articleImporting:false, importMode:false, pendingFileName:'', askLayerVisible:false, askFocus:false, askGreeting:'', suggestions:[] as string[], suggestionsFor:'', suggestionsLoading:false, messages: [] as any[], selectedSkillIds: [] as string[], pickMode:false, pickedKeys:[] as string[], pickedMap:{} as any, pickCount:0, pickTotal:0, pickMessageCount:0, pickFileCount:0, shareSheetVisible:false, shareKnowledges:[] as any[], shareKnowledgeLoading:false, shareHintText:'', shareBusy:false, personalKnowledge:[] as Knowledge[], subscriptionKnowledge:[] as Knowledge[], sharedKnowledge:[] as Knowledge[], filteredShared:[] as Knowledge[], filteredSubscriptions:[] as Knowledge[], knowledgeReadOnly:false, knowledgeShareable:true, knowledgeSourceMissing:false, kbShareVisible:false, kbShareArmed:false, kbSharePath:'', kbShareTitle:'', kbShareToken:'', kbShareDays:7 },
   onLoad() {
     // tabBar 为自定义组件：会话态、提问层、进入文件夹后的目录都要隐藏它，
     // 这里统一拦截 setData 同步，避免逐个调用点遗漏
@@ -150,8 +150,12 @@ Page({
   },
   // 键盘避让 + 底部留白：会话态不留呼吸位，目录态给 tabBar 上方留出空间；键盘弹起时统一清零
   syncShell() {
-    const base = this.data.conversationActive ? 0 : (this.data.currentFolderId ? 16 : 10)
-    const padding = this.data.safeBottom ? `calc(${base}rpx + ${this.data.safeBottom}px)` : ''
+    const conversation = this.data.conversationActive
+    const folder = !conversation && !!this.data.currentFolderId
+    // 底部导航高 104rpx，这里留 120rpx + 实测安全区。不能只靠 CSS 的 env()：
+    // 真机上 env(safe-area-inset-bottom) 偶发为 0，而 tabBar 用的是 JS 实测值，两者一差就把内容压到 bar 底下。
+    const base = conversation ? 0 : (folder ? 16 : 120)
+    const padding = `calc(${base}rpx + ${this.data.safeBottom}px)`
     this.setData({ shellStyle: shellStyle(this.data.safeBottom, this.data.keyboardHeight, padding) })
   },
   onKeyboardHeightChange(e: any) {
@@ -168,6 +172,11 @@ Page({
     if (!this.data.keyboardHeight) return
     this.setData({ keyboardHeight: 0 }, () => this.syncShell())
   },
+  // 输入框的焦点由数据驱动：只在真正变化时才生效——单调用 wx.hideKeyboard() 收不掉键盘，
+  // 输入框仍持有焦点的话它会被重新拉起（切知识库时键盘压在弹层上就是这个原因）。
+  onInputFocus() { if (!this.data.inputFocus) this.setData({ inputFocus: true }) },
+  onAskFocus() { if (!this.data.askFocus) this.setData({ askFocus: true }) },
+  dismissInput() { this.setData({ inputFocus: false, askFocus: false }); dismissKeyboard() },
   // 滚动跟随：用户往上翻就暂停，回到底部自动恢复（见 utils/thread 的 pinTail）
   measureBody() { measureThreadBody(this, '.messages') },
   onThreadScroll(e: any) { trackTail(this, e) },
@@ -546,7 +555,7 @@ Page({
   openKnowledgePicker() {
     if (!isLoggedIn()) { goLogin(); return }
     if (this.data.sending) return
-    dismissKeyboard()
+    this.dismissInput()
     if (this.data.loadState !== 'ready') {
       wx.showToast({ title: '资料库正在连接，请稍后重试', icon: 'none' })
       return
@@ -885,7 +894,7 @@ Page({
       input: String(e.currentTarget.dataset.text || ''),
     }, () => this.syncCanSend())
   },
-  chooseModel() { if (!this.data.sending) { dismissKeyboard(); this.setData({ modelPickerVisible:true, modePickerVisible:false, pickerVisible:false }) } },
+  chooseModel() { if (!this.data.sending) { this.dismissInput(); this.setData({ modelPickerVisible:true, modePickerVisible:false, pickerVisible:false }) } },
   closeModelPicker() { if (!this.data.sending) this.setData({ modelPickerVisible:false }) },
   stopModelPickerBubble() { return },
   // 与问AI问答页一致：模型页只留一个深度思考开关
@@ -1023,7 +1032,7 @@ Page({
   },
   openSkillSheet() {
     if (this.data.sending) return
-    dismissKeyboard()
+    this.dismissInput()
     this.setData({ skillSheetVisible: true, modePickerVisible: false, pickerVisible: false, modelPickerVisible: false })
   },
   closeSheets() { this.setData({ skillSheetVisible: false }) },
@@ -1063,7 +1072,7 @@ Page({
   // 历史对话抽屉：数据来自服务端 /api/conversations，按用户 + 知识库收窄，只显示根目录会话
   openHistory() {
     if (!isLoggedIn()) { goLogin(); return }
-    dismissKeyboard()
+    this.dismissInput()
     this.setData({ historyVisible: true, historyLoading: true })
     getConversations({ knowledgeId: this.data.knowledgeId, folderId: '' }).then((items) => {
       this.setData({ historyItems: items || [], historyLoading: false })

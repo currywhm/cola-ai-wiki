@@ -50,7 +50,7 @@ Page({
     canSend: false,
     sending: false,
     readyForInput: false,
-    autoFocus: false,
+    inputFocus: false,
     askMode: 'knowledge' as 'knowledge' | 'planner',
     modelSheetVisible: false,
     skillSheetVisible: false,
@@ -130,6 +130,10 @@ Page({
     if (!this.data.keyboardHeight) return
     this.setData({ keyboardHeight: 0 }, () => this.syncShell())
   },
+  // 输入框的焦点由数据驱动：只在真正变化时才生效——单调用 wx.hideKeyboard() 收不掉键盘，
+  // 输入框仍持有焦点的话它会被重新拉起（切知识库时键盘压在弹层上就是这个原因）。
+  onInputFocus() { if (!this.data.inputFocus) this.setData({ inputFocus: true }) },
+  dismissInput() { this.setData({ inputFocus: false }); dismissKeyboard() },
   // 滚动跟随：用户往上翻就暂停，回到底部自动恢复（见 utils/thread 的 pinTail）
   measureBody() { measureThreadBody(this, '.qa-body') },
   onThreadScroll(e: any) { trackTail(this, e) },
@@ -223,17 +227,17 @@ Page({
   },
   openModelSheet() {
     if (this.data.sending) return
-    dismissKeyboard()
+    this.dismissInput()
     this.setData({ modelSheetVisible: true, skillSheetVisible: false, scopeSheetVisible: false })
   },
   openSkillSheet() {
     if (this.data.sending) return
-    dismissKeyboard()
+    this.dismissInput()
     this.setData({ skillSheetVisible: true, modelSheetVisible: false, scopeSheetVisible: false })
   },
   openScopeSheet() {
     if (this.data.sending) return
-    dismissKeyboard()
+    this.dismissInput()
     this.setData({ scopeSheetVisible: true, modelSheetVisible: false, skillSheetVisible: false })
   },
   closeSheets() { this.setData({ modelSheetVisible: false, skillSheetVisible: false, scopeSheetVisible: false }) },
@@ -489,7 +493,7 @@ Page({
   },
   // 历史对话：只看当前文件夹的会话，与其它文件夹、根目录天然隔离
   openHistory() {
-    dismissKeyboard()
+    this.dismissInput()
     this.setData({ historyVisible: true, historyLoading: true })
     getConversations({ knowledgeId: this.data.knowledgeId, folderId: this.data.folderId }).then((items) => {
       this.setData({ historyItems: items || [], historyLoading: false })

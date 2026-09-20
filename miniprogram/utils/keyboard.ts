@@ -30,6 +30,26 @@ export function shellStyle(safeBottom: number, keyboardHeight: number, paddingBo
   return pad ? `${height}padding-bottom:${pad};` : height
 }
 
+/** 弹层刚关闭的时间窗：这期间出现的"聚焦"基本是同一次手势的点击穿透。 */
+const GHOST_FOCUS_WINDOW_MS = 400
+
+/**
+ * 记下弹层关闭的时刻。
+ *
+ * 底部弹层在同一手势里被卸载时，浏览器补齐的那次 click 会落到当时手指下方的新元素上；
+ * 如果那里正好是输入框，它就会被聚焦、键盘跟着弹起来——这就是"选完知识库键盘自己弹出来"。
+ * 关闭时刻记下来，紧接着的聚焦一律撤销（见 isGhostFocus）。
+ */
+export function markOverlayClosed(page: any): void {
+  if (page) (page as any).overlayClosedAt = Date.now()
+}
+
+/** 这次聚焦是不是点击穿透造成的（弹层刚关闭）。 */
+export function isGhostFocus(page: any): boolean {
+  const at = Number((page && (page as any).overlayClosedAt) || 0)
+  return !!at && Date.now() - at < GHOST_FOCUS_WINDOW_MS
+}
+
 /** 弹层（选择知识库 / 模型 / 技能 / 历史）打开前收起键盘：
     输入框还带着焦点时，键盘会压在弹层上，选完还得手动收一次。 */
 export function dismissKeyboard(): void {

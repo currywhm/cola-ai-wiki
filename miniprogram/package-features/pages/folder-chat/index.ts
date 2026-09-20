@@ -9,7 +9,7 @@ import { buildSharePayload, homePayload, questionFor } from '../../../utils/shar
 // 多选分享：选中态、勾选映射、分享面板与「存到知识库」都在 utils/pick-page 里收口
 import * as pickPage from '../../../utils/pick-page'
 import { fileTypeLabel } from '../../../utils/file-type'
-import { dismissKeyboard, readKeyboardHeight, repinLatest, shellStyle } from '../../../utils/keyboard'
+import { dismissKeyboard, isGhostFocus, markOverlayClosed, readKeyboardHeight, repinLatest, shellStyle } from '../../../utils/keyboard'
 import { markdownToText } from '../../../utils/markdown'
 import { copyText } from '../../../utils/clipboard'
 import { ChatRunSnapshot, deleteConversation, followChatRun, getActiveChatRun, getConversation, getConversations, getKnowledgeDetail, getModels, getSuggestions, pinConversation, preheatHarness, Source, reviewPlan, stopChatRun, streamChat } from '../../../services/api'
@@ -132,8 +132,11 @@ Page({
     this.setData({ keyboardHeight: 0 }, () => this.syncShell())
   },
   // 输入框的焦点由数据驱动：只在真正变化时才生效——单调用 wx.hideKeyboard() 收不掉键盘，
-  // 输入框仍持有焦点的话它会被重新拉起（切知识库时键盘压在弹层上就是这个原因）。
-  onInputFocus() { if (!this.data.inputFocus) this.setData({ inputFocus: true }) },
+  // 输入框仍持有焦点的话它会被重新拉起。另外兜住"点击穿透"：弹层刚关闭时的那次聚焦要撤销。
+  onInputFocus() {
+    if (isGhostFocus(this)) { this.setData({ inputFocus: false }); dismissKeyboard(); return }
+    if (!this.data.inputFocus) this.setData({ inputFocus: true })
+  },
   dismissInput() { this.setData({ inputFocus: false }); dismissKeyboard() },
   // 滚动跟随：用户往上翻就暂停，回到底部自动恢复（见 utils/thread 的 pinTail）
   measureBody() { measureThreadBody(this, '.qa-body') },
@@ -241,7 +244,7 @@ Page({
     this.dismissInput()
     this.setData({ scopeSheetVisible: true, modelSheetVisible: false, skillSheetVisible: false })
   },
-  closeSheets() { this.setData({ modelSheetVisible: false, skillSheetVisible: false, scopeSheetVisible: false }) },
+  closeSheets() { markOverlayClosed(this); this.setData({ modelSheetVisible: false, skillSheetVisible: false, scopeSheetVisible: false }) },
   noop() { return },
   toggleDeepThinking() { this.setData({ deepThinking: !this.data.deepThinking }) },
   // 多选：点一下切换一个技能，面板不关闭；隔离仍由后端按用户判定
@@ -500,7 +503,7 @@ Page({
       this.setData({ historyItems: items || [], historyLoading: false })
     }).catch(() => this.setData({ historyItems: [], historyLoading: false }))
   },
-  closeHistory() { this.setData({ historyVisible: false }) },
+  closeHistory() { markOverlayClosed(this); this.setData({ historyVisible: false }) },
   pickHistory(e: any) {
     const id = String((e.detail && e.detail.id) || '')
     if (!id) return

@@ -13,7 +13,7 @@ import { applyLocalized, localizeImages } from '../../services/media'
 // 多选分享：选中态、勾选映射、分享面板与「存到知识库」都在 utils/pick-page 里收口
 import * as pickPage from '../../utils/pick-page'
 import { persistSkills, readLocalSkills, restoreSkills } from '../../utils/skill-prefs'
-import { dismissKeyboard, readKeyboardHeight, repinLatest, shellStyle } from '../../utils/keyboard'
+import { dismissKeyboard, isGhostFocus, markOverlayClosed, readKeyboardHeight, repinLatest, shellStyle } from '../../utils/keyboard'
 import { markdownToText } from '../../utils/markdown'
 import { copyText } from '../../utils/clipboard'
 
@@ -175,9 +175,15 @@ Page({
     this.setData({ keyboardHeight: 0 }, () => this.syncShell())
   },
   // 输入框的焦点由数据驱动：只在真正变化时才生效——单调用 wx.hideKeyboard() 收不掉键盘，
-  // 输入框仍持有焦点的话它会被重新拉起（切知识库时键盘压在弹层上就是这个原因）。
-  onInputFocus() { if (!this.data.inputFocus) this.setData({ inputFocus: true }) },
-  onAskFocus() { if (!this.data.askFocus) this.setData({ askFocus: true }) },
+  // 输入框仍持有焦点的话它会被重新拉起。另外兜住"点击穿透"：弹层刚关闭时的那次聚焦要撤销。
+  onInputFocus() {
+    if (isGhostFocus(this)) { this.setData({ inputFocus: false }); dismissKeyboard(); return }
+    if (!this.data.inputFocus) this.setData({ inputFocus: true })
+  },
+  onAskFocus() {
+    if (isGhostFocus(this)) { this.setData({ askFocus: false }); dismissKeyboard(); return }
+    if (!this.data.askFocus) this.setData({ askFocus: true })
+  },
   dismissInput() { this.setData({ inputFocus: false, askFocus: false }); dismissKeyboard() },
   // 滚动跟随：用户往上翻就暂停，回到底部自动恢复（见 utils/thread 的 pinTail）
   measureBody() { measureThreadBody(this, '.messages') },
@@ -550,6 +556,7 @@ Page({
     const item=this.data.knowledge[Number(e.detail.value)]
     if(item) {
       ;(this as any).userLeftConversation = false
+      markOverlayClosed(this)
       this.setData({selectedIndex:Number(e.detail.value),knowledgeId:item.id,knowledgeName:item.name,knowledgeDesc:item.description || '',conversationId:'',messages:[],input:'',canSend:false,askMode:'knowledge',currentFolderId:'',currentFolderName:'', ...this.knowledgeScopeOf(item)})
       this.loadDirectory(item.id)
     }
@@ -564,7 +571,7 @@ Page({
     }
     this.setData({ pickerVisible:true, pickerQuery:'', filteredKnowledge:this.data.personalKnowledge, filteredSubscriptions:this.data.subscriptionKnowledge, filteredShared:this.data.sharedKnowledge })
   },
-  closeKnowledgePicker() { this.setData({ pickerVisible:false, importMode:false }) },
+  closeKnowledgePicker() { markOverlayClosed(this); this.setData({ pickerVisible:false, importMode:false }) },
   togglePickerGroup(e:any) {
     const group = String(e.currentTarget.dataset.group || '')
     if (group === 'personal') this.setData({ personalExpanded: !this.data.personalExpanded })
@@ -719,7 +726,7 @@ Page({
       setTimeout(() => { if (this.data.askLayerVisible) this.setData({ askFocus: true }) }, 250)
     })
   },
-  closeAskLayer() { this.setData({ askLayerVisible: false, askFocus: false }) },
+  closeAskLayer() { markOverlayClosed(this); this.setData({ askLayerVisible: false, askFocus: false }) },
   loadSuggestions() {
     if (!this.data.knowledgeId) return
     this.setData({ suggestionsLoading: true })
@@ -893,7 +900,7 @@ Page({
     }, () => this.syncCanSend())
   },
   chooseModel() { if (!this.data.sending) { this.dismissInput(); this.setData({ modelPickerVisible:true, modePickerVisible:false, pickerVisible:false }) } },
-  closeModelPicker() { if (!this.data.sending) this.setData({ modelPickerVisible:false }) },
+  closeModelPicker() { if (!this.data.sending) { markOverlayClosed(this); this.setData({ modelPickerVisible:false }) } },
   stopModelPickerBubble() { return },
   // 与问AI问答页一致：模型页只留一个深度思考开关
   toggleDeepThinking() {
@@ -1033,7 +1040,7 @@ Page({
     this.dismissInput()
     this.setData({ skillSheetVisible: true, modePickerVisible: false, pickerVisible: false, modelPickerVisible: false })
   },
-  closeSheets() { this.setData({ skillSheetVisible: false }) },
+  closeSheets() { markOverlayClosed(this); this.setData({ skillSheetVisible: false }) },
   // 弹层内部点击不穿透到遮罩
   noop() { return },
   // 多选：点一下切换一个技能，面板不关闭；选择持久化，发送与切换视图都不会重置
@@ -1076,7 +1083,7 @@ Page({
       this.setData({ historyItems: items || [], historyLoading: false })
     }).catch(() => this.setData({ historyItems: [], historyLoading: false }))
   },
-  closeHistory() { this.setData({ historyVisible: false }) },
+  closeHistory() { markOverlayClosed(this); this.setData({ historyVisible: false }) },
   // 左滑「置顶 / 取消置顶」：只改当前用户自己的会话，置顶后排到列表最前。
   pinHistory(e: any) {
     const id = String((e.detail && e.detail.id) || '')

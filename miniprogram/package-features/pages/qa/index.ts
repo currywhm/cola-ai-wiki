@@ -7,7 +7,7 @@ import { buildSharePayload, homePayload, questionFor } from '../../../utils/shar
 // 多选分享：选中态、勾选映射、分享面板与「存到知识库」都在 utils/pick-page 里收口
 import * as pickPage from '../../../utils/pick-page'
 import { persistSkills, readLocalSkills, restoreSkills } from '../../../utils/skill-prefs'
-import { dismissKeyboard, readKeyboardHeight, repinLatest, shellStyle } from '../../../utils/keyboard'
+import { dismissKeyboard, isGhostFocus, markOverlayClosed, readKeyboardHeight, repinLatest, shellStyle } from '../../../utils/keyboard'
 import { markdownToText } from '../../../utils/markdown'
 import { copyText } from '../../../utils/clipboard'
 
@@ -125,8 +125,11 @@ Page({
     this.setData({ keyboardHeight: 0 }, () => this.syncShell())
   },
   // 输入框的焦点由数据驱动：只在真正变化时才生效——单调用 wx.hideKeyboard() 收不掉键盘，
-  // 输入框仍持有焦点的话它会被重新拉起（切知识库时键盘压在弹层上就是这个原因）。
-  onInputFocus() { if (!this.data.inputFocus) this.setData({ inputFocus: true }) },
+  // 输入框仍持有焦点的话它会被重新拉起。另外兜住"点击穿透"：弹层刚关闭时的那次聚焦要撤销。
+  onInputFocus() {
+    if (isGhostFocus(this)) { this.setData({ inputFocus: false }); dismissKeyboard(); return }
+    if (!this.data.inputFocus) this.setData({ inputFocus: true })
+  },
   dismissInput() { this.setData({ inputFocus: false }); dismissKeyboard() },
   // 滚动跟随：用户往上翻就暂停，回到底部自动恢复（见 utils/thread 的 pinTail）
   measureBody() { measureThreadBody(this, '.qa-body') },
@@ -215,6 +218,7 @@ Page({
     this.setData({ skillSheetVisible: true, modelSheetVisible: false, knowledgeSheetVisible: false })
   },
   closeSheets() {
+    markOverlayClosed(this)
     this.setData({ modelSheetVisible: false, skillSheetVisible: false, knowledgeSheetVisible: false })
   },
   // 弹层内部点击不穿透到遮罩
@@ -278,6 +282,7 @@ Page({
   },
   selectKnowledge(e: any) { this.setData({ pendingKnowledgeId: String(e.currentTarget.dataset.id || '') }) },
   confirmKnowledge() {
+    markOverlayClosed(this)
     const target = this.data.knowledgeList.find((item) => item.id === this.data.pendingKnowledgeId)
     if (!target) { this.setData({ knowledgeSheetVisible: false }); return }
     this.setData({ knowledgeId: target.id, knowledgeName: target.name, knowledgeSheetVisible: false, askMode: 'knowledge', placeholder: KNOWLEDGE_PLACEHOLDER }, () => this.syncCanSend())
@@ -299,10 +304,11 @@ Page({
       this.setData({ historyItems: items || [], historyLoading: false })
     }).catch(() => this.setData({ historyItems: [], historyLoading: false }))
   },
-  closeHistory() { this.setData({ historyVisible: false }) },
+  closeHistory() { markOverlayClosed(this); this.setData({ historyVisible: false }) },
   pickHistory(e: any) {
     const id = String((e.detail && e.detail.id) || '')
     if (!id) return
+    markOverlayClosed(this)
     if (this.data.pickMode) pickPage.exit(this)
     this.setData({ historyVisible: false, lastMessageId: '' })
     resetTail(this)

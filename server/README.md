@@ -208,7 +208,7 @@ docker build -t zhi-reader-api:verify .
 
 默认通过官方 `DSH_PERMISSION_MODE=workspace-write` 运行。官方 profile 会继续自行处理 sandbox、approval 和工具策略；公开 Python SDK 没有审批应答接口，因此危险操作在无人审批时会 fail closed，而不是由后端伪造一个放行策略。生产环境仍应使用最小权限用户或独立容器，并且不要在容器内放置可被读取的密钥文件。
 
-容器里没有可用的沙箱后端（bubblewrap / Landlock 都不可用），所以官方 `bash` 工具在线上一定会以 `SandboxUnavailableError` 拒绝执行。默认 `HARNESS_SHELL_AVAILABLE=false`：后端会在系统提示里明确告诉模型"本环境没有命令行"，避免它把步骤烧在注定失败的命令上；本机开发（macOS 有 sandbox-exec）在 `.env` 里置 `true` 恢复。要让线上真能执行命令，只有官方给的 `DSH_PERMISSION_MODE=danger-full-access` 一条路，代价是命令不再受沙箱约束——容器里放着模型与微信密钥，需要自行权衡后再开。
+命令沙箱是官方 `dsh-sandbox-local` 的能力边界：Linux 上先探 `bubblewrap`、再退到 Landlock，macOS 用 `sandbox-exec`；都不可用时按 fail-closed 拒绝执行（`SandboxUnavailableError`）——这是官方设计，官方文档也写明"容器/microVM 场景应由容器本身替代这层 seam"。镜像里已装上 `bubblewrap`；后端启动后按官方口径真跑一次探测（`bwrap` + 官方 read-only profile + `true`，退出码 0 才算可用），结果决定两件事：可用则命令正常执行；不可用则在系统提示里明确告诉模型"本环境没有命令行"，不再把步骤烧在注定失败的命令上。`HARNESS_SHELL_AVAILABLE` 可强制覆盖探测结果。要让命令在任何情况下都能跑，只有官方给的 `DSH_PERMISSION_MODE=danger-full-access`（命令不再受沙箱约束）——容器里放着模型与微信密钥，需要自行权衡后再开。
 
 每个租户的工作区是 `harness-workspaces/users/<用户 id>`，`DSH_HOME` 是 `harness-home/users/<用户 id>`；技能、会话、附件、profile 状态与工作区按租户分开，不共享可写 profile。升级官方 SDK/runtime 时，只更新官方 wheel 和必要的官方 row override，不在应用层复制 Agent 逻辑。
 

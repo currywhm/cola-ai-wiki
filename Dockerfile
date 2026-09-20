@@ -1,9 +1,12 @@
 FROM python:3.12-slim-bookworm
 WORKDIR /app
 ARG DEBIAN_MIRROR=https://mirrors.cloud.tencent.com
+# bubblewrap 是官方 dsh-sandbox-local 在 Linux 上的第一后端：装了它、且平台允许
+# unprivileged user namespace 时，bash 工具才能真正执行命令（沙箱内）；
+# 装不上/起不来时官方 fail-closed，后端会自动探测并把"没有命令行"告诉模型。
 RUN sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::https::Timeout=60 -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::https::Timeout=60 -o Acquire::Retries=5 install -y --no-install-recommends tesseract-ocr tesseract-ocr-chi-sim \
+    && apt-get -o Acquire::https::Timeout=60 -o Acquire::Retries=5 install -y --no-install-recommends tesseract-ocr tesseract-ocr-chi-sim bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 COPY server/requirements.txt ./requirements.txt
 ARG PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
@@ -35,7 +38,6 @@ ENV APP_ENV=production \
     HARNESS_MODEL=deepseek-v4-flash \
     HARNESS_MAX_TOKENS=4096 \
     DSH_PERMISSION_MODE=workspace-write \
-    HARNESS_SHELL_AVAILABLE=false \
     HARNESS_REASONING_EFFORT=low \
     HARNESS_WORKSPACES=/app/harness-workspaces \
     HARNESS_MAX_RUNTIMES=6 \

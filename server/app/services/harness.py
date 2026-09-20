@@ -21,8 +21,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import shutil
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -106,6 +109,46 @@ _SKILLS_SYNCED: dict[str, float] = {}
 def configured() -> bool:
     """Whether the official Harness SDK path is enabled and has a home."""
     return bool(settings.harness_enabled and settings.harness_home.strip())
+
+
+# 与官方 dsh-sandbox-local 的 read-only profile 一致（bwrapProfileArgs）：
+# 探测必须真的把 profile 应用一次、跑通 true，才算"可用"。
+_BWRAP_READONLY_ARGS = ('--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent')
+_shell_available: bool | None = None
+
+
+def _probe_sandbox() -> bool:
+    """本机有没有可用的沙箱后端（官方在 Linux 上先探 bwrap，macOS 用 sandbox-exec）。
+
+    官方 provider 会自己探一次并 fail-closed；这里探同一件事，只为了让系统提示说真话：
+    探不到就别让模型把步骤烧在注定失败的命令上。
+    """
+    try:
+        if sys.platform == 'darwin':
+            return shutil.which('sandbox-exec') is not None
+        if os.name != 'posix':
+            return True  # Windows 走 ACL restricted-token runner
+        bwrap = shutil.which('bwrap')
+        if not bwrap:
+            return False
+        probe = subprocess.run(
+            [bwrap, *_BWRAP_READONLY_ARGS, '--', 'true'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+        )
+        return probe.returncode == 0
+    except Exception:  # noqa: BLE001 - 探测失败按不可用处理
+        return False
+
+
+def shell_available() -> bool:
+    """命令沙箱是否可用（按需探测并缓存；HARNESS_SHELL_AVAILABLE 可强制覆盖）。"""
+    global _shell_available
+    if settings.harness_shell_available is not None:
+        return bool(settings.harness_shell_available)
+    if _shell_available is None:
+        _shell_available = _probe_sandbox()
+        print(f'[harness] 命令沙箱探测：{"可用" if _shell_available else "不可用（bash 会 fail-closed）"}', flush=True)
+    return _shell_available
 
 
 def skills_source_dir() -> Path:
@@ -299,8 +342,8 @@ def _build_client(user_id: str, model: str, profile: str, effort: str = ''):
     sync_skills(user_id)
 
     # 没有可用沙箱时，bash 一定会 fail-closed：提前告诉模型，别让它把步骤烧在注定失败的
-    # 命令上（线上日志里这类步骤不少）。
-    shell_note = '' if settings.harness_shell_available else (
+    # 命令上（线上日志里这类步骤不少）。探测口径与官方 dsh-sandbox-local 一致。
+    shell_note = '' if shell_available() else (
         '本环境没有可用的命令行沙箱，执行命令一定会失败：需要检索资料时请用 grep / glob / read，不要尝试执行命令。'
     )
     env = {

@@ -15,6 +15,7 @@ import * as pickPage from '../../utils/pick-page'
 import { persistSkills, readLocalSkills, restoreSkills } from '../../utils/skill-prefs'
 import { dismissKeyboard, readKeyboardHeight, repinLatest, shellStyle } from '../../utils/keyboard'
 import { markdownToText } from '../../utils/markdown'
+import { copyText } from '../../utils/clipboard'
 
 const DEFAULT_KNOWLEDGE_NAME = '微信用户的知识库'
 // 与后端 CHAT_MODELS 一致的兜底清单；正常运行时会被 /api/models 的返回值覆盖
@@ -763,11 +764,7 @@ Page({
     const message = (this.data.messages as any[]).find((item) => item && item.id === id)
     const raw = String((message && message.content) || '').trim()
     if (!raw) { wx.showToast({ title: '这条回答还没有内容', icon: 'none' }); return }
-    wx.setClipboardData({
-      data: markdownToText(raw) || raw,
-      success: () => wx.showToast({ title: '回答已复制', icon: 'success' }),
-      fail: () => wx.showToast({ title: '复制失败，请重试', icon: 'none' }),
-    })
+    copyText(markdownToText(raw) || raw, '回答已复制')
   },
   // 分享给微信好友：点「分享」直接拉起转发面板，卡片里带这条回答的分享页
   onShareAppMessage(e: any): any {

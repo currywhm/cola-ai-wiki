@@ -6,6 +6,7 @@
  * 这样问AI / 知识库 / 文件夹三个入口的行为与文案不会各写一套。
  */
 import { getKnowledge, saveSelectionToKnowledge } from '../services/api'
+import { copyText } from './clipboard'
 import { buildSelectionPayload, SharePayload } from './share'
 import { canPickMessage, collectSelection, fileKey, messageKey, pickableKeys, PickSelection, shareHint, PICK_FILE_PREFIX, PICK_MSG_PREFIX } from './pick'
 
@@ -145,15 +146,8 @@ export function copyFor(page: any, target: string): void {
     return
   }
   const name = target === 'qq' ? 'QQ' : '钉钉'
-  const text = selection.text + '\n\n—— 来自 cola知识库'
-  wx.setClipboardData({
-    data: text,
-    success: () => {
-      const tail = selection.fileCount ? `，勾选的 ${selection.fileCount} 个文件请用微信或存到知识库` : ''
-      wx.showToast({ title: `已复制，打开${name}粘贴即可${tail}`, icon: 'none', duration: 2600 })
-    },
-    fail: () => wx.showToast({ title: '复制失败，请重试', icon: 'none' }),
-  })
+  const tail = selection.fileCount ? `，勾选的 ${selection.fileCount} 个文件请用微信或存到知识库` : ''
+  copyText(selection.text + '\n\n—— 来自 cola知识库', `已复制，打开${name}粘贴即可${tail}`)
 }
 
 /** 面板第二层：读一下用户的知识库，给一个可点的列表。 */

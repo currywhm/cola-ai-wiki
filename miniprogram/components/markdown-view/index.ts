@@ -1,4 +1,5 @@
 import { localizeHtmlImages, localizeImage } from '../../services/media'
+import { copyText } from '../../utils/clipboard'
 import { extractMarkdownLinks, renderMarkdownBlocks, renderStreamingText, streamingMarkdownBoundary } from '../../utils/markdown'
 
 Component({
@@ -69,15 +70,14 @@ Component({
       const block = (this.data.blocks as any[]).find((item) => item.key === key)
       const code = block && block.code ? String(block.code) : ''
       if (!code) return
-      wx.setClipboardData({ data: code, success: () => {
+      copyText(code, '已复制', () => {
         this.setData({ copiedKey: key })
         setTimeout(() => this.setData({ copiedKey: '' }), 1400)
-      } })
+      })
     },
     copyLink(e: any) {
       const url = String((e.currentTarget.dataset || {}).url || '')
-      if (!url) return
-      wx.setClipboardData({ data: url, success: () => wx.showToast({ title: '链接已复制', icon: 'none' }) })
+      copyText(url, '链接已复制')
     },
     previewImage(e: any) {
       const src = String((e.currentTarget.dataset || {}).src || '')

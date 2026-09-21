@@ -1096,6 +1096,69 @@ async def delete_me(user_id: str = Depends(current_user)) -> dict:
 
 
 
+PAY_ORDER_STATUS_LABELS = {'pending': '待支付', 'paid': '已支付', 'refunded': '已退款', 'closed': '已关闭'}
+PAY_DELIVER_LABELS = {'pending': '权益待发放', 'delivered': '权益已到账', 'refunded': '权益已回收'}
+
+
+def beijing_time_label(value: Any) -> str:
+    """库里的 UTC ISO 串 → 北京时间「2026-09-21 10:24」；缺失或坏数据返回空串。
+
+    订单页的时间统一由服务端定稿：小程序端 iOS 与 Android 解析 ISO 串的行为并不一致
+    （带时区偏移的串在部分旧 iOS 上会算成 NaN），展示层不自己算时间。
+    """
+    moment = parse_moment(value)
+    if not moment:
+        return ''
+    return moment.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
+
+
+def pay_order_status_label(status: str, deliver_status: str) -> str:
+    """订单状态文案。已支付但还没发货的单独说「发放中」，不让用户以为权益没到账。"""
+    if status == 'paid':
+        return '已生效' if deliver_status == 'delivered' else '发放中'
+    return PAY_ORDER_STATUS_LABELS.get(status, status or '未知')
+
+
+def virtual_pay_data(user: Any, plan: str, out_trade_no: str, attach: str) -> dict:
+    """构造 requestVirtualPayment 要的下单数据。
+
+    「继续支付」必须复用原单号与原 attach：虚拟支付按 outTradeNo 判重，换单号会变成两笔
+    订单，换 attach 会让平台的发货回调对不回原来那条 pay_orders。
+    """
+    product_id, goods_price = virtual_product(plan)
+    body = sign_data(offer_id=settings.wechat_virtual_offer_id, quantity=1, env=settings.wechat_virtual_env,
+                    product_id=product_id, goods_price=goods_price, out_trade_no=out_trade_no, attach=attach)
+    return {'mode': 'short_series_goods', 'signData': body, 'paySig': calc_pay_sig('requestVirtualPayment', body), 'signature': calc_user_signature(body, user['session_key'])}
+
+
+def pay_order_view(row: Any) -> dict:
+    """订单中心列表的一行：文案、金额、时间都在服务端定稿，前端只负责排版。
+
+    can_pay 只在「待支付 + 后台商品配置齐」时为真：否则按钮点了必然报错，
+    不如直接灰掉，用户不会白点一下还看不懂为什么。
+    """
+    plan = str(row['plan'] or '')
+    amount = int(row['amount'] or 0)
+    status = str(row['status'] or '')
+    deliver_status = str(row['deliver_status'] or '')
+    catalog = PLAN_CATALOG.get(plan)
+    return {
+        'out_trade_no': str(row['out_trade_no'] or ''),
+        'plan': plan,
+        'plan_label': catalog[1] if catalog else plan,
+        'amount': amount,
+        'amount_label': f'¥{amount / 100:.2f}',
+        'status': status,
+        'status_label': pay_order_status_label(status, deliver_status),
+        'deliver_status': deliver_status,
+        'deliver_label': PAY_DELIVER_LABELS.get(deliver_status, ''),
+        'created_at': str(row['created_at'] or ''),
+        'created_at_label': beijing_time_label(row['created_at']),
+        'paid_at_label': beijing_time_label(row['paid_at']),
+        'can_pay': status == 'pending' and settings.wechat_payment_mode == 'virtual' and virtual_configured(plan),
+    }
+
+
 @app.get('/api/pay/plans')
 async def pay_plans() -> dict:
     """会员方案与权益。改价只需改 PLAN_CATALOG，前台文案与价格都从这里取。"""
@@ -1136,8 +1199,7 @@ async def create_pay_order(payload: PayCreateRequest, user_id: str = Depends(cur
         raise HTTPException(401, "登录态已失效，请重新登录后再支付")
     out_trade_no = f"LW{datetime.now(timezone.utc):%Y%m%d%H%M%S}{secrets.token_hex(5).upper()}"
     attach = json.dumps({'user_id': user_id, 'plan': payload.plan}, ensure_ascii=False, separators=(',', ':'))
-    body = sign_data(offer_id=settings.wechat_virtual_offer_id, quantity=1, env=settings.wechat_virtual_env, product_id=product_id, goods_price=goods_price, out_trade_no=out_trade_no, attach=attach)
-    pay_data = {'mode': 'short_series_goods', 'signData': body, 'paySig': calc_pay_sig('requestVirtualPayment', body), 'signature': calc_user_signature(body, user['session_key'])}
+    pay_data = virtual_pay_data(user, payload.plan, out_trade_no, attach)
     try:
         db = await connect()
         await db.execute("INSERT INTO pay_orders(id,user_id,out_trade_no,plan,amount,status,offer_id,product_id,attach,quantity,deliver_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (uuid.uuid4().hex, user_id, out_trade_no, payload.plan, goods_price, "pending", settings.wechat_virtual_offer_id, product_id, attach, 1, "pending", now()))
@@ -1147,6 +1209,53 @@ async def create_pay_order(payload: PayCreateRequest, user_id: str = Depends(cur
         except Exception: pass
         raise HTTPException(500, "创建支付订单失败，请重试")
     return {"out_trade_no": out_trade_no, "plan": payload.plan, "amount": amount, "payData": pay_data}
+
+
+@app.get('/api/pay/orders')
+async def list_pay_orders(user_id: str = Depends(current_user)) -> dict:
+    """订单中心：只回当前用户自己的订单，最近的在前。
+
+    不做分页：个人账号的支付订单量级很小（最多几十笔），一次取 50 条足够，
+    多一层翻页反而要在小程序里多维护一份状态。
+    """
+    db = await connect()
+    rows = await fetchall(db, 'SELECT out_trade_no,plan,amount,status,deliver_status,created_at,paid_at FROM pay_orders WHERE user_id=? ORDER BY created_at DESC LIMIT 50', (user_id,))
+    await db.close()
+    return {'orders': [pay_order_view(row) for row in rows]}
+
+
+@app.post('/api/pay/orders/{out_trade_no}/pay')
+async def reopen_pay_order(out_trade_no: str, user_id: str = Depends(current_user)) -> dict:
+    """订单中心的「继续支付」：复用原单号重新唤起收银台，不新开一笔订单。
+
+    只允许待支付的单子续付；已支付/已退款直接拒绝，避免重复扣费。
+    """
+    if settings.wechat_payment_mode != 'virtual':
+        raise HTTPException(503, "当前服务仅配置个人主体虚拟支付")
+    db = await connect()
+    order = await fetchone(db, 'SELECT * FROM pay_orders WHERE out_trade_no=? AND user_id=?', (out_trade_no, user_id))
+    user = await fetchone(db, 'SELECT session_key FROM users WHERE id=?', (user_id,))
+    await db.close()
+    if not order:
+        raise HTTPException(404, '支付订单不存在')
+    if str(order['status'] or '') != 'pending':
+        raise HTTPException(409, '该订单已支付或已退款，无需重复支付')
+    plan = str(order['plan'] or '')
+    # 先报「商品没配好」再报「登录态失效」：和 create_pay_order 的判定顺序一致，否则后台
+    # 漏配商品时用户看到的是「请重新登录」，既误导人又找不到真正的原因。
+    if not virtual_configured(plan):
+        raise HTTPException(503, '当前方案尚未配置微信道具，请联系管理员完成商品配置')
+    if not user or not user['session_key']:
+        raise HTTPException(401, '登录态已失效，请重新登录后再支付')
+    attach = str(order['attach'] or '') or json.dumps({'user_id': user_id, 'plan': plan}, ensure_ascii=False, separators=(',', ':'))
+    catalog = PLAN_CATALOG.get(plan)
+    return {
+        'out_trade_no': out_trade_no,
+        'plan': plan,
+        'plan_label': catalog[1] if catalog else plan,
+        'amount': int(order['amount'] or 0),
+        'payData': virtual_pay_data(user, plan, out_trade_no, attach),
+    }
 
 
 def _xml_response(err_code: int, err_msg: str, status_code: int = 200) -> Response:
@@ -4525,4 +4634,3 @@ async def build_skill(payload: SkillBuildRequest, user_id: str = Depends(current
     job_id = await jobs_service.create(user_id, 'skill_build', {'slug': slug, 'name': form['name']})
     jobs_service.spawn(job_id, lambda jid: build_skill_worker(jid, payload=payload, form=form, slug=slug, instruction=instruction, user_id=user_id))
     return {'job_id': job_id}
-

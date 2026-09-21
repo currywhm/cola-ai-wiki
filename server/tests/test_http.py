@@ -140,6 +140,41 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/pay/orders', headers=self.headers, json={'plan': 'pro_monthly'}).status_code, 503)
         self.assertEqual(self.client.post('/api/pay/notify', json={}).status_code, 400)
 
+    def test_pay_order_center_shows_own_orders_with_server_side_labels(self):
+        """订单中心：只回自己的订单，金额/状态/时间都是服务端定稿的展示文案。
+
+        小程序端不解析 ISO 时间、也不自己拼状态：iOS 与 Android 对带时区偏移的
+        Date 解析行为不一致，一旦前端自己算就会有人看到 NaN 或差 8 小时。
+        """
+        self.assertEqual(self.client.get('/api/pay/orders', headers=self.headers).json(), {'orders': []})
+        other_user, other_headers = self.fixture_user()
+        insert = ('INSERT INTO pay_orders(id,user_id,out_trade_no,plan,amount,status,created_at,paid_at,deliver_status,delivered_at,attach) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute(insert, (uuid.uuid4().hex, self.user, 'LW20260921102400AAAAA', 'pro_quarterly', 7500, 'pending', '2026-09-21T02:24:00+00:00', '', 'pending', '', ''))
+            db.execute(insert, (uuid.uuid4().hex, self.user, 'LW20260920090000BBBBB', 'plus_monthly', 1200, 'paid', '2026-09-20T01:00:00+00:00', '2026-09-20T01:00:20+00:00', 'delivered', '2026-09-20T01:00:21+00:00', ''))
+            db.execute(insert, (uuid.uuid4().hex, other_user, 'LW20260921000000CCCCC', 'pro_monthly', 2900, 'pending', '2026-09-21T03:00:00+00:00', '', 'pending', '', ''))
+            db.commit()
+        orders = self.client.get('/api/pay/orders', headers=self.headers).json()['orders']
+        # 只回自己的，而且新的在前
+        self.assertEqual([order['out_trade_no'] for order in orders], ['LW20260921102400AAAAA', 'LW20260920090000BBBBB'])
+        pending, paid = orders
+        self.assertEqual(pending['plan_label'], 'Pro 会员季度')
+        self.assertEqual(pending['amount_label'], '¥75.00')
+        self.assertEqual(pending['status_label'], '待支付')
+        self.assertEqual(pending['created_at_label'], '2026-09-21 10:24')
+        # 测试环境没有配置虚拟支付道具：待支付单不给「继续支付」，点了必然报错
+        self.assertFalse(pending['can_pay'])
+        self.assertEqual(paid['status_label'], '已生效')
+        self.assertEqual(paid['deliver_label'], '权益已到账')
+        self.assertEqual(paid['paid_at_label'], '2026-09-20 09:00')
+        self.assertFalse(paid['can_pay'])
+        # 续付：商品没配好时明确报 503，不偷偷新开一笔订单
+        self.assertEqual(self.client.post('/api/pay/orders/LW20260921102400AAAAA/pay', headers=self.headers).status_code, 503)
+        # 别人的订单读不到：列表与单笔都按 user_id 过滤。续付接口在「虚拟支付未配置」
+        # 的环境里先被 503 拦住，它的归属校验由下面的 404 断言同源覆盖。
+        self.assertEqual(self.client.get('/api/pay/orders/LW20260921000000CCCCC', headers=self.headers).status_code, 404)
+        self.client.delete('/api/me', headers=other_headers)
+
     def test_default_knowledge_is_created_once_and_sorted_first(self):
         first = self.client.get('/api/knowledge', headers=self.headers)
         self.assertEqual(first.status_code, 200, first.text)
